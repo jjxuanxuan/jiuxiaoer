@@ -1436,6 +1436,62 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/Success" }
         default: { $ref: "#/components/responses/Problem" }
+  /admin/reconciliation/runs:
+    get:
+      summary: 查询微信交易账单和资金账单对账运行记录
+      description: 需要 refund:view 权限。运行记录按账单日期倒序返回。
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      summary: 手工补跑微信交易账单或资金账单对账
+      description: 需要 refund:exception 权限和 Idempotency-Key；仅允许补跑最近三个月内已生成的历史账单，重复日期和类型保持幂等。
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [bill_date, bill_type]
+              properties:
+                bill_date: { type: string, format: date }
+                bill_type: { type: string, enum: [trade_all, fundflow_basic] }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/reconciliation/discrepancies:
+    get:
+      summary: 查询微信账单对账差异
+      description: 需要 refund:view 权限。首版差异只供人工核对，不自动修改资金状态。
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [open, resolved] } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 500, default: 100 } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/reconciliation/discrepancies/{id}/resolve:
+    post:
+      summary: 记录微信账单差异的人工处理结论
+      description: 需要 refund:exception 权限；本接口只写处理记录，不修改订单、支付、退款或余额。
+      parameters: [{ $ref: "#/components/parameters/ID" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [handling_note]
+              properties:
+                handling_note: { type: string, minLength: 3, maxLength: 1000 }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
   /refunds/{provider}/callbacks:
     post:
       summary: 支付渠道退款结果回调

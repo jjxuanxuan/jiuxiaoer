@@ -15,6 +15,7 @@ type Row struct {
 	Attempts                                                               uint32
 	NextRetryAt, LockedUntil                                               *time.Time
 	RequestedAt                                                            time.Time
+	ProviderAcceptedAt                                                     *time.Time
 	SucceededAt, FailedAt                                                  *time.Time
 	Version                                                                uint32
 	CreatedAt, UpdatedAt                                                   time.Time

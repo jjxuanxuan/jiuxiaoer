@@ -29,6 +29,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/modules/order"
 	"jiuxiaoer-admin/backend-go/internal/modules/printjob"
 	"jiuxiaoer-admin/backend-go/internal/modules/realtime"
+	"jiuxiaoer-admin/backend-go/internal/modules/reconciliation"
 	"jiuxiaoer-admin/backend-go/internal/modules/refund"
 	"jiuxiaoer-admin/backend-go/internal/modules/routeplanning"
 	"jiuxiaoer-admin/backend-go/internal/pkg/metrics"
@@ -48,6 +49,7 @@ type Dependencies struct {
 	SMSProvider         auth.SMSProvider
 	PaymentProvider     order.PaymentProvider
 	RefundProvider      refund.Provider
+	BillProvider        reconciliation.Provider
 	Realtime            *realtime.Runtime
 	RouteProvider       routeplanning.Provider
 	CustomerLBSProvider amap.Provider
@@ -105,10 +107,10 @@ func NewServer(ctx context.Context, cfg config.Config, log *slog.Logger) (*Serve
 		}
 		return nil, err
 	}
-	metricRegistry := metrics.New(cfg.App.InstanceID, cfg.Metrics.Token) //监控
-	idGen := snowflake.New(cfg.App.SnowflakeNodeID)                      //雪花ID
-	wechatAuth := wechat.NewIdentityProvider(cfg.WeChat)                 //商户
-	paymentProvider, err := wechatpayinfra.New(ctx, cfg.WeChat)          //微信支付
+	metricRegistry := metrics.New(cfg.App.InstanceID, cfg.Metrics.Token)                           //监控
+	idGen := snowflake.New(cfg.App.SnowflakeNodeID)                                                //雪花ID
+	wechatAuth := wechat.NewIdentityProvider(cfg.WeChat)                                           //商户
+	paymentProvider, err := wechatpayinfra.New(ctx, cfg.WeChat, cfg.Reconciliation.RequestTimeout) //微信支付
 	if err != nil {
 		if lease != nil {
 			_ = lease.Release(ctx)
@@ -131,6 +133,10 @@ func NewServer(ctx context.Context, cfg config.Config, log *slog.Logger) (*Serve
 	if provider, ok := paymentProvider.(refund.Provider); ok {
 		refundProvider = provider
 	}
+	var billProvider reconciliation.Provider
+	if provider, ok := paymentProvider.(reconciliation.Provider); ok {
+		billProvider = provider
+	}
 	deps := Dependencies{
 		Config:          cfg,
 		Log:             log,
@@ -144,6 +150,7 @@ func NewServer(ctx context.Context, cfg config.Config, log *slog.Logger) (*Serve
 		SMSProvider:     smsProvider,
 		PaymentProvider: paymentProvider,
 		RefundProvider:  refundProvider,
+		BillProvider:    billProvider,
 	}
 	deps.Realtime = realtime.NewRuntime(cfg, db, redisClient, idGen, metricRegistry, log)
 
@@ -286,6 +293,11 @@ func (s *Server) Run(ctx context.Context) error {
 			service.WithDeliveryReturnClosure(deliveryReturnService)
 		}
 		worker := refund.NewWorker(s.cfg, service, s.deps.RefundProvider, s.log)
+		spawn(func() { worker.Run(runCtx) })
+	}
+	if s.cfg.Reconciliation.Enabled && s.cfg.Reconciliation.WorkerEnabled && s.deps.DB != nil && s.deps.BillProvider != nil {
+		service := reconciliation.NewService(s.cfg, s.deps.DB, s.deps.IDGen, s.deps.BillProvider, s.log)
+		worker := reconciliation.NewWorker(s.cfg, service, s.deps.Metrics, s.log)
 		spawn(func() { worker.Run(runCtx) })
 	}
 	if s.cfg.Asset.WorkerEnabled && s.deps.DB != nil && (s.cfg.Asset.CompensationIssueEnabled || s.cfg.Asset.ExpiryEnabled) {

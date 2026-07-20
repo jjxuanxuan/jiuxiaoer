@@ -95,6 +95,10 @@ var requiredSchemaColumns = []schemaColumn{
 	{table: "mq_dead_letter_replays", column: "replay_event_id"},
 	{table: "customer_identities", column: "provider_subject"},
 	{table: "payment_callbacks", column: "provider_event_id"},
+	{table: "wechat_bill_reconciliation_runs", column: "bill_date"},
+	{table: "wechat_bill_observations", column: "raw_hash"},
+	{table: "wechat_bill_discrepancies", column: "dedupe_key"},
+	{table: "refunds", column: "provider_accepted_at"},
 	{table: "customer_addresses", column: "version"},
 	{table: "customer_addresses", column: "coordinate_system"},
 	{table: "customer_addresses", column: "poi_id"},
@@ -145,7 +149,7 @@ func verifySchema(ctx context.Context, db *gorm.DB) error {
 			SELECT table_name, column_name
 			FROM information_schema.columns
 			WHERE table_schema = DATABASE()
-			  AND table_name IN ('products', 'product_stocks', 'orders', 'payments', 'outbox_events', 'mq_consumer_receipts', 'mq_dead_letters', 'mq_dead_letter_replays', 'customer_identities', 'payment_callbacks', 'customer_addresses', 'shops', 'service_cities', 'service_city_adcodes', 'delivery_promise_policies', 'rider_runtime_states', 'shop_business_hours', 'home_slots', 'after_sales', 'refunds', 'asset_accounts', 'asset_transactions', 'asset_entries', 'member_profiles', 'compensation_ledger', 'delivery_orders', 'print_tasks', 'notification_deliveries', 'delivery_verifications', 'admin_override_approvals', 'provisioning_operations', 'identity_verification_requests', 'identity_verification_callbacks', 'customer_realname_verifications', 'rider_applications', 'rider_application_reviews', 'customer_search_histories', 'search_keyword_daily_stats')`).Scan(&rows).Error
+			  AND table_name IN ('products', 'product_stocks', 'orders', 'payments', 'outbox_events', 'mq_consumer_receipts', 'mq_dead_letters', 'mq_dead_letter_replays', 'customer_identities', 'payment_callbacks', 'wechat_bill_reconciliation_runs', 'wechat_bill_observations', 'wechat_bill_discrepancies', 'customer_addresses', 'shops', 'service_cities', 'service_city_adcodes', 'delivery_promise_policies', 'rider_runtime_states', 'shop_business_hours', 'home_slots', 'after_sales', 'refunds', 'asset_accounts', 'asset_transactions', 'asset_entries', 'member_profiles', 'compensation_ledger', 'delivery_orders', 'print_tasks', 'notification_deliveries', 'delivery_verifications', 'admin_override_approvals', 'provisioning_operations', 'identity_verification_requests', 'identity_verification_callbacks', 'customer_realname_verifications', 'rider_applications', 'rider_application_reviews', 'customer_search_histories', 'search_keyword_daily_stats')`).Scan(&rows).Error
 	if err != nil {
 		return fmt.Errorf("verify database schema: %w", err)
 	}

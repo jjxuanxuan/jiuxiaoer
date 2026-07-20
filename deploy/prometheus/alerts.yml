@@ -292,6 +292,51 @@ groups:
           summary: "WeChat reported an ABNORMAL refund requiring merchant-platform handling"
           runbook: "docs/runbooks/l3-after-sale-refund.md#refund-exception"
 
+      - alert: JiuxiaoerWechatBillReconciliationFailed
+        expr: jxe_wechat_bill_reconciliation_consecutive_failures >= 2
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "WeChat T+1 bill reconciliation failed twice consecutively"
+          runbook: "docs/runbooks/wechat-bill-reconciliation.md#failure"
+
+      - alert: JiuxiaoerWechatBillReconciliationOverdue
+        expr: time() - jxe_wechat_bill_reconciliation_last_completed_bill_unixtime > 129600
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No WeChat bill has completed for more than 36 hours"
+          runbook: "docs/runbooks/wechat-bill-reconciliation.md#overdue"
+
+      - alert: JiuxiaoerWechatBillReconciliationGap
+        expr: jxe_wechat_bill_reconciliation_missing_dates > 0
+        for: 2h
+        labels:
+          severity: critical
+        annotations:
+          summary: "WeChat bill reconciliation has an incomplete date pair"
+          runbook: "docs/runbooks/wechat-bill-reconciliation.md#gap"
+
+      - alert: JiuxiaoerWechatBillAmountMismatch
+        expr: jxe_wechat_bill_discrepancies_open_by_type{type="amount_mismatch"} > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "WeChat bill contains an unresolved amount mismatch"
+          runbook: "docs/runbooks/wechat-bill-reconciliation.md#amount-mismatch"
+
+      - alert: JiuxiaoerWechatBillDiscrepancySLA
+        expr: jxe_wechat_bill_discrepancy_oldest_open_seconds > 86400
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A WeChat bill discrepancy has remained open for more than 24 hours"
+          runbook: "docs/runbooks/wechat-bill-reconciliation.md#discrepancy-sla"
+
       - alert: JiuxiaoerAfterSaleReviewBacklog
         expr: jxe_after_sale_review_oldest_seconds > 7200
         for: 10m

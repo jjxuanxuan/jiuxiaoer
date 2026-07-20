@@ -14,6 +14,7 @@ type State struct {
 	ProviderRefundID, RefundNo, PaymentNo, Status, Currency, RequestID string
 	Amount, TotalAmount                                                int64
 	CurrencyRequired                                                   bool
+	ProviderCreatedAt                                                  *time.Time
 	SucceededAt                                                        *time.Time
 }
 type CallbackEvent struct {

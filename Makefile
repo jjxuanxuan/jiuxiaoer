@@ -44,9 +44,9 @@ test-integration:
 
 payment-refund-gate:
 	go test -count=1 ./...
-	go test -race ./internal/infra/wechatpay ./internal/modules/order ./internal/modules/refund ./internal/modules/aftersale
+	go test -race ./internal/infra/wechatpay ./internal/modules/order ./internal/modules/refund ./internal/modules/aftersale ./internal/modules/reconciliation
 	go vet ./...
-	$(load_env) JXE_RUN_INTEGRATION=1 go test -p 1 -count=1 ./internal/modules/order ./internal/modules/refund ./internal/modules/aftersale
+	$(load_env) JXE_RUN_INTEGRATION=1 go test -p 1 -count=1 ./internal/modules/order ./internal/modules/refund ./internal/modules/aftersale ./internal/modules/reconciliation
 
 test-mq-integration:
 	@set -e; vhost=jxe-rmq-integration; \

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +27,7 @@ import (
 
 	"jiuxiaoer-admin/backend-go/internal/config"
 	"jiuxiaoer-admin/backend-go/internal/modules/order"
+	"jiuxiaoer-admin/backend-go/internal/modules/reconciliation"
 	"jiuxiaoer-admin/backend-go/internal/modules/refund"
 	"jiuxiaoer-admin/backend-go/internal/pkg/paygateway"
 )
@@ -33,7 +35,7 @@ import (
 const FakeCallbackSecret = "local-wechat-pay-callback-secret"
 
 // New 创建并初始化支付提供器。
-func New(ctx context.Context, cfg config.WeChatConfig) (order.PaymentProvider, error) {
+func New(ctx context.Context, cfg config.WeChatConfig, billTimeouts ...time.Duration) (order.PaymentProvider, error) {
 	if !cfg.PayEnabled {
 		return nil, nil
 	}
@@ -54,6 +56,21 @@ func New(ctx context.Context, cfg config.WeChatConfig) (order.PaymentProvider, e
 		mgr.Stop()
 		return nil, fmt.Errorf("initialize WeChat Pay client: %w", err)
 	}
+	billTimeout := 5 * time.Minute
+	if len(billTimeouts) > 0 && billTimeouts[0] > 0 {
+		billTimeout = billTimeouts[0]
+	}
+	billClient, err := core.NewClient(ctx,
+		option.WithMerchantCredential(cfg.PayMchID, cfg.PayCertSerial, privateKey),
+		option.WithoutValidator(),
+		option.WithHTTPClient(&http.Client{Timeout: billTimeout, CheckRedirect: func(request *http.Request, _ []*http.Request) error {
+			return validateBillDownloadURL(request.URL)
+		}}),
+	)
+	if err != nil {
+		mgr.Stop()
+		return nil, fmt.Errorf("initialize WeChat Pay bill download client: %w", err)
+	}
 	verifier := verifiers.NewSHA256WithRSAVerifier(mgr.GetCertificateVisitor(cfg.PayMchID))
 	notifyHandler, err := notify.NewRSANotifyHandler(cfg.PayAPIv3Key, verifier)
 	if err != nil {
@@ -64,6 +81,8 @@ func New(ctx context.Context, cfg config.WeChatConfig) (order.PaymentProvider, e
 		cfg:           cfg,
 		service:       &jsapi.JsapiApiService{Client: client},
 		refundService: &refunddomestic.RefundsApiService{Client: client},
+		client:        client,
+		billClient:    billClient,
 		notifyHandler: notifyHandler,
 		downloader:    mgr,
 	}, nil
@@ -73,6 +92,8 @@ type provider struct {
 	cfg           config.WeChatConfig
 	service       *jsapi.JsapiApiService
 	refundService *refunddomestic.RefundsApiService
+	client        *core.Client
+	billClient    *core.Client
 	notifyHandler *notify.Handler
 	downloader    *downloader.CertificateDownloaderMgr
 }
@@ -162,6 +183,69 @@ func (p *provider) ParseCallback(ctx context.Context, request *http.Request) (or
 func (p *provider) Shutdown() {
 	if p != nil && p.downloader != nil {
 		p.downloader.Stop()
+	}
+}
+
+// OpenBill applies for an official APIv3 bill and returns its response body as
+// a stream. The apply response is signature-verified by client; the download
+// client intentionally uses the SDK's WithoutValidator option because WeChat's
+// bill download response does not contain a response signature.
+func (p *provider) OpenBill(ctx context.Context, billDate time.Time, billType string) (reconciliation.BillFile, error) {
+	requestURL := "https://api.mch.weixin.qq.com/v3/bill/tradebill?bill_date=" + url.QueryEscape(billDate.Format("2006-01-02")) + "&bill_type=ALL"
+	operation := "bill.trade.apply"
+	if billType == reconciliation.BillTypeFundflowBase {
+		requestURL = "https://api.mch.weixin.qq.com/v3/bill/fundflowbill?bill_date=" + url.QueryEscape(billDate.Format("2006-01-02")) + "&account_type=BASIC"
+		operation = "bill.fundflow.apply"
+	} else if billType != reconciliation.BillTypeTradeAll {
+		return reconciliation.BillFile{}, fmt.Errorf("unsupported WeChat bill type %q", billType)
+	}
+	result, err := p.client.Get(ctx, requestURL)
+	if err != nil {
+		return reconciliation.BillFile{}, providerCallError(operation, result, err)
+	}
+	if result == nil || result.Response == nil || result.Response.Body == nil {
+		return reconciliation.BillFile{}, &paygateway.ProviderError{Operation: operation, Message: "empty apply response", Retryable: true}
+	}
+	providerRequestID := apiRequestID(result)
+	defer result.Response.Body.Close()
+	var metadata struct {
+		HashType    string `json:"hash_type"`
+		HashValue   string `json:"hash_value"`
+		DownloadURL string `json:"download_url"`
+	}
+	decoder := json.NewDecoder(io.LimitReader(result.Response.Body, 64<<10))
+	if err := decoder.Decode(&metadata); err != nil {
+		return reconciliation.BillFile{}, &paygateway.ProviderError{Operation: operation, RequestID: providerRequestID, Message: "invalid apply response", Retryable: true, Cause: err}
+	}
+	downloadURL, err := url.Parse(strings.TrimSpace(metadata.DownloadURL))
+	if err != nil {
+		return reconciliation.BillFile{}, &paygateway.ProviderError{Operation: operation, RequestID: providerRequestID, Message: "unsafe bill download URL", Retryable: false, Cause: err}
+	}
+	if err := validateBillDownloadURL(downloadURL); err != nil {
+		return reconciliation.BillFile{}, &paygateway.ProviderError{Operation: operation, RequestID: providerRequestID, Message: "unsafe bill download URL", Retryable: false, Cause: err}
+	}
+	downloadResult, err := p.billClient.Get(ctx, downloadURL.String())
+	if err != nil {
+		return reconciliation.BillFile{}, providerCallError("bill.download", downloadResult, err)
+	}
+	if downloadResult == nil || downloadResult.Response == nil || downloadResult.Response.Body == nil {
+		return reconciliation.BillFile{}, &paygateway.ProviderError{Operation: "bill.download", RequestID: apiRequestID(downloadResult), Message: "empty bill response", Retryable: true}
+	}
+	return reconciliation.BillFile{
+		Body: downloadResult.Response.Body, HashType: metadata.HashType, ExpectedHash: metadata.HashValue,
+		ProviderRequestID: providerRequestID, DownloadRequestID: apiRequestID(downloadResult),
+	}, nil
+}
+
+func validateBillDownloadURL(value *url.URL) error {
+	if value == nil || value.Scheme != "https" || !strings.EqualFold(value.Hostname(), "api.mch.weixin.qq.com") || value.Port() != "" || value.User != nil || value.Fragment != "" {
+		return errors.New("bill download URL must use the official HTTPS host")
+	}
+	switch value.EscapedPath() {
+	case "/v3/billdownload/file", "/v3/bill/downloadurl":
+		return nil
+	default:
+		return errors.New("bill download URL must use an official bill download path")
 	}
 }
 
@@ -276,7 +360,7 @@ func providerCallError(operation string, result *core.APIResult, err error) erro
 
 // refundState 返回退款状态。
 func refundState(result *refunddomestic.Refund) refund.State {
-	state := refund.State{ProviderRefundID: stringValue(result.RefundId), RefundNo: stringValue(result.OutRefundNo), PaymentNo: stringValue(result.OutTradeNo), CurrencyRequired: true, SucceededAt: result.SuccessTime}
+	state := refund.State{ProviderRefundID: stringValue(result.RefundId), RefundNo: stringValue(result.OutRefundNo), PaymentNo: stringValue(result.OutTradeNo), CurrencyRequired: true, ProviderCreatedAt: result.CreateTime, SucceededAt: result.SuccessTime}
 	if result.Status != nil {
 		state.Status = string(*result.Status)
 	}
@@ -413,6 +497,10 @@ func (p *fakeProvider) ParseCallback(_ context.Context, request *http.Request) (
 
 // Shutdown 平滑停止当前实例并释放相关资源。
 func (p *fakeProvider) Shutdown() {}
+
+func (p *fakeProvider) OpenBill(context.Context, time.Time, string) (reconciliation.BillFile, error) {
+	return reconciliation.BillFile{}, &paygateway.ProviderError{Operation: "bill.apply", HTTPStatus: http.StatusNotFound, Code: "NO_STATEMENT_EXIST", Message: "fake provider has no statement", Retryable: false}
+}
 
 // Refund 返回退款。
 func (p *fakeProvider) Refund(_ context.Context, input refund.Input) (refund.State, error) {

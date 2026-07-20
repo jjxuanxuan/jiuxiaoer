@@ -173,6 +173,11 @@ func (s *Service) applyState(ctx context.Context, tx *gorm.DB, row Row, state St
 	}
 	providerID := optional(state.ProviderRefundID)
 	providerStatus := optional(state.Status)
+	if state.ProviderCreatedAt != nil && row.ProviderAcceptedAt == nil {
+		if err := tx.WithContext(ctx).Model(&Row{}).Where("id=? AND provider_accepted_at IS NULL", row.ID).UpdateColumn("provider_accepted_at", state.ProviderCreatedAt).Error; err != nil {
+			return err
+		}
+	}
 	switch incomingStatus {
 	case "SUCCESS":
 		if row.Status == "succeeded" {
@@ -622,26 +627,27 @@ func (s *Service) audit(ctx context.Context, tx *gorm.DB, actorID uint64, action
 }
 
 type DTO struct {
-	ID               string `json:"id"`
-	RefundNo         string `json:"refund_no"`
-	AfterSaleID      string `json:"after_sale_id"`
-	OrderID          string `json:"order_id"`
-	PaymentID        string `json:"payment_id"`
-	ReplacesRefundID string `json:"replaces_refund_id,omitempty"`
-	Provider         string `json:"provider"`
-	ProviderRefundID string `json:"provider_refund_id,omitempty"`
-	Status           string `json:"status"`
-	ProviderStatus   string `json:"provider_status,omitempty"`
-	Amount           int64  `json:"amount"`
-	TotalAmount      int64  `json:"total_amount"`
-	Currency         string `json:"currency"`
-	Attempts         uint32 `json:"attempts"`
-	FailureCode      string `json:"failure_code,omitempty"`
-	FailureDetail    string `json:"failure_detail,omitempty"`
-	RequestedAt      string `json:"requested_at"`
-	SucceededAt      string `json:"succeeded_at,omitempty"`
-	CreatedAt        string `json:"created_at"`
-	UpdatedAt        string `json:"updated_at"`
+	ID                 string `json:"id"`
+	RefundNo           string `json:"refund_no"`
+	AfterSaleID        string `json:"after_sale_id"`
+	OrderID            string `json:"order_id"`
+	PaymentID          string `json:"payment_id"`
+	ReplacesRefundID   string `json:"replaces_refund_id,omitempty"`
+	Provider           string `json:"provider"`
+	ProviderRefundID   string `json:"provider_refund_id,omitempty"`
+	Status             string `json:"status"`
+	ProviderStatus     string `json:"provider_status,omitempty"`
+	Amount             int64  `json:"amount"`
+	TotalAmount        int64  `json:"total_amount"`
+	Currency           string `json:"currency"`
+	Attempts           uint32 `json:"attempts"`
+	FailureCode        string `json:"failure_code,omitempty"`
+	FailureDetail      string `json:"failure_detail,omitempty"`
+	RequestedAt        string `json:"requested_at"`
+	ProviderAcceptedAt string `json:"provider_accepted_at,omitempty"`
+	SucceededAt        string `json:"succeeded_at,omitempty"`
+	CreatedAt          string `json:"created_at"`
+	UpdatedAt          string `json:"updated_at"`
 }
 
 // dto 返回DTO。
@@ -664,6 +670,9 @@ func dto(row Row) DTO {
 	}
 	if row.SucceededAt != nil {
 		v.SucceededAt = row.SucceededAt.Format(time.RFC3339Nano)
+	}
+	if row.ProviderAcceptedAt != nil {
+		v.ProviderAcceptedAt = row.ProviderAcceptedAt.Format(time.RFC3339Nano)
 	}
 	return v
 }

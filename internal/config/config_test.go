@@ -49,6 +49,65 @@ func TestProductionPaymentAndRefundWorkersAreMandatory(t *testing.T) {
 			t.Fatalf("expected disabled refund worker to fail, got %v", err)
 		}
 	})
+	t.Run("daily bill reconciliation worker", func(t *testing.T) {
+		cfg := validProductionConfig()
+		cfg.Reconciliation.WorkerEnabled = false
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "JXE_WECHAT_BILL_RECONCILIATION_WORKER_ENABLED=true") {
+			t.Fatalf("expected disabled bill reconciliation worker to fail, got %v", err)
+		}
+	})
+}
+
+func TestWechatBillBackfillConfigurationIsBounded(t *testing.T) {
+	t.Run("enabled reconciliation requires an explicit start date", func(t *testing.T) {
+		cfg := validProductionConfig()
+		cfg.Reconciliation.StartDate = ""
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "JXE_WECHAT_BILL_RECONCILIATION_START_DATE") {
+			t.Fatalf("expected missing start date to fail, got %v", err)
+		}
+	})
+	t.Run("start date uses the official calendar format", func(t *testing.T) {
+		cfg := validProductionConfig()
+		cfg.Reconciliation.StartDate = "2026/07/01"
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "must use YYYY-MM-DD") {
+			t.Fatalf("expected invalid start date to fail, got %v", err)
+		}
+	})
+	t.Run("start date cannot leave production reconciliation dormant", func(t *testing.T) {
+		cfg := validProductionConfig()
+		cfg.Reconciliation.StartDate = time.Now().In(time.FixedZone("CST", 8*60*60)).AddDate(0, 0, 1).Format("2006-01-02")
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "cannot be in the future") {
+			t.Fatalf("expected future start date to fail, got %v", err)
+		}
+	})
+	t.Run("per-cycle backfill is bounded", func(t *testing.T) {
+		cfg := validProductionConfig()
+		cfg.Reconciliation.BackfillDaysPerCycle = 31
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "invalid WeChat bill reconciliation configuration") {
+			t.Fatalf("expected excessive backfill batch to fail, got %v", err)
+		}
+	})
+	t.Run("worker cannot run before official bill generation hour", func(t *testing.T) {
+		cfg := validProductionConfig()
+		cfg.Reconciliation.RunHour = 9
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "invalid WeChat bill reconciliation configuration") {
+			t.Fatalf("expected early run hour to fail, got %v", err)
+		}
+	})
+	t.Run("run lease must outlive the provider request", func(t *testing.T) {
+		cfg := validProductionConfig()
+		cfg.Reconciliation.RunningTimeout = cfg.Reconciliation.RequestTimeout
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "invalid WeChat bill reconciliation configuration") {
+			t.Fatalf("expected short run lease to fail, got %v", err)
+		}
+	})
 }
 
 func TestProductionConfigRequiresTencentCloudSMS(t *testing.T) {
@@ -167,6 +226,9 @@ func validProductionConfig() Config {
 	cfg.WeChat.PayPrivateKeyPath = "/run/secrets/wechat-pay-private-key.pem"
 	cfg.WeChat.PayAPIv3Key = "0123456789abcdef0123456789abcdef"
 	cfg.WeChat.PayNotifyURL = "https://api.example.com/api/v1/payments/wechat/callbacks"
+	cfg.Reconciliation.Enabled = true
+	cfg.Reconciliation.WorkerEnabled = true
+	cfg.Reconciliation.StartDate = "2026-07-01"
 	cfg.AfterSale.EvidenceTokenSecret = "production-evidence-token-secret-123456789"
 	cfg.JWT.AccessSecret = "access-secret-that-is-long-enough-123456"
 	cfg.JWT.RefreshSecret = "refresh-secret-that-is-long-enough-654321"

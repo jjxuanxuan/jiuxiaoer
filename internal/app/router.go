@@ -30,6 +30,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/modules/product"
 	"jiuxiaoer-admin/backend-go/internal/modules/provisioning"
 	"jiuxiaoer-admin/backend-go/internal/modules/realtime"
+	"jiuxiaoer-admin/backend-go/internal/modules/reconciliation"
 	"jiuxiaoer-admin/backend-go/internal/modules/refund"
 	"jiuxiaoer-admin/backend-go/internal/modules/riderapplication"
 	"jiuxiaoer-admin/backend-go/internal/modules/routeplanning"
@@ -169,6 +170,10 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	refund.RegisterAdminRoutes(protected.Group("/admin/refunds"), refundHandler)
 	if deps.RefundProvider != nil {
 		refund.RegisterCallbackRoute(api, refundHandler)
+	}
+	if deps.DB != nil {
+		reconciliationService := reconciliation.NewService(deps.Config, deps.DB, idGen, deps.BillProvider, deps.Log)
+		reconciliation.RegisterAdminRoutes(protected.Group("/admin/reconciliation"), reconciliation.NewHandler(reconciliationService))
 	}
 
 	storeService := store.NewService(deps.DB, deps.Redis, idGen).WithCP1(deps.Config.CP1).WithDispatch(dispatchService)

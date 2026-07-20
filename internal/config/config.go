@@ -18,6 +18,7 @@ type Config struct {
 	MQ               MQConfig
 	JWT              JWTConfig
 	Order            OrderConfig
+	Reconciliation   ReconciliationConfig
 	AfterSale        AfterSaleConfig
 	DeliveryIncident DeliveryIncidentConfig
 	DeliveryReturn   DeliveryReturnConfig
@@ -231,6 +232,21 @@ type OrderConfig struct {
 	ExpiryWorkerEnabled  bool
 	ExpiryScanInterval   time.Duration
 	ExpiryBatchSize      int
+}
+
+// ReconciliationConfig controls the T+1 WeChat trade and fund-flow bill
+// closure. It is disabled locally by default; production payments require it.
+type ReconciliationConfig struct {
+	Enabled              bool
+	WorkerEnabled        bool
+	WorkerInterval       time.Duration
+	RunHour              int
+	LagDays              int
+	StartDate            string
+	BackfillDaysPerCycle int
+	RequestTimeout       time.Duration
+	InsertBatchSize      int
+	RunningTimeout       time.Duration
 }
 
 type AfterSaleConfig struct {
@@ -450,6 +466,18 @@ func Load() Config {
 			ExpiryWorkerEnabled:  boolEnv("JXE_ORDER_EXPIRY_WORKER_ENABLED", true),
 			ExpiryScanInterval:   durationEnv("JXE_ORDER_EXPIRY_SCAN_INTERVAL", 10*time.Second),
 			ExpiryBatchSize:      intEnv("JXE_ORDER_EXPIRY_BATCH_SIZE", 100),
+		},
+		Reconciliation: ReconciliationConfig{
+			Enabled:              boolEnv("JXE_WECHAT_BILL_RECONCILIATION_ENABLED", false),
+			WorkerEnabled:        boolEnv("JXE_WECHAT_BILL_RECONCILIATION_WORKER_ENABLED", true),
+			WorkerInterval:       durationEnv("JXE_WECHAT_BILL_RECONCILIATION_INTERVAL", 30*time.Minute),
+			RunHour:              intEnv("JXE_WECHAT_BILL_RECONCILIATION_RUN_HOUR", 10),
+			LagDays:              intEnv("JXE_WECHAT_BILL_RECONCILIATION_LAG_DAYS", 1),
+			StartDate:            env("JXE_WECHAT_BILL_RECONCILIATION_START_DATE", ""),
+			BackfillDaysPerCycle: intEnv("JXE_WECHAT_BILL_RECONCILIATION_BACKFILL_DAYS_PER_CYCLE", 3),
+			RequestTimeout:       durationEnv("JXE_WECHAT_BILL_RECONCILIATION_REQUEST_TIMEOUT", 5*time.Minute),
+			InsertBatchSize:      intEnv("JXE_WECHAT_BILL_RECONCILIATION_INSERT_BATCH_SIZE", 200),
+			RunningTimeout:       durationEnv("JXE_WECHAT_BILL_RECONCILIATION_RUNNING_TIMEOUT", 30*time.Minute),
 		},
 		AfterSale: AfterSaleConfig{
 			Enabled:                 boolEnv("JXE_AFTERSALE_ENABLED", false),
@@ -719,6 +747,26 @@ func (c Config) Validate() error {
 	}
 	if c.Order.PaymentTTL < time.Minute || c.Order.CreatingReconcileAge <= 0 || c.Order.ExpiryScanInterval <= 0 || c.Order.ExpiryBatchSize <= 0 || c.Order.ExpiryBatchSize > 1000 {
 		problems = append(problems, "invalid order payment expiry configuration")
+	}
+	if c.Reconciliation.WorkerInterval <= 0 || c.Reconciliation.RunHour < 10 || c.Reconciliation.RunHour > 23 || c.Reconciliation.LagDays < 1 || c.Reconciliation.LagDays > 90 || c.Reconciliation.BackfillDaysPerCycle < 1 || c.Reconciliation.BackfillDaysPerCycle > 30 || c.Reconciliation.RequestTimeout <= 0 || c.Reconciliation.InsertBatchSize < 1 || c.Reconciliation.InsertBatchSize > 1000 || c.Reconciliation.RunningTimeout <= c.Reconciliation.RequestTimeout {
+		problems = append(problems, "invalid WeChat bill reconciliation configuration")
+	}
+	if c.Reconciliation.StartDate != "" {
+		startDate, err := time.Parse("2006-01-02", c.Reconciliation.StartDate)
+		if err != nil {
+			problems = append(problems, "JXE_WECHAT_BILL_RECONCILIATION_START_DATE must use YYYY-MM-DD")
+		} else {
+			chinaTime := time.Now().In(time.FixedZone("CST", 8*60*60))
+			today, _ := time.Parse("2006-01-02", chinaTime.Format("2006-01-02"))
+			if startDate.After(today) {
+				problems = append(problems, "JXE_WECHAT_BILL_RECONCILIATION_START_DATE cannot be in the future")
+			}
+		}
+	} else if c.Reconciliation.Enabled {
+		problems = append(problems, "enabled WeChat bill reconciliation requires JXE_WECHAT_BILL_RECONCILIATION_START_DATE")
+	}
+	if c.Reconciliation.Enabled && (!c.WeChat.PayEnabled || c.MySQL.DSN == "") {
+		problems = append(problems, "WeChat bill reconciliation requires enabled WeChat Pay and MySQL")
 	}
 	if c.AfterSale.StandardWindow <= 0 || c.AfterSale.UnopenedReturnWindow <= 0 || c.AfterSale.PlatformReviewThreshold <= 0 || c.AfterSale.WorkerInterval <= 0 || c.AfterSale.WorkerBatchSize <= 0 || c.AfterSale.WorkerBatchSize > 1000 {
 		problems = append(problems, "invalid after-sale or refund worker configuration")
@@ -1042,6 +1090,9 @@ func (c Config) Validate() error {
 		}
 		if c.WeChat.PayEnabled && !c.Order.ExpiryWorkerEnabled {
 			problems = append(problems, "production WeChat Pay requires JXE_ORDER_EXPIRY_WORKER_ENABLED=true")
+		}
+		if c.WeChat.PayEnabled && (!c.Reconciliation.Enabled || !c.Reconciliation.WorkerEnabled) {
+			problems = append(problems, "production WeChat Pay requires JXE_WECHAT_BILL_RECONCILIATION_ENABLED=true and JXE_WECHAT_BILL_RECONCILIATION_WORKER_ENABLED=true")
 		}
 		if c.AfterSale.RefundExecutionEnabled && c.WeChat.RefundNotifyURL == "" {
 			problems = append(problems, "production refund execution requires JXE_WECHAT_REFUND_NOTIFY_URL")
