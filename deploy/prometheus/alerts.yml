@@ -274,6 +274,24 @@ groups:
           summary: "Refund callback verification or reconciliation failed"
           runbook: "docs/runbooks/l3-after-sale-refund.md#callback-failure"
 
+      - alert: JiuxiaoerRefundSubmissionUnknownOld
+        expr: jxe_refund_oldest_submission_unknown_seconds > 600
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A refund submission result has remained unknown for more than 10 minutes"
+          runbook: "docs/runbooks/l3-after-sale-refund.md#refund-backlog"
+
+      - alert: JiuxiaoerRefundAbnormal
+        expr: jxe_refund_provider_terminal_tasks{provider_status="ABNORMAL"} > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "WeChat reported an ABNORMAL refund requiring merchant-platform handling"
+          runbook: "docs/runbooks/l3-after-sale-refund.md#refund-exception"
+
       - alert: JiuxiaoerAfterSaleReviewBacklog
         expr: jxe_after_sale_review_oldest_seconds > 7200
         for: 10m

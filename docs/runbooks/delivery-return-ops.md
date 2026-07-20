@@ -4,7 +4,7 @@
 
 1. Open the admin delivery-return detail and verify the refund, physical receipt, and per-item inventory branches independently.
 2. For an unreceived return, contact the assigned rider and authorized shop; never create a receipt or stock record from elapsed time alone.
-3. For a failed or exceptional refund, use the existing refund detail and retry control. Confirm the same `refund_no` is reused.
+3. Recover according to the provider state: an uncertain submission keeps the same `refund_no` and queries before any resubmission; `CLOSED` creates one replacement refund with a new `refund_no`; `ABNORMAL` requires merchant-platform handling and then reconciliation. Never use the generic retry action to clear a data-mismatch exception.
 4. Confirm recovery produces one `delivery.return_closed` event only after all three branches are complete.
 
 ## Closed invariant violation

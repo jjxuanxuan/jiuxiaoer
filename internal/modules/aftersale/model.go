@@ -81,6 +81,8 @@ type PaymentRow struct {
 type Refund struct {
 	ID, AfterSaleID, OrderID, PaymentID  uint64
 	RefundNo, Provider, Status, Currency string
+	Reason                               string
+	NotifyURL                            *string
 	Amount, TotalAmount                  int64
 	RequestedAt                          time.Time
 	NextRetryAt                          *time.Time

@@ -1361,6 +1361,15 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/Page" }
         default: { $ref: "#/components/responses/Problem" }
+  /admin/refunds/repair-candidates:
+    get:
+      summary: 只读扫描存量退款修复候选项
+      parameters:
+        - { name: after_id, in: query, schema: { type: string, pattern: "^[0-9]+$" } }
+        - { name: page_size, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
   /admin/refunds/{id}:
     get:
       summary: 平台退款单详情
@@ -1374,6 +1383,37 @@ paths:
       parameters:
         - $ref: "#/components/parameters/ID"
         - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/refunds/{id}/reconcile:
+    post:
+      summary: 商户平台处理 ABNORMAL 后重新向微信对账
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/refunds/{id}/repair:
+    post:
+      summary: 预览或执行单笔存量退款受控修复
+      description: 默认仅查询微信并预览；apply=true 时要求幂等键，且成功状态只能来自微信查询。
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: apply=true 时必填；只读预览可省略。
+          schema: { type: string, minLength: 8, maxLength: 128 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                apply: { type: boolean, default: false }
       responses:
         "200": { $ref: "#/components/responses/Success" }
         default: { $ref: "#/components/responses/Problem" }

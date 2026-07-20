@@ -11,6 +11,10 @@ import (
 
 type Repository struct{ db *gorm.DB }
 
+var activeRefundStatuses = []string{"creating", "submission_unknown", "pending"}
+
+var reservedRefundStatuses = []string{"creating", "submission_unknown", "pending", "exception"}
+
 // NewRepository 创建并初始化数据仓储。
 func NewRepository(db *gorm.DB) *Repository { return &Repository{db} }
 
@@ -21,11 +25,11 @@ func (r *Repository) DB() *gorm.DB { return r.db }
 func (r *Repository) Claim(ctx context.Context, instance string, now time.Time) (Row, error) {
 	var row Row
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if e := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).Where("status IN ? AND (next_retry_at IS NULL OR next_retry_at<=?) AND (locked_until IS NULL OR locked_until<=?) AND deleted_at IS NULL", []string{"creating", "pending"}, now, now).Order("next_retry_at,id").Take(&row).Error; e != nil {
+		if e := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).Where("status IN ? AND (next_retry_at IS NULL OR next_retry_at<=?) AND (locked_until IS NULL OR locked_until<=?) AND deleted_at IS NULL", activeRefundStatuses, now, now).Order("next_retry_at,id").Take(&row).Error; e != nil {
 			return e
 		}
 		until := now.Add(30 * time.Second)
-		return tx.Model(&Row{}).Where("id=? AND status IN ?", row.ID, []string{"creating", "pending"}).Updates(map[string]any{"locked_by": instance, "locked_until": until, "attempts": gorm.Expr("attempts+1"), "version": gorm.Expr("version+1")}).Error
+		return tx.Model(&Row{}).Where("id=? AND status IN ?", row.ID, activeRefundStatuses).Updates(map[string]any{"locked_by": instance, "locked_until": until, "attempts": gorm.Expr("attempts+1"), "version": gorm.Expr("version+1")}).Error
 	})
 	return row, err
 }
@@ -67,7 +71,7 @@ func (r *Repository) LockPayment(ctx context.Context, tx *gorm.DB, id uint64) (P
 // ReservedExcept 返回Reserved Except。
 func (r *Repository) ReservedExcept(ctx context.Context, tx *gorm.DB, paymentID, refundID uint64) (int64, error) {
 	var rows []struct{ Amount int64 }
-	err := tx.WithContext(ctx).Table("refunds").Select("amount").Clauses(clause.Locking{Strength: "UPDATE"}).Where("payment_id=? AND id<>? AND status IN ? AND deleted_at IS NULL", paymentID, refundID, []string{"creating", "pending", "exception"}).Order("id").Find(&rows).Error
+	err := tx.WithContext(ctx).Table("refunds").Select("amount").Clauses(clause.Locking{Strength: "UPDATE"}).Where("payment_id=? AND id<>? AND status IN ? AND deleted_at IS NULL", paymentID, refundID, reservedRefundStatuses).Order("id").Find(&rows).Error
 	var total int64
 	for _, row := range rows {
 		total += row.Amount
@@ -94,6 +98,26 @@ func (r *Repository) Items(ctx context.Context, tx *gorm.DB, refundID uint64) ([
 	var v []RefundItem
 	e := tx.WithContext(ctx).Where("refund_id=?", refundID).Find(&v).Error
 	return v, e
+}
+
+// ReplacementByOriginal returns the replacement already created for a CLOSED
+// refund. The unique database index remains the final concurrency guard.
+func (r *Repository) ReplacementByOriginal(ctx context.Context, tx *gorm.DB, refundID uint64) (Row, error) {
+	var row Row
+	err := tx.WithContext(ctx).Where("replaces_refund_id=? AND deleted_at IS NULL", refundID).Take(&row).Error
+	return row, err
+}
+
+// CreateReplacement atomically creates the replacement refund and copies its
+// immutable item allocation.
+func (r *Repository) CreateReplacement(ctx context.Context, tx *gorm.DB, row *Row, items []RefundItem) error {
+	if err := tx.WithContext(ctx).Create(row).Error; err != nil {
+		return err
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	return tx.WithContext(ctx).Create(&items).Error
 }
 
 // ApplyItem 应用明细。
@@ -140,12 +164,17 @@ func (r *Repository) List(ctx context.Context, status string, offset, size int) 
 	return rows, e
 }
 
-// Retry 重试退款。
-func (r *Repository) Retry(ctx context.Context, id uint64, now time.Time) (bool, error) {
-	result := r.db.WithContext(ctx).Model(&Row{}).
-		Where("id=? AND status IN ? AND deleted_at IS NULL", id, []string{"pending", "failed", "exception"}).
-		Updates(map[string]any{"status": "pending", "next_retry_at": now, "locked_by": nil, "locked_until": nil, "failure_code": nil, "failure_detail": nil, "version": gorm.Expr("version+1")})
-	return result.RowsAffected == 1, result.Error
+// RepairCandidates returns the legacy non-terminal rows covered by the
+// controlled stored-refund repair runbook. Scanning is read-only; each row must
+// still be previewed and explicitly applied through the repair action.
+func (r *Repository) RepairCandidates(ctx context.Context, afterID uint64, size int) ([]Row, error) {
+	var rows []Row
+	err := r.db.WithContext(ctx).
+		Where("provider=? AND status IN ? AND id>? AND deleted_at IS NULL", "wechat", []string{"creating", "pending", "exception"}, afterID).
+		Order("id").
+		Limit(size + 1).
+		Find(&rows).Error
+	return rows, err
 }
 
 // isNotFound 判断不 Found是否成立。

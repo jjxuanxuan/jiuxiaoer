@@ -18,6 +18,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/config"
 	"jiuxiaoer-admin/backend-go/internal/infra/mysql"
 	"jiuxiaoer-admin/backend-go/internal/modules/auth"
+	"jiuxiaoer-admin/backend-go/internal/pkg/paygateway"
 	"jiuxiaoer-admin/backend-go/internal/pkg/problem"
 	"jiuxiaoer-admin/backend-go/internal/pkg/snowflake"
 )
@@ -33,14 +34,22 @@ type acceptanceProvider struct {
 	refundErr, queryErr                    error
 	refundCalls, queryCalls                atomic.Int64
 	delay                                  time.Duration
+	mu                                     sync.Mutex
+	queryStarted                           chan struct{}
+	queryRelease                           chan struct{}
+	queryStartOnce                         sync.Once
+	refundInputs                           []Input
 }
 
 // Code 返回代码。
 func (p *acceptanceProvider) Code() string { return "wechat" }
 
 // Refund 返回退款。
-func (p *acceptanceProvider) Refund(_ context.Context, _ Input) (State, error) {
+func (p *acceptanceProvider) Refund(_ context.Context, input Input) (State, error) {
 	p.refundCalls.Add(1)
+	p.mu.Lock()
+	p.refundInputs = append(p.refundInputs, input)
+	p.mu.Unlock()
 	if p.delay > 0 {
 		time.Sleep(p.delay)
 	}
@@ -50,6 +59,12 @@ func (p *acceptanceProvider) Refund(_ context.Context, _ Input) (State, error) {
 // QueryRefund 查询退款。
 func (p *acceptanceProvider) QueryRefund(_ context.Context, _ string) (State, error) {
 	p.queryCalls.Add(1)
+	if p.queryStarted != nil {
+		p.queryStartOnce.Do(func() { close(p.queryStarted) })
+	}
+	if p.queryRelease != nil {
+		<-p.queryRelease
+	}
 	if p.delay > 0 {
 		time.Sleep(p.delay)
 	}
@@ -86,9 +101,85 @@ func TestL3RefundAcceptance(t *testing.T) {
 		}
 		var count int64
 		db.Table("refunds").Where("after_sale_id=?", fx.afterSaleID).Count(&count)
-		if row.RefundNo != fx.refundNo || row.Status != "pending" || count != 1 || provider.refundCalls.Load() != 1 {
+		if row.RefundNo != fx.refundNo || row.Status != "submission_unknown" || count != 1 || provider.refundCalls.Load() != 1 {
 			t.Fatalf("ACC-022 row=%+v count=%d calls=%d", row, count, provider.refundCalls.Load())
 		}
+	})
+
+	t.Run("ACC-L3-022A-submission-unknown-query-not-found-resubmits-original", func(t *testing.T) {
+		fx := insertRefundAcceptanceFixture(t, db, ids, "creating", 400, 1000)
+		defer cleanupRefundAcceptance(t, db, fx)
+		provider := &acceptanceProvider{refundErr: context.DeadlineExceeded}
+		service := NewService(cfg, db, ids, provider)
+		worker := NewWorker(cfg, service, provider, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		worker.runBatch(context.Background())
+
+		provider.refundErr = nil
+		provider.refundState = successState(fx)
+		provider.queryErr = &paygateway.ProviderError{Operation: "refund.query", HTTPStatus: http.StatusNotFound, Code: "RESOURCE_NOT_EXISTS", Retryable: false}
+		refundMustExec(t, db, "UPDATE refunds SET next_retry_at=? WHERE id=?", time.Now().Add(-time.Second), fx.refundID)
+		worker.runBatch(context.Background())
+
+		if provider.refundCalls.Load() != 2 || provider.queryCalls.Load() != 1 {
+			t.Fatalf("calls refund=%d query=%d", provider.refundCalls.Load(), provider.queryCalls.Load())
+		}
+		provider.mu.Lock()
+		inputs := append([]Input(nil), provider.refundInputs...)
+		provider.mu.Unlock()
+		if len(inputs) != 2 || inputs[0] != inputs[1] || inputs[0].RefundNo != fx.refundNo {
+			t.Fatalf("refund resubmission changed immutable input: %+v", inputs)
+		}
+		assertRefundLedger(t, db, fx, "succeeded", 400)
+	})
+
+	t.Run("ACC-L3-022B-permanent-submission-error-stops-immediately", func(t *testing.T) {
+		fx := insertRefundAcceptanceFixture(t, db, ids, "creating", 400, 1000)
+		defer cleanupRefundAcceptance(t, db, fx)
+		provider := &acceptanceProvider{
+			refundErr: &paygateway.ProviderError{Operation: "refund.create", HTTPStatus: http.StatusBadRequest, Code: "INVALID_REQUEST", Retryable: false},
+		}
+		service := NewService(cfg, db, ids, provider)
+		worker := NewWorker(cfg, service, provider, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		worker.runBatch(context.Background())
+		refundMustExec(t, db, "UPDATE refunds SET next_retry_at=? WHERE id=?", time.Now().Add(-time.Second), fx.refundID)
+		worker.runBatch(context.Background())
+		var row Row
+		if err := db.First(&row, fx.refundID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if row.Status != "exception" || row.FailureCode == nil || *row.FailureCode != "INVALID_REQUEST" || provider.refundCalls.Load() != 1 || provider.queryCalls.Load() != 0 {
+			t.Fatalf("row=%+v refund_calls=%d query_calls=%d", row, provider.refundCalls.Load(), provider.queryCalls.Load())
+		}
+	})
+
+	t.Run("ACC-L3-022C-not-enough-stops-until-controlled-retry", func(t *testing.T) {
+		fx := insertRefundAcceptanceFixture(t, db, ids, "creating", 400, 1000)
+		defer cleanupRefundAcceptance(t, db, fx)
+		provider := &acceptanceProvider{refundErr: &paygateway.ProviderError{Operation: "refund.create", HTTPStatus: http.StatusForbidden, Code: "NOT_ENOUGH", Retryable: false}}
+		service := NewService(cfg, db, ids, provider)
+		worker := NewWorker(cfg, service, provider, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		worker.runBatch(context.Background())
+		worker.runBatch(context.Background())
+		var row Row
+		if err := db.First(&row, fx.refundID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if row.Status != "exception" || row.FailureCode == nil || *row.FailureCode != "NOT_ENOUGH" || provider.refundCalls.Load() != 1 || provider.queryCalls.Load() != 0 {
+			t.Fatalf("row=%+v refund_calls=%d query_calls=%d", row, provider.refundCalls.Load(), provider.queryCalls.Load())
+		}
+
+		admin := refundAdmin(ids.Next())
+		if err := service.Retry(context.Background(), &admin, "POST", "/api/v1/admin/refunds/:id/retry", "retry-not-enough-acceptance", fx.refundNo); err != nil {
+			t.Fatalf("authorize retry: %v", err)
+		}
+		provider.queryErr = &paygateway.ProviderError{Operation: "refund.query", HTTPStatus: http.StatusNotFound, Code: "RESOURCE_NOT_EXISTS", Retryable: false}
+		provider.refundErr = nil
+		provider.refundState = successState(fx)
+		worker.runBatch(context.Background())
+		if provider.queryCalls.Load() != 1 || provider.refundCalls.Load() != 2 {
+			t.Fatalf("refund_calls=%d query_calls=%d", provider.refundCalls.Load(), provider.queryCalls.Load())
+		}
+		assertRefundLedger(t, db, fx, "succeeded", 400)
 	})
 
 	t.Run("ACC-L3-023-query-success-is-idempotent", func(t *testing.T) {
@@ -134,16 +225,64 @@ func TestL3RefundAcceptance(t *testing.T) {
 		if err := service.Retry(context.Background(), &admin, "POST", "/api/v1/admin/refunds/:id/retry", "retry-failed-acceptance", fx.refundNo); err != nil {
 			t.Fatalf("ACC-024 retry: %v", err)
 		}
-		db.First(&row, fx.refundID)
-		if row.Status != "pending" || row.RefundNo != fx.refundNo {
-			t.Fatalf("ACC-024 retry row=%+v", row)
+		var replacement Row
+		if err := db.Where("replaces_refund_id=?", fx.refundID).Take(&replacement).Error; err != nil {
+			t.Fatalf("ACC-024 replacement: %v", err)
 		}
-		state := successState(fx)
-		if err := service.ApplyProviderState(context.Background(), fx.refundID, state); err != nil {
+		if replacement.Status != "creating" || replacement.RefundNo == fx.refundNo || replacement.ReplacesRefundID == nil || *replacement.ReplacesRefundID != fx.refundID {
+			t.Fatalf("ACC-024 replacement row=%+v", replacement)
+		}
+		var copiedItems int64
+		db.Table("refund_items").Where("refund_id=?", replacement.ID).Count(&copiedItems)
+		if copiedItems != 1 {
+			t.Fatalf("ACC-024 copied items=%d", copiedItems)
+		}
+		if err := service.Retry(context.Background(), &admin, "POST", "/api/v1/admin/refunds/:id/retry", "retry-failed-again-acceptance", fx.refundNo); err != nil {
+			t.Fatalf("ACC-024 idempotent replacement lookup: %v", err)
+		}
+		var replacementCount int64
+		db.Table("refunds").Where("replaces_refund_id=?", fx.refundID).Count(&replacementCount)
+		if replacementCount != 1 {
+			t.Fatalf("ACC-024 replacements=%d", replacementCount)
+		}
+		replacementFX := fx
+		replacementFX.refundID = replacement.ID
+		replacementFX.refundNo = replacement.RefundNo
+		if err := service.ApplyProviderState(context.Background(), replacement.ID, successState(replacementFX)); err != nil {
 			t.Fatal(err)
 		}
-		if err := service.Retry(context.Background(), &admin, "POST", "/api/v1/admin/refunds/:id/retry", "retry-success-acceptance", fx.refundNo); refundErrorCode(err) != "REFUND_RETRY_NOT_ALLOWED" {
+		assertRefundLedger(t, db, replacementFX, "succeeded", 400)
+		db.First(&row, fx.refundID)
+		if row.Status != "failed" {
+			t.Fatalf("ACC-024 original refund changed: %+v", row)
+		}
+		if err := service.Retry(context.Background(), &admin, "POST", "/api/v1/admin/refunds/:id/retry", "retry-success-acceptance", replacement.RefundNo); refundErrorCode(err) != "REFUND_RETRY_NOT_ALLOWED" {
 			t.Fatalf("ACC-025 got %v", err)
+		}
+	})
+
+	t.Run("ACC-L3-025A-abnormal-requires-manual-action-then-query", func(t *testing.T) {
+		fx := insertRefundAcceptanceFixture(t, db, ids, "creating", 400, 1000)
+		defer cleanupRefundAcceptance(t, db, fx)
+		abnormal := successState(fx)
+		abnormal.Status = "ABNORMAL"
+		abnormal.SucceededAt = nil
+		provider := &acceptanceProvider{refundState: abnormal}
+		service := NewService(cfg, db, ids, provider)
+		worker := NewWorker(cfg, service, provider, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		worker.runBatch(context.Background())
+		admin := refundAdmin(ids.Next())
+		if err := service.Retry(context.Background(), &admin, "POST", "/api/v1/admin/refunds/:id/retry", "retry-abnormal-acceptance", fx.refundNo); refundErrorCode(err) != "REFUND_MANUAL_ACTION_REQUIRED" {
+			t.Fatalf("expected manual action requirement, got %v", err)
+		}
+		if err := service.Reconcile(context.Background(), &admin, "POST", "/api/v1/admin/refunds/:id/reconcile", "reconcile-abnormal-acceptance", fx.refundNo); err != nil {
+			t.Fatalf("schedule abnormal reconciliation: %v", err)
+		}
+		provider.queryState = successState(fx)
+		worker.runBatch(context.Background())
+		assertRefundLedger(t, db, fx, "succeeded", 400)
+		if provider.queryCalls.Load() != 1 {
+			t.Fatalf("abnormal reconciliation query calls=%d", provider.queryCalls.Load())
 		}
 	})
 
@@ -165,6 +304,54 @@ func TestL3RefundAcceptance(t *testing.T) {
 		if callbacks != 1 {
 			t.Fatalf("ACC-027 callbacks=%d", callbacks)
 		}
+	})
+
+	t.Run("ACC-L3-027A-official-callback-without-currency", func(t *testing.T) {
+		fx := insertRefundAcceptanceFixture(t, db, ids, "pending", 400, 1000)
+		defer cleanupRefundAcceptance(t, db, fx)
+		state := successState(fx)
+		state.Currency = ""
+		provider := &acceptanceProvider{callbackState: state}
+		service := NewService(cfg, db, ids, provider)
+		request, _ := http.NewRequest(http.MethodPost, "/callback", nil)
+		request.Header.Set("X-Event-ID", "official-no-currency-"+fx.refundNo)
+		if err := service.ProcessCallback(context.Background(), "wechat", request, []byte(`{"event":"official-no-currency"}`)); err != nil {
+			t.Fatalf("official callback without currency: %v", err)
+		}
+		assertRefundLedger(t, db, fx, "succeeded", 400)
+	})
+
+	t.Run("ACC-L3-027B-api-state-without-required-currency-is-rejected", func(t *testing.T) {
+		fx := insertRefundAcceptanceFixture(t, db, ids, "pending", 400, 1000)
+		defer cleanupRefundAcceptance(t, db, fx)
+		state := successState(fx)
+		state.Currency = ""
+		state.CurrencyRequired = true
+		service := NewService(cfg, db, ids, nil)
+		if err := service.ApplyProviderState(context.Background(), fx.refundID, state); err != nil {
+			t.Fatalf("apply provider state: %v", err)
+		}
+		assertRefundLedger(t, db, fx, "exception", 0)
+	})
+
+	t.Run("ACC-L3-027C-successful-refund-cannot-regress", func(t *testing.T) {
+		fx := insertRefundAcceptanceFixture(t, db, ids, "pending", 400, 1000)
+		defer cleanupRefundAcceptance(t, db, fx)
+		service := NewService(cfg, db, ids, nil)
+		if err := service.ApplyProviderState(context.Background(), fx.refundID, successState(fx)); err != nil {
+			t.Fatal(err)
+		}
+		abnormal := successState(fx)
+		abnormal.Status = "ABNORMAL"
+		abnormal.SucceededAt = nil
+		provider := &acceptanceProvider{callbackState: abnormal}
+		service.provider = provider
+		request, _ := http.NewRequest(http.MethodPost, "/callback", nil)
+		request.Header.Set("X-Event-ID", "regression-"+fx.refundNo)
+		if err := service.ProcessCallback(context.Background(), "wechat", request, []byte(`{"event":"regression"}`)); refundErrorCode(err) != "REFUND_STATUS_REGRESSION" {
+			t.Fatalf("expected status regression rejection, got %v", err)
+		}
+		assertRefundLedger(t, db, fx, "succeeded", 400)
 	})
 
 	t.Run("ACC-L3-028-mismatch-enters-exception-without-ledger-change", func(t *testing.T) {
@@ -225,6 +412,30 @@ func TestL3RefundAcceptance(t *testing.T) {
 		}
 	})
 
+	t.Run("ACC-L3-029A-newer-success-fences-stale-processing-query", func(t *testing.T) {
+		fx := insertRefundAcceptanceFixture(t, db, ids, "pending", 400, 1000)
+		defer cleanupRefundAcceptance(t, db, fx)
+		processing := successState(fx)
+		processing.Status = "PROCESSING"
+		processing.SucceededAt = nil
+		started := make(chan struct{})
+		release := make(chan struct{})
+		provider := &acceptanceProvider{queryState: processing, queryStarted: started, queryRelease: release}
+		service := NewService(cfg, db, ids, provider)
+		workerDone := make(chan struct{})
+		go func() {
+			NewWorker(cfg, service, provider, slog.New(slog.NewTextHandler(io.Discard, nil))).runBatch(context.Background())
+			close(workerDone)
+		}()
+		<-started
+		if err := service.ApplyProviderState(context.Background(), fx.refundID, successState(fx)); err != nil {
+			t.Fatal(err)
+		}
+		close(release)
+		<-workerDone
+		assertRefundLedger(t, db, fx, "succeeded", 400)
+	})
+
 	t.Run("ACC-L3-030-db-result-survives-no-redis-or-mq", func(t *testing.T) {
 		fx := insertRefundAcceptanceFixture(t, db, ids, "pending", 400, 1000)
 		defer cleanupRefundAcceptance(t, db, fx)
@@ -259,6 +470,164 @@ func TestL3RefundAcceptance(t *testing.T) {
 		}
 		assertRefundLedger(t, db, fx, "succeeded", 400)
 	})
+
+	t.Run("ACC-L3-032-stored-repair-preview-is-read-only", func(t *testing.T) {
+		fx := insertRefundAcceptanceFixture(t, db, ids, "pending", 400, 1000)
+		defer cleanupRefundAcceptance(t, db, fx)
+		state := successState(fx)
+		state.RequestID = "wechat-preview-request-id"
+		provider := &acceptanceProvider{queryState: state}
+		service := NewService(cfg, db, ids, provider)
+		admin := refundAdmin(ids.Next())
+		result, err := service.RepairStored(context.Background(), &admin, "POST", "/api/v1/admin/refunds/:id/repair", "", fx.refundNo, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Result != "preview" || result.Action != "apply_success" || result.AfterStatus != "succeeded" || result.ProviderReqID != state.RequestID {
+			t.Fatalf("repair preview=%+v", result)
+		}
+		assertRefundLedger(t, db, fx, "pending", 0)
+		var audits int64
+		db.Table("audit_logs").Where("resource_type='refund' AND resource_id=? AND action='refund.stored_repair'", fx.refundID).Count(&audits)
+		if audits != 0 {
+			t.Fatalf("read-only preview wrote audits=%d", audits)
+		}
+	})
+
+	t.Run("ACC-L3-033-stored-repair-success-is-provider-backed-and-audited", func(t *testing.T) {
+		fx := insertRefundAcceptanceFixture(t, db, ids, "exception", 400, 1000)
+		defer cleanupRefundAcceptance(t, db, fx)
+		refundMustExec(t, db, "UPDATE refunds SET failure_code='PROVIDER_DATA_MISMATCH' WHERE id=?", fx.refundID)
+		state := successState(fx)
+		state.RequestID = "wechat-repair-request-id"
+		provider := &acceptanceProvider{queryState: state}
+		service := NewService(cfg, db, ids, provider)
+		admin := refundAdmin(ids.Next())
+		result, err := service.RepairStored(context.Background(), &admin, "POST", "/api/v1/admin/refunds/:id/repair", "repair-success-acceptance", fx.refundNo, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Result != "success" || result.AfterStatus != "succeeded" || result.ProviderReqID != state.RequestID || provider.queryCalls.Load() != 1 {
+			t.Fatalf("repair result=%+v query_calls=%d", result, provider.queryCalls.Load())
+		}
+		assertRefundLedger(t, db, fx, "succeeded", 400)
+		var audits int64
+		db.Table("audit_logs").Where("resource_type='refund' AND resource_id=? AND action='refund.stored_repair' AND result='success' AND JSON_UNQUOTE(JSON_EXTRACT(after_data,'$.provider_request_id'))=?", fx.refundID, state.RequestID).Count(&audits)
+		if audits != 1 {
+			t.Fatalf("stored repair audit count=%d", audits)
+		}
+	})
+
+	t.Run("ACC-L3-034-stored-repair-not-found-schedules-original-resubmission", func(t *testing.T) {
+		fx := insertRefundAcceptanceFixture(t, db, ids, "exception", 400, 1000)
+		defer cleanupRefundAcceptance(t, db, fx)
+		refundMustExec(t, db, "UPDATE refunds SET failure_code='PROVIDER_DATA_MISMATCH' WHERE id=?", fx.refundID)
+		providerErr := &paygateway.ProviderError{Operation: "refund.query", HTTPStatus: http.StatusNotFound, Code: "RESOURCE_NOT_EXISTS", RequestID: "wechat-not-found-request-id", Retryable: false}
+		provider := &acceptanceProvider{queryErr: providerErr}
+		service := NewService(cfg, db, ids, provider)
+		admin := refundAdmin(ids.Next())
+		result, err := service.RepairStored(context.Background(), &admin, "POST", "/api/v1/admin/refunds/:id/repair", "repair-not-found-acceptance", fx.refundNo, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var row Row
+		if err := db.First(&row, fx.refundID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if result.AfterStatus != "submission_unknown" || result.ProviderReqID != providerErr.RequestID || row.Status != "submission_unknown" || row.FailureCode != nil {
+			t.Fatalf("repair result=%+v row=%+v", result, row)
+		}
+
+		provider.refundState = successState(fx)
+		NewWorker(cfg, service, provider, slog.New(slog.NewTextHandler(io.Discard, nil))).runBatch(context.Background())
+		if provider.queryCalls.Load() != 2 || provider.refundCalls.Load() != 1 {
+			t.Fatalf("query_calls=%d refund_calls=%d", provider.queryCalls.Load(), provider.refundCalls.Load())
+		}
+		assertRefundLedger(t, db, fx, "succeeded", 400)
+	})
+
+	t.Run("ACC-L3-034A-stored-repair-does-not-resubmit-permanent-exception", func(t *testing.T) {
+		fx := insertRefundAcceptanceFixture(t, db, ids, "exception", 400, 1000)
+		defer cleanupRefundAcceptance(t, db, fx)
+		refundMustExec(t, db, "UPDATE refunds SET failure_code='INVALID_REQUEST' WHERE id=?", fx.refundID)
+		providerErr := &paygateway.ProviderError{Operation: "refund.query", HTTPStatus: http.StatusNotFound, Code: "RESOURCE_NOT_EXISTS", RequestID: "wechat-permanent-not-found-request-id", Retryable: false}
+		provider := &acceptanceProvider{queryErr: providerErr}
+		service := NewService(cfg, db, ids, provider)
+		admin := refundAdmin(ids.Next())
+		result, err := service.RepairStored(context.Background(), &admin, "POST", "/api/v1/admin/refunds/:id/repair", "repair-permanent-acceptance", fx.refundNo, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var row Row
+		if err := db.First(&row, fx.refundID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if result.Result != "failure" || result.Action != "manual_investigation_required" || row.Status != "exception" || row.FailureCode == nil || *row.FailureCode != "INVALID_REQUEST" {
+			t.Fatalf("repair result=%+v row=%+v", result, row)
+		}
+	})
+
+	t.Run("ACC-L3-034B-stored-repair-does-not-overwrite-newer-provider-state", func(t *testing.T) {
+		fx := insertRefundAcceptanceFixture(t, db, ids, "pending", 400, 1000)
+		defer cleanupRefundAcceptance(t, db, fx)
+		processing := successState(fx)
+		processing.Status = "PROCESSING"
+		processing.SucceededAt = nil
+		started := make(chan struct{})
+		release := make(chan struct{})
+		provider := &acceptanceProvider{queryState: processing, queryStarted: started, queryRelease: release}
+		service := NewService(cfg, db, ids, provider)
+		admin := refundAdmin(ids.Next())
+		type repairResponse struct {
+			result RepairResult
+			err    error
+		}
+		response := make(chan repairResponse, 1)
+		go func() {
+			result, err := service.RepairStored(context.Background(), &admin, "POST", "/api/v1/admin/refunds/:id/repair", "repair-concurrent-acceptance", fx.refundNo, true)
+			response <- repairResponse{result: result, err: err}
+		}()
+		<-started
+		refundMustExec(t, db, "UPDATE refunds SET status='exception',provider_status='ABNORMAL',failure_code='ABNORMAL',version=version+1 WHERE id=?", fx.refundID)
+		close(release)
+		got := <-response
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		var row Row
+		if err := db.First(&row, fx.refundID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if got.result.Result != "skipped" || got.result.Action != "state_changed_concurrently" || row.Status != "exception" || refundProviderStatus(row) != "ABNORMAL" {
+			t.Fatalf("repair result=%+v row=%+v", got.result, row)
+		}
+		assertRefundLedger(t, db, fx, "exception", 0)
+	})
+
+	t.Run("ACC-L3-034C-stored-repair-audits-unsupported-provider-status", func(t *testing.T) {
+		fx := insertRefundAcceptanceFixture(t, db, ids, "pending", 400, 1000)
+		defer cleanupRefundAcceptance(t, db, fx)
+		unknown := successState(fx)
+		unknown.Status = "UNKNOWN"
+		unknown.SucceededAt = nil
+		provider := &acceptanceProvider{queryState: unknown}
+		service := NewService(cfg, db, ids, provider)
+		admin := refundAdmin(ids.Next())
+		result, err := service.RepairStored(context.Background(), &admin, "POST", "/api/v1/admin/refunds/:id/repair", "repair-unknown-status-acceptance", fx.refundNo, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Result != "failure" || result.Action != "reject_unsupported_provider_status" || result.AfterStatus != "pending" {
+			t.Fatalf("repair result=%+v", result)
+		}
+		assertRefundLedger(t, db, fx, "pending", 0)
+		var audits int64
+		db.Table("audit_logs").Where("resource_type='refund' AND resource_id=? AND action='refund.stored_repair' AND result='failure'", fx.refundID).Count(&audits)
+		if audits != 1 {
+			t.Fatalf("unsupported status audits=%d", audits)
+		}
+	})
+
 }
 
 // openRefundAcceptanceDB 解密并返回退款验收数据库。

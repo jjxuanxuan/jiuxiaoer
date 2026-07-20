@@ -27,6 +27,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/config"
 	"jiuxiaoer-admin/backend-go/internal/modules/order"
 	"jiuxiaoer-admin/backend-go/internal/modules/refund"
+	"jiuxiaoer-admin/backend-go/internal/pkg/paygateway"
 )
 
 const FakeCallbackSecret = "local-wechat-pay-callback-secret"
@@ -163,24 +164,34 @@ func (p *provider) Shutdown() {
 
 // Refund 返回退款。
 func (p *provider) Refund(ctx context.Context, input refund.Input) (refund.State, error) {
-	result, _, err := p.refundService.Create(ctx, refunddomestic.CreateRequest{
+	result, apiResult, err := p.refundService.Create(ctx, refunddomestic.CreateRequest{
 		OutTradeNo: core.String(input.PaymentNo), OutRefundNo: core.String(input.RefundNo),
 		Reason: core.String(input.Reason), NotifyUrl: core.String(input.NotifyURL),
 		Amount: &refunddomestic.AmountReq{Refund: core.Int64(input.Amount), Total: core.Int64(input.TotalAmount), Currency: core.String(input.Currency)},
 	})
 	if err != nil {
-		return refund.State{}, fmt.Errorf("create WeChat Pay refund: %w", err)
+		return refund.State{}, providerCallError("refund.create", apiResult, err)
 	}
-	return refundState(result), nil
+	if result == nil {
+		return refund.State{}, providerCallError("refund.create", apiResult, errors.New("wechat refund create returned an empty response"))
+	}
+	state := refundState(result)
+	state.RequestID = apiRequestID(apiResult)
+	return state, nil
 }
 
 // QueryRefund 查询退款。
 func (p *provider) QueryRefund(ctx context.Context, refundNo string) (refund.State, error) {
-	result, _, err := p.refundService.QueryByOutRefundNo(ctx, refunddomestic.QueryByOutRefundNoRequest{OutRefundNo: core.String(refundNo)})
+	result, apiResult, err := p.refundService.QueryByOutRefundNo(ctx, refunddomestic.QueryByOutRefundNoRequest{OutRefundNo: core.String(refundNo)})
 	if err != nil {
-		return refund.State{}, fmt.Errorf("query WeChat Pay refund: %w", err)
+		return refund.State{}, providerCallError("refund.query", apiResult, err)
 	}
-	return refundState(result), nil
+	if result == nil {
+		return refund.State{}, providerCallError("refund.query", apiResult, errors.New("wechat refund query returned an empty response"))
+	}
+	state := refundState(result)
+	state.RequestID = apiRequestID(apiResult)
+	return state, nil
 }
 
 // ParseRefundCallback 解析退款回调。
@@ -198,7 +209,6 @@ type refundNotification struct {
 	SuccessTime                                                           *time.Time `json:"success_time"`
 	Amount                                                                struct {
 		Total, Refund int64
-		Currency      string
 	} `json:"amount"`
 }
 
@@ -213,9 +223,8 @@ func (r *refundNotification) UnmarshalJSON(data []byte) error {
 		RefundStatus  string     `json:"refund_status"`
 		SuccessTime   *time.Time `json:"success_time"`
 		Amount        struct {
-			Total    int64  `json:"total"`
-			Refund   int64  `json:"refund"`
-			Currency string `json:"currency"`
+			Total  int64 `json:"total"`
+			Refund int64 `json:"refund"`
 		} `json:"amount"`
 	}
 	var value payload
@@ -223,18 +232,48 @@ func (r *refundNotification) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	r.MchID, r.OutTradeNo, r.TransactionID, r.OutRefundNo, r.RefundID, r.RefundStatus, r.SuccessTime = value.MchID, value.OutTradeNo, value.TransactionID, value.OutRefundNo, value.RefundID, value.RefundStatus, value.SuccessTime
-	r.Amount.Total, r.Amount.Refund, r.Amount.Currency = value.Amount.Total, value.Amount.Refund, value.Amount.Currency
+	r.Amount.Total, r.Amount.Refund = value.Amount.Total, value.Amount.Refund
 	return nil
 }
 
 // refundNotificationState 返回退款通知状态。
 func refundNotificationState(result *refundNotification) refund.State {
-	return refund.State{ProviderRefundID: result.RefundID, RefundNo: result.OutRefundNo, PaymentNo: result.OutTradeNo, Status: result.RefundStatus, Currency: result.Amount.Currency, Amount: result.Amount.Refund, TotalAmount: result.Amount.Total, SucceededAt: result.SuccessTime}
+	return refund.State{ProviderRefundID: result.RefundID, RefundNo: result.OutRefundNo, PaymentNo: result.OutTradeNo, Status: result.RefundStatus, Amount: result.Amount.Refund, TotalAmount: result.Amount.Total, SucceededAt: result.SuccessTime}
+}
+
+func apiRequestID(result *core.APIResult) string {
+	if result == nil || result.Response == nil {
+		return ""
+	}
+	return strings.TrimSpace(result.Response.Header.Get("Request-Id"))
+}
+
+func providerCallError(operation string, result *core.APIResult, err error) error {
+	providerErr := &paygateway.ProviderError{Operation: operation, RequestID: apiRequestID(result), Retryable: true, Cause: err}
+	var apiErr *core.APIError
+	if !errors.As(err, &apiErr) {
+		providerErr.Message = "provider transport failure"
+		return providerErr
+	}
+	providerErr.HTTPStatus = apiErr.StatusCode
+	providerErr.Code = apiErr.Code
+	providerErr.Message = apiErr.Message
+	if providerErr.RequestID == "" {
+		providerErr.RequestID = strings.TrimSpace(apiErr.Header.Get("Request-Id"))
+	}
+	providerErr.Retryable = apiErr.StatusCode == http.StatusTooManyRequests || apiErr.StatusCode >= http.StatusInternalServerError
+	switch apiErr.Code {
+	case "SYSTEM_ERROR", "FREQUENCY_LIMITED":
+		providerErr.Retryable = true
+	case "INVALID_REQUEST", "SIGN_ERROR", "MCH_NOT_EXISTS", "RESOURCE_NOT_EXISTS", "USER_ACCOUNT_ABNORMAL", "NOT_ENOUGH":
+		providerErr.Retryable = false
+	}
+	return providerErr
 }
 
 // refundState 返回退款状态。
 func refundState(result *refunddomestic.Refund) refund.State {
-	state := refund.State{ProviderRefundID: stringValue(result.RefundId), RefundNo: stringValue(result.OutRefundNo), PaymentNo: stringValue(result.OutTradeNo), SucceededAt: result.SuccessTime}
+	state := refund.State{ProviderRefundID: stringValue(result.RefundId), RefundNo: stringValue(result.OutRefundNo), PaymentNo: stringValue(result.OutTradeNo), CurrencyRequired: true, SucceededAt: result.SuccessTime}
 	if result.Status != nil {
 		state.Status = string(*result.Status)
 	}
@@ -354,7 +393,7 @@ func (p *fakeProvider) Shutdown() {}
 // Refund 返回退款。
 func (p *fakeProvider) Refund(_ context.Context, input refund.Input) (refund.State, error) {
 	now := time.Now()
-	state := refund.State{ProviderRefundID: "test-refund-" + input.RefundNo, RefundNo: input.RefundNo, PaymentNo: input.PaymentNo, Status: "SUCCESS", Currency: input.Currency, Amount: input.Amount, TotalAmount: input.TotalAmount, SucceededAt: &now}
+	state := refund.State{ProviderRefundID: "test-refund-" + input.RefundNo, RefundNo: input.RefundNo, PaymentNo: input.PaymentNo, Status: "SUCCESS", Currency: input.Currency, Amount: input.Amount, TotalAmount: input.TotalAmount, CurrencyRequired: true, SucceededAt: &now}
 	p.mu.Lock()
 	p.refunds[input.RefundNo] = state
 	p.mu.Unlock()

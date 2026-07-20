@@ -11,9 +11,10 @@ type Input struct {
 	Amount, TotalAmount                                               int64
 }
 type State struct {
-	ProviderRefundID, RefundNo, PaymentNo, Status, Currency string
-	Amount, TotalAmount                                     int64
-	SucceededAt                                             *time.Time
+	ProviderRefundID, RefundNo, PaymentNo, Status, Currency, RequestID string
+	Amount, TotalAmount                                                int64
+	CurrencyRequired                                                   bool
+	SucceededAt                                                        *time.Time
 }
 type CallbackEvent struct {
 	EventID      string

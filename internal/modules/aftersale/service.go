@@ -757,7 +757,7 @@ func (s *Service) createRefundTask(ctx context.Context, tx *gorm.DB, row AfterSa
 		return problem.Conflict("REFUND_AMOUNT_EXCEEDED", "refund exceeds payment amount")
 	}
 	refundID := s.ids.Next()
-	refund := Refund{ID: refundID, RefundNo: "RF" + idString(refundID), AfterSaleID: row.ID, OrderID: row.OrderID, PaymentID: payment.ID, Provider: payment.Provider, Status: "creating", Amount: total, TotalAmount: payment.Amount, Currency: payment.Currency, RequestedAt: now, NextRetryAt: &now, Version: 1}
+	refund := Refund{ID: refundID, RefundNo: "RF" + idString(refundID), AfterSaleID: row.ID, OrderID: row.OrderID, PaymentID: payment.ID, Provider: payment.Provider, Status: "creating", Amount: total, TotalAmount: payment.Amount, Currency: payment.Currency, Reason: "after-sale refund", NotifyURL: optional(s.cfg.WeChat.RefundNotifyURL), RequestedAt: now, NextRetryAt: &now, Version: 1}
 	refundItems := make([]RefundItem, 0, len(items))
 	for _, item := range items {
 		if item.ApprovedAmount > 0 {

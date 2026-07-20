@@ -6,7 +6,7 @@ This runbook covers after-sale review, return receipt, replacement stock reserva
 
 1. Inspect the refund, payment, order, after-sale, callback, history, audit, and Outbox records by `refund_no` and request ID.
 2. For amount, currency, payment number, or provider refund ID mismatch, stop rollout expansion. Compare immutable local reservation data with the WeChat merchant console.
-3. Do not edit aggregate amounts. Resolve the provider discrepancy, then use the authorized retry endpoint with the same refund number only when the provider state permits it.
+3. Do not edit aggregate amounts. Resolve the provider discrepancy, then choose recovery from the provider state: `submission_unknown` queries first and may resubmit the immutable request with the same `refund_no`; `CLOSED` creates one replacement refund with a new `refund_no`; `ABNORMAL` requires merchant-platform handling followed by the authorized reconcile action.
 4. Confirm `payments.refunded_amount`, `orders.refunded_amount`, successful refund sum, and after-sale item allocation are equal before closing the incident.
 
 ## Refund Backlog
@@ -15,6 +15,13 @@ This runbook covers after-sale review, return receipt, replacement stock reserva
 2. Verify worker configuration, instance logs, MySQL lock waits, WeChat connectivity, certificates, and refund callback URL.
 3. A provider timeout is unknown, not failed. Query the existing refund number; never create a replacement refund number.
 4. Restart workers one instance at a time. Leases expire after 30 seconds and tasks are reclaimed with `SKIP LOCKED`.
+
+## Stored Refund Repair
+
+1. Run the read-only repair-candidate scan and preview each candidate before applying a change.
+2. Apply requires `refund:exception`, an idempotency key, and a fresh WeChat query; never supply or write an administrator-declared success state.
+3. `RESOURCE_NOT_EXISTS` may schedule original-number resubmission only for uncertain submissions or approved legacy mismatch/retryable cases. Permanent provider errors and `ABNORMAL` remain exceptions for manual investigation.
+4. Retain the before/after status, operator, WeChat `Request-Id`, decision, audit record, and Outbox event as repair evidence.
 
 ## Callback Failure
 

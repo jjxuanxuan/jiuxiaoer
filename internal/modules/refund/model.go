@@ -7,7 +7,9 @@ import (
 
 type Row struct {
 	ID, AfterSaleID, OrderID, PaymentID                                    uint64
-	RefundNo, Provider, Status, Currency                                   string
+	ReplacesRefundID                                                       *uint64
+	RefundNo, Provider, Status, Currency, Reason                           string
+	NotifyURL                                                              *string
 	ProviderRefundID, ProviderStatus, FailureCode, FailureDetail, LockedBy *string
 	Amount, TotalAmount                                                    int64
 	Attempts                                                               uint32

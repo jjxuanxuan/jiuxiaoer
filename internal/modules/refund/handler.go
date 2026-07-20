@@ -3,6 +3,7 @@ package refund
 import (
 	"io"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 
@@ -25,9 +26,69 @@ func RegisterCallbackRoute(api *gin.RouterGroup, handler *Handler) {
 // RegisterAdminRoutes 注册管理端 Routes。
 func RegisterAdminRoutes(group *gin.RouterGroup, handler *Handler) {
 	group.GET("", handler.List)
+	group.GET("/repair-candidates", handler.RepairCandidates)
 	group.GET("/:id", handler.Detail)
+	group.POST("/:id/repair", handler.RepairStored)
 	group.POST("/:id/retry", handler.Retry)
+	group.POST("/:id/reconcile", handler.Reconcile)
 	group.POST("/:id/mark-exception", handler.MarkException)
+}
+
+// RepairCandidates returns a read-only, cursor-based inventory for the
+// controlled stored-refund repair runbook.
+func (h *Handler) RepairCandidates(c *gin.Context) {
+	claims, ok := auth.ClaimsFromContext(c)
+	if !ok {
+		response.Error(c, problem.Unauthorized("AUTH_UNAUTHORIZED", "unauthorized"))
+		return
+	}
+	size := 50
+	if value := c.Query("page_size"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			response.Error(c, problem.InvalidArgument("VALIDATION_FAILED", "page_size must be an integer"))
+			return
+		}
+		size = parsed
+	}
+	var afterID uint64
+	if value := c.Query("after_id"); value != "" {
+		parsed, err := strconv.ParseUint(value, 10, 64)
+		if err != nil {
+			response.Error(c, problem.InvalidArgument("VALIDATION_FAILED", "after_id must be an unsigned integer"))
+			return
+		}
+		afterID = parsed
+	}
+	page, err := h.service.RepairCandidates(c.Request.Context(), claims, afterID, size)
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.OK(c, page)
+}
+
+// RepairStored 默认预览提供程序查询。调用者必须设置
+// apply=true 并提供幂等键来改变本地状态.
+func (h *Handler) RepairStored(c *gin.Context) {
+	claims, ok := auth.ClaimsFromContext(c)
+	if !ok {
+		response.Error(c, problem.Unauthorized("AUTH_UNAUTHORIZED", "unauthorized"))
+		return
+	}
+	var req struct {
+		Apply bool `json:"apply"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, problem.InvalidArgument("VALIDATION_FAILED", err.Error()))
+		return
+	}
+	result, err := h.service.RepairStored(c.Request.Context(), claims, c.Request.Method, c.FullPath(), c.GetHeader("Idempotency-Key"), c.Param("id"), req.Apply)
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.OK(c, result)
 }
 
 // Callback 处理回调相关逻辑。
@@ -87,6 +148,25 @@ func (h *Handler) Retry(c *gin.Context) {
 		return
 	}
 	if err := h.service.Retry(c.Request.Context(), claims, c.Request.Method, c.FullPath(), c.GetHeader("Idempotency-Key"), c.Param("id")); err != nil {
+		response.Error(c, err)
+		return
+	}
+	// A CLOSED provider refund creates a new replacement refund number, while a
+	// pending/unknown refund schedules a query of the original number. "scheduled"
+	// is accurate for both branches; callers can refresh the refund list to
+	// observe any replacement relationship.
+	response.OK(c, gin.H{"status": "scheduled"})
+}
+
+// Reconcile schedules a provider query after an abnormal refund was handled
+// through the WeChat Pay merchant platform.
+func (h *Handler) Reconcile(c *gin.Context) {
+	claims, ok := auth.ClaimsFromContext(c)
+	if !ok {
+		response.Error(c, problem.Unauthorized("AUTH_UNAUTHORIZED", "unauthorized"))
+		return
+	}
+	if err := h.service.Reconcile(c.Request.Context(), claims, c.Request.Method, c.FullPath(), c.GetHeader("Idempotency-Key"), c.Param("id")); err != nil {
 		response.Error(c, err)
 		return
 	}

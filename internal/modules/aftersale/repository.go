@@ -279,7 +279,7 @@ func (r *Repository) ReservedRefund(ctx context.Context, tx *gorm.DB, paymentID 
 	// waiting on the payment lock it could miss a refund committed by the prior
 	// owner, so use a locking current read and sum the reserved rows locally.
 	var rows []struct{ Amount int64 }
-	err := tx.WithContext(ctx).Table("refunds").Select("amount").Clauses(clause.Locking{Strength: "UPDATE"}).Where("payment_id=? AND status IN ? AND deleted_at IS NULL", paymentID, []string{"creating", "pending", "exception"}).Order("id").Find(&rows).Error
+	err := tx.WithContext(ctx).Table("refunds").Select("amount").Clauses(clause.Locking{Strength: "UPDATE"}).Where("payment_id=? AND status IN ? AND deleted_at IS NULL", paymentID, []string{"creating", "submission_unknown", "pending", "exception"}).Order("id").Find(&rows).Error
 	var amount int64
 	for _, row := range rows {
 		amount += row.Amount
