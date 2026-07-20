@@ -1,0 +1,3422 @@
+openapi: 3.0.3
+info:
+  title: 九小二 Backend API
+  version: 1.0.0-cp1
+  description: 九小二产品一期 Go 后端唯一公开契约，覆盖交易、履约、打印、通知、账号运营与酒类合规。
+servers:
+  - url: /api/v1
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      summary: 健康检查
+      security: []
+      responses:
+        "200": { $ref: "#/components/responses/Health" }
+        default: { $ref: "#/components/responses/Problem" }
+  /auth/customer/send-code:
+    post:
+      summary: 发送 C 端 mock 验证码
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SendCodeReq" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /auth/customer/sms-login:
+    post:
+      summary: C 端验证码登录
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SmsLoginReq" }
+      responses:
+        "200": { $ref: "#/components/responses/Token" }
+        default: { $ref: "#/components/responses/Problem" }
+  /auth/customer/wechat-login:
+    post:
+      summary: 微信小程序登录
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WeChatLoginReq" }
+      responses:
+        "200": { $ref: "#/components/responses/Token" }
+        default: { $ref: "#/components/responses/Problem" }
+  /auth/customer/phone-bind:
+    post:
+      summary: 绑定微信授权手机号
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PhoneBindReq" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /auth/admin/login:
+    post:
+      summary: 管理员登录
+      security: []
+      requestBody: { $ref: "#/components/requestBodies/PasswordLogin" }
+      responses:
+        "200": { $ref: "#/components/responses/Token" }
+        default: { $ref: "#/components/responses/Problem" }
+  /auth/merchant/login:
+    post:
+      summary: 商户登录
+      security: []
+      requestBody: { $ref: "#/components/requestBodies/PasswordLogin" }
+      responses:
+        "200": { $ref: "#/components/responses/Token" }
+        default: { $ref: "#/components/responses/Problem" }
+  /auth/rider/send-code:
+    post:
+      summary: 发送骑手登录或申请用的 mock 验证码
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SendCodeReq" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /auth/rider/sms-login:
+    post:
+      summary: 已审核骑手使用手机号和短信验证码登录
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SmsLoginReq" }
+      responses:
+        "200": { $ref: "#/components/responses/Token" }
+        default: { $ref: "#/components/responses/Problem" }
+  /auth/rider-application/sms-login:
+    post:
+      summary: 待审核骑手使用手机号和短信验证码登录并签发受限 Token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SmsLoginReq" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /rider-applications:
+    post:
+      summary: 骑手首次提交申请
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RiderApplicationSubmitReq" }
+      responses:
+        "201": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /rider-applications/me:
+    get:
+      summary: 查看本人骑手申请
+      security:
+        - applicationBearer: []
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+    patch:
+      summary: 修改被拒绝的本人申请
+      security:
+        - applicationBearer: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RiderApplicationUpdateReq" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /rider-applications/me/resubmit:
+    post:
+      summary: 重新提交原骑手申请
+      security:
+        - applicationBearer: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RiderApplicationVersionReq" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /auth/refresh:
+    post:
+      summary: 刷新 token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RefreshReq" }
+      responses:
+        "200": { $ref: "#/components/responses/Token" }
+        default: { $ref: "#/components/responses/Problem" }
+  /auth/logout:
+    post:
+      summary: 登出并写入 JWT 黑名单
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /realtime/tickets:
+    post:
+      summary: 签发骑手 WebSocket 一次性连接票据
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RealtimeTicketReq" }
+      responses:
+        "201": { $ref: "#/components/responses/RealtimeTicket" }
+        default: { $ref: "#/components/responses/Problem" }
+  /realtime/ws:
+    get:
+      summary: 骑手实时履约 WebSocket（协议版本 1）
+      description: 使用一次性 ticket 完成升级；升级后支持 hello、resume、event、ack、ack_result、sync_complete、error 与 server_shutdown 帧。
+      security: []
+      parameters:
+        - name: ticket
+          in: query
+          required: true
+          schema: { type: string, minLength: 20, maxLength: 256 }
+      responses:
+        "101": { description: WebSocket upgrade accepted }
+        default: { $ref: "#/components/responses/Problem" }
+  /categories:
+    get:
+      summary: 分类列表
+      security: []
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+  /products:
+    get:
+      summary: 公共商品列表
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/LocationContext"
+        - $ref: "#/components/parameters/AnonymousSession"
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageToken"
+        - { name: shop_id, in: query, schema: { type: string } }
+        - { name: category_id, in: query, schema: { type: string } }
+        - { name: keyword, in: query, schema: { type: string } }
+        - { name: city_code, in: query, schema: { type: string, pattern: "^[0-9]{6}$" } }
+        - { name: lat, in: query, schema: { type: number, format: double } }
+        - { name: lng, in: query, schema: { type: number, format: double } }
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+  /products/{id}:
+    get:
+      summary: 公共商品详情
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/LocationContext"
+        - $ref: "#/components/parameters/AnonymousSession"
+        - { name: shop_id, in: query, schema: { type: string } }
+        - { name: city_code, in: query, schema: { type: string, pattern: "^[0-9]{6}$" } }
+        - { name: lat, in: query, schema: { type: number, format: double } }
+        - { name: lng, in: query, schema: { type: number, format: double } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /search/discovery:
+    get:
+      summary: C端搜索发现（个人历史与城市优先热门词）
+      description: 游客仅返回热门词；登录 customer 额外返回最近 180 天内的个人历史。热门词按城市榜、全局榜、默认词依次去重补齐。
+      security:
+        - {}
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/LocationContext"
+        - $ref: "#/components/parameters/AnonymousSession"
+        - { name: history_limit, in: query, schema: { type: integer, minimum: 1, maximum: 20, default: 10 } }
+        - { name: hot_limit, in: query, schema: { type: integer, minimum: 1, maximum: 20, default: 10 } }
+      responses:
+        "200": { $ref: "#/components/responses/SearchDiscovery" }
+        default: { $ref: "#/components/responses/Problem" }
+  /search/events:
+    post:
+      summary: 记录登录 C 端用户的一次搜索
+      description: 所有合法来源都会更新个人历史；仅 source=manual 且通过隐私与屏蔽词校验时计入城市及全局热门统计。每位 customer 限制为每分钟 30 次。
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/LocationContext"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SearchEventReq" }
+      responses:
+        "200": { $ref: "#/components/responses/SearchEvent" }
+        default: { $ref: "#/components/responses/Problem" }
+  /search/history:
+    delete:
+      summary: 清空当前 C 端用户的搜索历史
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { $ref: "#/components/responses/SearchHistoryClear" }
+        default: { $ref: "#/components/responses/Problem" }
+  /shops:
+    get:
+      summary: 公共门店列表
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/LocationContext"
+        - $ref: "#/components/parameters/AnonymousSession"
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageToken"
+        - { name: city_code, in: query, schema: { type: string, pattern: "^[0-9]{6}$" } }
+        - { name: lat, in: query, schema: { type: number, format: double } }
+        - { name: lng, in: query, schema: { type: number, format: double } }
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+  /service-shops/resolve:
+    get:
+      summary: 按城市和坐标解析唯一服务门店
+      security: []
+      parameters:
+        - { name: city_code, in: query, required: true, schema: { type: string, pattern: "^[0-9]{6}$" } }
+        - { name: lat, in: query, required: true, schema: { type: number, format: double, minimum: -90, maximum: 90 } }
+        - { name: lng, in: query, required: true, schema: { type: number, format: double, minimum: -180, maximum: 180 } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /service-cities:
+    get:
+      summary: 已发布服务城市列表
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageToken"
+        - { name: keyword, in: query, schema: { type: string, maxLength: 128 } }
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+  /location-contexts:
+    post:
+      summary: 设备位置或本人保存地址解析为短期位置上下文
+      description: 匿名请求必须携带 X-Session-ID；登录请求可携带 Bearer Token。精确坐标仅允许出现在本请求 JSON body。
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/AnonymousSession"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LocationResolveReq" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /location-contexts/city:
+    post:
+      summary: 创建仅城市级的位置上下文
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/AnonymousSession"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CityContextReq" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /location-contexts/{id}/service-shops:
+    get:
+      summary: 当前位置上下文的可服务仓
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/AnonymousSession"
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageToken"
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+  /location-contexts/{id}/service-shop:
+    put:
+      summary: 在可服务候选内手动切换仓
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/AnonymousSession"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SwitchServiceShopReq" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/service-cities:
+    get:
+      summary: 管理服务城市
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageToken"
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      summary: 创建服务城市草稿及行政区映射
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ServiceCityWriteReq" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/service-cities/{id}:
+    put:
+      summary: 更新非发布态服务城市及行政区映射
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ServiceCityWriteReq" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/service-cities/{id}/status:
+    post:
+      summary: 发布或停用服务城市
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ResourceStatusReq" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/delivery-promise-policies:
+    get:
+      summary: 管理配送承诺展示规则
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageToken"
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      summary: 创建配送承诺规则版本草稿
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PromisePolicyWriteReq" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/delivery-promise-policies/{id}:
+    put:
+      summary: 更新配送承诺规则草稿
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PromisePolicyWriteReq" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/delivery-promise-policies/{id}/status:
+    post:
+      summary: 发布或退役配送承诺规则版本
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ResourceStatusReq" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /cart/items:
+    get:
+      summary: 购物车列表
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      summary: 加购
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { $ref: "#/components/requestBodies/CartItemAdd" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+    delete:
+      summary: 清空本人购物车或指定门店商品
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - { name: shop_id, in: query, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /cart/items/{id}:
+    put:
+      summary: 修改购物车数量
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { $ref: "#/components/requestBodies/CartItemUpdate" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+    delete:
+      summary: 删除购物车商品
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /cart/items/{id}/selection:
+    patch:
+      summary: 修改购物车单项选中状态
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [selected]
+              properties: { selected: { type: boolean } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /cart/selection:
+    post:
+      summary: 按门店批量修改选中状态
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [selected, shop_id]
+              properties:
+                selected: { type: boolean }
+                shop_id: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /addresses:
+    get:
+      summary: 地址列表
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      summary: 新增地址
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { $ref: "#/components/requestBodies/AddressUpsert" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /addresses/{id}:
+    put:
+      summary: 全量更新本人地址
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { $ref: "#/components/requestBodies/AddressUpdate" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+    delete:
+      summary: 软删除本人地址
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /addresses/{id}/set-default:
+    post:
+      summary: 设置本人默认地址
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /orders:
+    get:
+      summary: C 端本人订单列表
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      summary: 创建订单并预占库存
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OrderCreateReq" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /orders/{id}:
+    get:
+      summary: 订单详情
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /orders/{id}/cancel:
+    post:
+      summary: 取消订单
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /orders/{id}/payments:
+    post:
+      summary: 创建或复用本人订单的微信支付单
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PaymentCreateReq" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /orders/{id}/payment:
+    get:
+      summary: 查询本人订单支付事实
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /payments/{provider}/callbacks:
+    post:
+      summary: 支付供应商签名回调
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/Provider"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "200":
+          description: 供应商 ACK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaymentCallbackAck" }
+        default: { $ref: "#/components/responses/Problem" }
+  /orders/{id}/pay/mock:
+    post:
+      summary: 模拟支付
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { $ref: "#/components/requestBodies/MockPay" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /store/orders:
+    get:
+      summary: 商户授权门店订单
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+  /store/orders/{id}/accept:
+    post:
+      summary: 商户接单
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /store/orders/{id}/prepare:
+    post:
+      summary: 商户备货完成
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /store/orders/{id}/start-preparing:
+    post:
+      summary: 商户开始备货
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /store/shops/{id}/business-status:
+    patch:
+      summary: 更新门店营业状态
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { $ref: "#/components/requestBodies/BusinessStatus" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /store/shop-products:
+    get:
+      summary: 商户门店商品列表
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      summary: 新增门店商品
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { $ref: "#/components/requestBodies/ShopProductCreate" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /store/shop-products/{id}:
+    patch:
+      summary: 更新门店商品
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { $ref: "#/components/requestBodies/ShopProductUpdate" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /store/shop-products/{id}/stock:
+    patch:
+      summary: 商户调整库存
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { $ref: "#/components/requestBodies/StockAdjust" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /delivery/riders/me/work-status:
+    put:
+      summary: 骑手上线或下线
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status, expected_version]
+              properties:
+                status: { type: string, enum: [online, offline] }
+                expected_version: { type: integer, minimum: 1 }
+                reason_code: { type: string, maxLength: 64 }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /delivery/riders/me/heartbeat:
+    post:
+      summary: 上报骑手心跳和位置
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [device_id, sequence, captured_at, latitude, longitude, coordinate_system, accuracy_m]
+              properties:
+                device_id: { type: string, minLength: 8, maxLength: 128 }
+                sequence: { type: integer, minimum: 1 }
+                captured_at: { type: string, format: date-time }
+                latitude: { type: number, format: double, minimum: -90, maximum: 90 }
+                longitude: { type: number, format: double, minimum: -180, maximum: 180 }
+                coordinate_system: { type: string, enum: [gcj02, wgs84, bd09] }
+                accuracy_m: { type: number, format: double, minimum: 0, maximum: 1000 }
+                app_version: { type: string, maxLength: 32 }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /delivery/orders/{id}/route:
+    get:
+      summary: 查询当前配送阶段路线
+      description: 仅已分配骑手且具有 delivery:route 权限可查询；路线规划失败不改变履约状态。
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "200":
+          description: 路线规划结果
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [code, message, data, request_id]
+                properties:
+                  code: { type: integer, enum: [0] }
+                  message: { type: string }
+                  data: { $ref: "#/components/schemas/RoutePlan" }
+                  request_id: { type: string }
+        default: { $ref: "#/components/responses/Problem" }
+  /delivery/offers:
+    get:
+      summary: 查询本人未过期定向邀约
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageToken"
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+  /delivery/offers/{id}/accept:
+    post:
+      summary: 接受本人有效邀约并原子完成归属
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DispatchOfferActionReq" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /delivery/offers/{id}/reject:
+    post:
+      summary: 拒绝本人有效邀约
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DispatchOfferRejectReq" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /delivery/orders:
+    get:
+      summary: 骑手可接和本人配送单
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+  /delivery/orders/{id}/accept:
+    post:
+      summary: 骑手接单
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DispatchGrabReq" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/dispatch/policies:
+    get:
+      summary: 查询混合派单策略版本
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageToken"
+        - { name: filter, in: query, schema: { type: string, maxLength: 512 } }
+        - { name: order_by, in: query, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      summary: 创建派单策略草稿
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DispatchPolicyCreateReq" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/dispatch/policies/{id}/validate:
+    post:
+      summary: 校验派单策略
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      requestBody: { $ref: "#/components/requestBodies/ExpectedVersion" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/dispatch/policies/{id}/publish:
+    post:
+      summary: 发布派单策略
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { $ref: "#/components/requestBodies/ExpectedVersion" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/dispatch/policies/{id}/retire:
+    post:
+      summary: 停用派单策略
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { $ref: "#/components/requestBodies/ExpectedVersion" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/dispatch/jobs:
+    get:
+      summary: 查询派单任务
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageToken"
+        - { name: filter, in: query, schema: { type: string, maxLength: 512 } }
+        - { name: order_by, in: query, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/dispatch/jobs/{id}:
+    get:
+      summary: 查询派单任务时间线
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/dispatch/jobs/{id}/retry:
+    post:
+      summary: 重试需要人工处理的派单任务
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expected_version, reason_code, reason]
+              properties:
+                expected_version: { type: integer, minimum: 1 }
+                reason_code: { type: string, maxLength: 64 }
+                reason: { type: string, minLength: 2, maxLength: 255 }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /delivery/orders/{id}/pickup:
+    post:
+      summary: 骑手取货
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [pickup_code], properties: { pickup_code: { type: string, pattern: "^[0-9]{6}$" } } } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /delivery/orders/{id}/returns:
+    post:
+      summary: 骑手申请退回已取货配送；本动作不授权退款
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeliveryReturnCreateReq" }
+      responses:
+        "200": { $ref: "#/components/responses/DeliveryReturn" }
+        "201": { $ref: "#/components/responses/DeliveryReturn" }
+        default: { $ref: "#/components/responses/Problem" }
+  /delivery/returns/{id}:
+    get:
+      summary: 骑手查看本人配送退回
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "200": { $ref: "#/components/responses/DeliveryReturn" }
+        default: { $ref: "#/components/responses/Problem" }
+  /delivery/returns/{id}/arrive:
+    post:
+      summary: 骑手确认退回商品已到门店并生成一次性交接码
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeliveryReturnArriveReq" }
+      responses:
+        "200": { $ref: "#/components/responses/DeliveryReturn" }
+        default: { $ref: "#/components/responses/Problem" }
+  /store/delivery-returns:
+    get:
+      summary: 门店分页查询本店配送退回
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageToken"
+        - { name: status, in: query, schema: { type: string, enum: [requested, returning, arrived, received, closed, cancelled, disputed, exception] } }
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+  /store/delivery-returns/{id}:
+    get:
+      summary: 门店查看本店配送退回详情与逐商品收货状态
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "200": { $ref: "#/components/responses/DeliveryReturn" }
+        default: { $ref: "#/components/responses/Problem" }
+  /store/delivery-returns/{id}/receive:
+    post:
+      summary: 门店校验交接码并逐商品原子收货入库
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeliveryReturnReceiveReq" }
+      responses:
+        "200": { $ref: "#/components/responses/DeliveryReturn" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/delivery-returns:
+    get:
+      summary: 运营分页查询配送退回
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageToken"
+        - { name: status, in: query, schema: { type: string, enum: [requested, returning, arrived, received, closed, cancelled, disputed, exception] } }
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/delivery-returns/{id}:
+    get:
+      summary: 运营查看配送退回、售后、退款与库存闭环详情
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "200": { $ref: "#/components/responses/DeliveryReturn" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/delivery-returns/{id}/approve:
+    post:
+      summary: 运营审批并原子创建系统售后与退款任务
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeliveryReturnApproveReq" }
+      responses:
+        "200": { $ref: "#/components/responses/DeliveryReturn" }
+        default: { $ref: "#/components/responses/Problem" }
+  /delivery/orders/{id}/start:
+    post:
+      summary: 骑手开始配送
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /delivery/orders/{id}/complete:
+    post:
+      summary: 骑手完成配送
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [delivery_code], properties: { delivery_code: { type: string, pattern: "^[0-9]{6}$" } } } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/products:
+    post:
+      summary: 管理后台创建商品
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { $ref: "#/components/requestBodies/ProductUpsert" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/products/{id}:
+    put:
+      summary: 管理后台更新商品
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { $ref: "#/components/requestBodies/ProductUpsert" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/products/{id}/on-sale:
+    post:
+      summary: 管理后台上架商品
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/products/{id}/off-sale:
+    post:
+      summary: 管理后台下架商品
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/orders:
+    get:
+      summary: 管理后台订单列表
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/orders/{id}:
+    get:
+      summary: 管理后台订单详情
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/stocks:
+    get:
+      summary: 管理后台库存列表
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/stocks/adjust:
+    post:
+      summary: 管理后台调整库存
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { $ref: "#/components/requestBodies/AdminStockAdjust" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/audit-logs:
+    get:
+      summary: 审计日志
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/merchants:
+    get:
+      summary: 商户列表
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/merchants/{id}/review:
+    post:
+      summary: 商户审核
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { $ref: "#/components/requestBodies/MerchantReview" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /home:
+    get:
+      summary: 按城市聚合首页公共内容和服务门店
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/LocationContext"
+        - $ref: "#/components/parameters/AnonymousSession"
+        - { name: city_code, in: query, schema: { type: string, pattern: "^[0-9]{6}$" } }
+        - { name: lat, in: query, schema: { type: number, format: double } }
+        - { name: lng, in: query, schema: { type: number, format: double } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/home-slots:
+    get:
+      summary: 首页运营位列表
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageToken"
+        - { name: city_code, in: query, schema: { type: string } }
+        - { name: slot_type, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      summary: 创建首页运营位草稿
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { $ref: "#/components/requestBodies/HomeSlotWrite" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/home-slots/{id}:
+    put:
+      summary: 更新首页运营位
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { $ref: "#/components/requestBodies/HomeSlotWrite" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/home-slots/{id}/status:
+    post:
+      summary: 转换首页运营位状态
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { $ref: "#/components/requestBodies/HomeSlotStatus" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /after-sales:
+    get:
+      summary: 用户售后单列表
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      summary: 用户申请售后
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/AfterSaleCreateReq" } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /after-sales/{id}:
+    get:
+      summary: 用户售后单详情
+      parameters: [{ $ref: "#/components/parameters/ID" }]
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /after-sales/{id}/evidence:
+    post:
+      summary: 补充售后凭证
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/AfterSaleEvidenceReq" } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /after-sales/{id}/withdraw:
+    post:
+      summary: 撤销售后申请
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/AfterSaleVersionReq" } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /after-sales/{id}/appeal:
+    post:
+      summary: 用户申诉
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/AfterSaleAppealReq" } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /store/after-sales:
+    get:
+      summary: 门店售后单列表
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+  /store/after-sales/{id}:
+    get:
+      summary: 门店售后单详情
+      parameters: [{ $ref: "#/components/parameters/ID" }]
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /store/after-sales/{id}/review:
+    post:
+      summary: 门店审核售后单
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/AfterSaleReviewReq" } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /store/after-sales/{id}/return-receipts:
+    post:
+      summary: 门店登记退货验收并触发退款
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ReturnReceiptReq" } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /store/after-sales/{id}/replacements:
+    post:
+      summary: 门店为补发任务预占库存
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/AfterSaleVersionReq" } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/after-sales:
+    get:
+      summary: 平台售后单列表
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/after-sales/{id}:
+    get:
+      summary: 平台售后单详情
+      parameters: [{ $ref: "#/components/parameters/ID" }]
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/after-sales/{id}/review:
+    post:
+      summary: 平台审核售后单
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/AfterSaleReviewReq" } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/refunds:
+    get:
+      summary: 平台退款单列表
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/refunds/{id}:
+    get:
+      summary: 平台退款单详情
+      parameters: [{ $ref: "#/components/parameters/ID" }]
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/refunds/{id}/retry:
+    post:
+      summary: 人工重试退款任务
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/refunds/{id}/mark-exception:
+    post:
+      summary: 标记退款进入人工调查
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [reason], properties: { reason: { type: string, minLength: 3, maxLength: 500 } } } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /refunds/{provider}/callbacks:
+    post:
+      summary: 支付渠道退款结果回调
+      security: []
+      parameters:
+        - { name: provider, in: path, required: true, schema: { type: string, enum: [wechat] } }
+      responses:
+        "200": { description: 渠道回调确认 }
+        default: { $ref: "#/components/responses/Problem" }
+  /member/profile:
+    get:
+      summary: 查询本人会员档案
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /assets:
+    get:
+      summary: 查询本人成长值、酒币和余额摘要
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /assets/{asset_type}/transactions:
+    get:
+      summary: 查询本人指定资产流水
+      parameters:
+        - { name: asset_type, in: path, required: true, schema: { type: string, enum: [growth_value, wine_coin, balance] } }
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageToken"
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/members:
+    get:
+      summary: 会员列表
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageToken"
+        - { name: tier_code, in: query, schema: { type: string, enum: [normal, silver, gold] } }
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/members/{customer_id}:
+    get:
+      summary: 会员详情
+      parameters:
+        - { name: customer_id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/member-tier-rules:
+    get:
+      summary: 会员等级规则列表
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageToken"
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      summary: 创建会员等级规则草稿
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/MemberRuleSetCreateReq" } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/member-tier-rules/{id}/activate:
+    post:
+      summary: 激活会员等级规则
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { required: false, content: { application/json: { schema: { type: object } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/asset-transactions:
+    get:
+      summary: 平台资产流水列表
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageToken"
+        - { name: asset_type, in: query, schema: { type: string, enum: [growth_value, wine_coin, balance] } }
+        - { name: source_type, in: query, schema: { type: string } }
+        - { name: action, in: query, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/asset-transactions/{id}:
+    get:
+      summary: 平台资产流水详情
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/asset-adjustments:
+    post:
+      summary: 创建人工资产调账申请
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/AssetAdjustmentCreateReq" } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/asset-adjustments/{id}/approve:
+    post:
+      summary: 复核通过人工资产调账
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/AssetAdjustmentReviewReq" } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/asset-adjustments/{id}/reject:
+    post:
+      summary: 拒绝人工资产调账
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/AssetAdjustmentReviewReq" } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/asset-reconciliations:
+    get:
+      summary: 资产对账任务列表
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageToken"
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      summary: 执行资产对账
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/AssetReconcileReq" } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/asset-reconciliations/{id}/repair:
+    post:
+      summary: 从不可变分录重建资产投影
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /store/print-settings:
+    get:
+      summary: 查看授权门店打印设置
+      parameters:
+        - { name: shop_id, in: query, required: true, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /store/print-settings/{id}:
+    patch:
+      summary: 更新门店打印设置
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/PrintSettingPatchReq" } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /store/print-tasks:
+    get:
+      summary: 门店打印任务列表
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageToken"
+        - { name: status, in: query, schema: { type: string, enum: [pending, processing, succeeded, retry_wait, dead, cancelled] } }
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+  /store/print-tasks/{id}:
+    get:
+      summary: 门店打印任务详情
+      parameters: [ { $ref: "#/components/parameters/ID" } ]
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /store/print-tasks/{id}/reprint:
+    post:
+      summary: 门店人工重打
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ReasonReq" } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/print-tasks:
+    get:
+      summary: 全局打印任务列表
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageToken"
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/print-tasks/{id}/retry:
+    post:
+      summary: 重试失败打印任务
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ReasonReq" } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /messages:
+    get:
+      summary: 本人站内消息
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageToken"
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+  /messages/{id}/read:
+    post:
+      summary: 标记本人消息已读
+      parameters: [ { $ref: "#/components/parameters/ID" } ]
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /messages/read-all:
+    post:
+      summary: 标记本人全部消息已读
+      parameters: [ { $ref: "#/components/parameters/IdempotencyKey" } ]
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/notification-deliveries:
+    get:
+      summary: 全局通知投递列表
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageToken"
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/notification-deliveries/{id}/retry:
+    post:
+      summary: 重试通知投递
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ReasonReq" } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/notification-templates:
+    get:
+      summary: 通知模板列表
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageToken"
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      summary: 创建版本化通知模板
+      parameters: [ { $ref: "#/components/parameters/IdempotencyKey" } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/NotificationTemplateReq" } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/notification-templates/{id}:
+    patch:
+      summary: 更新未发布通知模板或发布版本
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/NotificationTemplateReq" } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /store/orders/{id}/verification:
+    get:
+      summary: 商户受控查看取货码
+      parameters: [ { $ref: "#/components/parameters/ID" } ]
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /orders/{id}/verification:
+    get:
+      summary: 顾客受控查看送达码
+      parameters: [ { $ref: "#/components/parameters/ID" } ]
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/deliveries/{id}/verification/unlock:
+    post:
+      summary: 解锁并重生核销码
+      parameters: [ { $ref: "#/components/parameters/ID" } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/VerificationUnlockReq" } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/merchants/provision:
+    post:
+      summary: 原子开通商户、门店、账号和授权
+      parameters: [ { $ref: "#/components/parameters/IdempotencyKey" } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/MerchantProvisionReq" } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/merchants/{id}/users:
+    post:
+      summary: 新增商户用户
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/merchant-users/{id}/shops:
+    put:
+      summary: 设置商户用户门店授权
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [shop_ids], properties: { shop_ids: { type: array, items: { type: string } } } } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/accounts/{id}/status:
+    patch:
+      summary: 启停账号并吊销会话
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/AccountStatusReq" } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/accounts/{id}/reset-password:
+    post:
+      summary: 创建一次性密码重置任务
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ReasonReq" } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/rider-applications:
+    get:
+      summary: 管理员分页查询骑手申请
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageToken"
+        - name: filter
+          in: query
+          description: "分号分隔 key=value；字段为 status,application_no,phone"
+          schema: { type: string, maxLength: 1024 }
+        - name: order_by
+          in: query
+          description: "白名单字段：last_submitted_at,created_at,status,submission_count,id"
+          schema: { type: string, maxLength: 256, default: "last_submitted_at desc,id desc" }
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/rider-applications/{id}:
+    get:
+      summary: 管理员查看骑手申请和全部审核历史
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/rider-applications/{id}/review:
+    post:
+      summary: 管理员审核骑手申请并在批准时原子开通
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RiderApplicationReviewReq" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/riders:
+    post:
+      summary: 管理员创建待审核骑手
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RiderCreateReq" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/riders/{id}/review:
+    post:
+      summary: 审核管理员创建的骑手
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RiderReviewReq" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/riders/{id}/status:
+    patch:
+      summary: 启停骑手
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/AccountStatusReq" } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/provisioning-operations/{id}:
+    get:
+      summary: 查询开通编排结果
+      parameters: [ { $ref: "#/components/parameters/ID" } ]
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/orders/{id}/cancel:
+    post:
+      summary: 管理员受控取消订单
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/OpsReasonVersionReq" } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/deliveries/{id}/assign:
+    post:
+      summary: 管理员人工派单
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/AssignmentReq" } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/deliveries/{id}/reassign:
+    post:
+      summary: 管理员改派
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/AssignmentReq" } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/deliveries/{id}/force-complete:
+    post:
+      summary: 指定复核人执行已批准的强制完成请求
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ForceCompleteReq" } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/deliveries/{id}/force-complete-requests:
+    post:
+      summary: 发起强制完成双人审批请求（仅记录，不推进状态）
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ForceCompleteRequestReq" } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/deliveries/{id}/assignments:
+    get:
+      summary: 派单改派历史
+      parameters: [ { $ref: "#/components/parameters/ID" } ]
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /identity-verifications/me:
+    get:
+      summary: 本人实名与成年状态
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /identity-verifications:
+    post:
+      summary: 创建服务商托管的实名成年认证会话
+      parameters: [ { $ref: "#/components/parameters/IdempotencyKey" } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/IdentitySessionReq" } } } }
+      responses:
+        "202": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /identity-verifications/{id}:
+    get:
+      summary: 查询本人单次认证请求状态
+      parameters: [ { $ref: "#/components/parameters/ID" } ]
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /identity-verifications/{provider}/callbacks:
+    post:
+      summary: 实名服务商结果变更回调（验签后服务端主动查询）
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/identity-verifications:
+    get:
+      summary: 合规实名核验列表
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageToken"
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/identity-verifications/{id}/review:
+    post:
+      summary: 人工复核实名结论
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/IdentityReviewReq" } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/mq/health:
+    get:
+      summary: RabbitMQ、拓扑、队列与 Outbox 健康摘要
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/mq/dead-letters:
+    get:
+      summary: 消息死信列表（不返回原始 payload）
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageToken"
+        - { name: filter, in: query, description: "白名单字段：consumer_name,event_type,status,error_code,created_at", schema: { type: string } }
+        - { name: order_by, in: query, description: "白名单字段：created_at,id", schema: { type: string, default: "created_at desc,id desc" } }
+      responses:
+        "200": { $ref: "#/components/responses/Page" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/mq/dead-letters/{id}:
+    get:
+      summary: 消息死信安全详情
+      parameters: [ { $ref: "#/components/parameters/ID" } ]
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/mq/dead-letters/{id}/replay:
+    post:
+      summary: 通过 Outbox 安全重放单条死信
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MQDeadReplayReq" }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/mq/topology/verify:
+    post:
+      summary: 只读验证 RabbitMQ 拓扑漂移
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /delivery/orders/{id}/incidents:
+    post:
+      summary: 骑手上报配送异常
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/DeliveryIncidentIdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeliveryIncidentCreateReq" }
+      responses:
+        "201": { $ref: "#/components/responses/DeliveryIncident" }
+        default: { $ref: "#/components/responses/Problem" }
+    get:
+      summary: 骑手查询配送单的本人异常记录
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageToken"
+        - $ref: "#/components/parameters/DeliveryIncidentType"
+        - $ref: "#/components/parameters/DeliveryIncidentStatus"
+        - $ref: "#/components/parameters/DeliveryIncidentStage"
+        - $ref: "#/components/parameters/ReportedFrom"
+        - $ref: "#/components/parameters/ReportedTo"
+      responses:
+        "200": { $ref: "#/components/responses/DeliveryIncidentPage" }
+        default: { $ref: "#/components/responses/Problem" }
+  /delivery/incidents/{id}:
+    get:
+      summary: 骑手查询本人配送异常详情
+      parameters: [ { $ref: "#/components/parameters/ID" } ]
+      responses:
+        "200": { $ref: "#/components/responses/DeliveryIncident" }
+        default: { $ref: "#/components/responses/Problem" }
+  /delivery/incidents/{id}/evidence:
+    post:
+      summary: 骑手补充配送异常证据
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/DeliveryIncidentIdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeliveryIncidentEvidenceReq" }
+      responses:
+        "200": { $ref: "#/components/responses/DeliveryIncident" }
+        default: { $ref: "#/components/responses/Problem" }
+  /delivery/incidents/{id}/evidence/{evidence_id}/view:
+    get:
+      summary: 骑手获取本人配送异常证据的短时查看地址
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/DeliveryIncidentEvidenceID"
+      responses:
+        "200": { $ref: "#/components/responses/DeliveryIncidentEvidenceView" }
+        default: { $ref: "#/components/responses/Problem" }
+  /store/delivery-incidents:
+    get:
+      summary: 门店查询本店配送异常列表
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageToken"
+        - $ref: "#/components/parameters/DeliveryIncidentType"
+        - $ref: "#/components/parameters/DeliveryIncidentStatus"
+        - $ref: "#/components/parameters/DeliveryIncidentStage"
+        - $ref: "#/components/parameters/ReportedFrom"
+        - $ref: "#/components/parameters/ReportedTo"
+      responses:
+        "200": { $ref: "#/components/responses/DeliveryIncidentPage" }
+        default: { $ref: "#/components/responses/Problem" }
+  /store/delivery-incidents/{id}:
+    get:
+      summary: 门店查询本店配送异常详情
+      parameters: [ { $ref: "#/components/parameters/ID" } ]
+      responses:
+        "200": { $ref: "#/components/responses/DeliveryIncident" }
+        default: { $ref: "#/components/responses/Problem" }
+  /store/delivery-incidents/{id}/evidence/{evidence_id}/view:
+    get:
+      summary: 门店获取授权门店异常证据的短时查看地址
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/DeliveryIncidentEvidenceID"
+      responses:
+        "200": { $ref: "#/components/responses/DeliveryIncidentEvidenceView" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/delivery-incidents:
+    get:
+      summary: 运营查询配送异常列表
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageToken"
+        - $ref: "#/components/parameters/DeliveryIncidentType"
+        - $ref: "#/components/parameters/DeliveryIncidentStatus"
+        - $ref: "#/components/parameters/DeliveryIncidentStage"
+        - $ref: "#/components/parameters/ReportedFrom"
+        - $ref: "#/components/parameters/ReportedTo"
+        - { name: shop_id, in: query, schema: { type: string, pattern: "^[1-9][0-9]{0,19}$" } }
+        - { name: rider_id, in: query, schema: { type: string, pattern: "^[1-9][0-9]{0,19}$" } }
+        - { name: incident_no, in: query, schema: { type: string, maxLength: 64 } }
+        - { name: order_no, in: query, schema: { type: string, maxLength: 64 } }
+      responses:
+        "200": { $ref: "#/components/responses/DeliveryIncidentPage" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/delivery-incidents/{id}:
+    get:
+      summary: 运营查询配送异常详情与操作历史
+      parameters: [ { $ref: "#/components/parameters/ID" } ]
+      responses:
+        "200": { $ref: "#/components/responses/DeliveryIncident" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/delivery-incidents/{id}/evidence/{evidence_id}/view:
+    get:
+      summary: 运营获取配送异常证据的短时查看地址
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/DeliveryIncidentEvidenceID"
+      responses:
+        "200": { $ref: "#/components/responses/DeliveryIncidentEvidenceView" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/delivery-incidents/{id}/acknowledge:
+    post:
+      summary: 运营确认受理配送异常
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/DeliveryIncidentIdempotencyKey"
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/DeliveryIncidentAcknowledgeReq" } } } }
+      responses:
+        "200": { $ref: "#/components/responses/DeliveryIncident" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/delivery-incidents/{id}/resolve:
+    post:
+      summary: 运营解决配送异常
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/DeliveryIncidentIdempotencyKey"
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/DeliveryIncidentResolveReq" } } } }
+      responses:
+        "200": { $ref: "#/components/responses/DeliveryIncident" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/delivery-incidents/{id}/reject:
+    post:
+      summary: 运营驳回配送异常
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/DeliveryIncidentIdempotencyKey"
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/DeliveryIncidentRejectReq" } } } }
+      responses:
+        "200": { $ref: "#/components/responses/DeliveryIncident" }
+        default: { $ref: "#/components/responses/Problem" }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    applicationBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: application_access JWT
+  parameters:
+    ID:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+    PageSize:
+      name: page_size
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100 }
+    PageToken:
+      name: page_token
+      in: query
+      schema: { type: string }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, minLength: 8, maxLength: 128 }
+    DeliveryIncidentIdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, minLength: 8, maxLength: 64, pattern: "^[!-~]+$" }
+    DeliveryIncidentEvidenceID:
+      name: evidence_id
+      in: path
+      required: true
+      schema: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+    DeliveryIncidentType:
+      name: type
+      in: query
+      schema: { type: string, enum: [out_of_stock, alcohol_damaged, customer_refused, customer_unreachable] }
+    DeliveryIncidentStatus:
+      name: status
+      in: query
+      schema: { type: string, enum: [evidence_required, open, acknowledged, resolved, rejected] }
+    DeliveryIncidentStage:
+      name: stage
+      in: query
+      schema: { type: string, enum: [pickup, delivery] }
+    ReportedFrom:
+      name: reported_from
+      in: query
+      schema: { type: string, format: date-time }
+    ReportedTo:
+      name: reported_to
+      in: query
+      schema: { type: string, format: date-time }
+    LocationContext:
+      name: X-Location-Context
+      in: header
+      schema: { type: string, pattern: "^loc_[A-Za-z0-9_-]{32}$" }
+    AnonymousSession:
+      name: X-Session-ID
+      in: header
+      schema: { type: string, minLength: 16, maxLength: 256 }
+    Provider:
+      name: provider
+      in: path
+      required: true
+      schema: { type: string, enum: [wechat] }
+  responses:
+    Success:
+      description: 请求成功
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/SuccessEnvelope" }
+    Page:
+      description: 分页请求成功
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/PageEnvelope" }
+    Token:
+      description: 登录或刷新成功
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/TokenEnvelope" }
+    RealtimeTicket:
+      description: 一次性 WebSocket 票据签发成功
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/RealtimeTicketEnvelope" }
+    Health:
+      description: 服务依赖状态
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/HealthEnvelope" }
+    Problem:
+      description: 标准业务或系统错误
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/ProblemDetails" }
+    DeliveryIncident:
+      description: 配送异常详情
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/DeliveryIncidentEnvelope" }
+    DeliveryIncidentPage:
+      description: 配送异常分页结果
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/DeliveryIncidentPageEnvelope" }
+    DeliveryIncidentEvidenceView:
+      description: 短时证据查看地址；响应不得缓存，地址有效期不超过5分钟
+      headers:
+        Cache-Control:
+          schema: { type: string, example: no-store }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/DeliveryIncidentEvidenceViewEnvelope" }
+    DeliveryReturn:
+      description: 配送退回详情
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/DeliveryReturnEnvelope" }
+    SearchDiscovery:
+      description: 搜索历史与热门词查询成功
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/SearchDiscoveryEnvelope" }
+    SearchEvent:
+      description: 搜索事件记录成功
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/SearchEventEnvelope" }
+    SearchHistoryClear:
+      description: 搜索历史清空成功
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/SearchHistoryClearEnvelope" }
+  requestBodies:
+    ExpectedVersion:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [expected_version]
+            properties:
+              expected_version: { type: integer, minimum: 1 }
+    PasswordLogin:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/PasswordLoginReq" }
+    CartItemAdd:
+      required: true
+      content: { application/json: { schema: { $ref: "#/components/schemas/CartItemAddReq" } } }
+    CartItemUpdate:
+      required: true
+      content: { application/json: { schema: { $ref: "#/components/schemas/CartItemUpdateReq" } } }
+    AddressUpsert:
+      required: true
+      content: { application/json: { schema: { $ref: "#/components/schemas/AddressUpsertReq" } } }
+    AddressUpdate:
+      required: true
+      content: { application/json: { schema: { $ref: "#/components/schemas/AddressUpdateReq" } } }
+    MockPay:
+      required: true
+      content: { application/json: { schema: { $ref: "#/components/schemas/MockPayReq" } } }
+    BusinessStatus:
+      required: true
+      content: { application/json: { schema: { $ref: "#/components/schemas/BusinessStatusReq" } } }
+    ShopProductCreate:
+      required: true
+      content: { application/json: { schema: { $ref: "#/components/schemas/ShopProductCreateReq" } } }
+    ShopProductUpdate:
+      required: true
+      content: { application/json: { schema: { $ref: "#/components/schemas/ShopProductUpdateReq" } } }
+    StockAdjust:
+      required: true
+      content: { application/json: { schema: { $ref: "#/components/schemas/StockAdjustReq" } } }
+    ProductUpsert:
+      required: true
+      content: { application/json: { schema: { $ref: "#/components/schemas/ProductUpsertReq" } } }
+    AdminStockAdjust:
+      required: true
+      content: { application/json: { schema: { $ref: "#/components/schemas/AdminStockAdjustReq" } } }
+    MerchantReview:
+      required: true
+      content: { application/json: { schema: { $ref: "#/components/schemas/MerchantReviewReq" } } }
+    HomeSlotWrite:
+      required: true
+      content: { application/json: { schema: { $ref: "#/components/schemas/HomeSlotWriteReq" } } }
+    HomeSlotStatus:
+      required: true
+      content: { application/json: { schema: { $ref: "#/components/schemas/HomeSlotStatusReq" } } }
+  schemas:
+    SearchEventReq:
+      type: object
+      additionalProperties: false
+      required: [keyword, source]
+      properties:
+        keyword: { type: string, minLength: 1, maxLength: 64 }
+        source: { type: string, enum: [manual, history, hot] }
+    SearchHistoryItem:
+      type: object
+      additionalProperties: false
+      required: [id, keyword, last_searched_at]
+      properties:
+        id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        keyword: { type: string, minLength: 1, maxLength: 64 }
+        last_searched_at: { type: string, format: date-time }
+    SearchHotKeyword:
+      type: object
+      additionalProperties: false
+      required: [rank, keyword, source_scope]
+      properties:
+        rank: { type: integer, minimum: 1, maximum: 20 }
+        keyword: { type: string, minLength: 1, maxLength: 64 }
+        source_scope: { type: string, enum: [city, global, default] }
+        city_code: { type: string, pattern: "^[0-9]{6}$" }
+    SearchDiscoveryEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, example: 0 }
+        message: { type: string, example: ok }
+        data:
+          type: object
+          additionalProperties: false
+          required: [history, hot_keywords, generated_at]
+          properties:
+            history: { type: array, maxItems: 20, items: { $ref: "#/components/schemas/SearchHistoryItem" } }
+            hot_keywords: { type: array, maxItems: 20, items: { $ref: "#/components/schemas/SearchHotKeyword" } }
+            generated_at: { type: string, format: date-time }
+        request_id: { type: string }
+    SearchEventEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, example: 0 }
+        message: { type: string, example: ok }
+        data:
+          type: object
+          additionalProperties: false
+          required: [history_item, counted_for_hot]
+          properties:
+            history_item: { $ref: "#/components/schemas/SearchHistoryItem" }
+            counted_for_hot: { type: boolean }
+        request_id: { type: string }
+    SearchHistoryClearEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, example: 0 }
+        message: { type: string, example: ok }
+        data:
+          type: object
+          additionalProperties: false
+          required: [deleted_count]
+          properties:
+            deleted_count: { type: integer, format: int64, minimum: 0 }
+        request_id: { type: string }
+    RealtimeTicketReq:
+      type: object
+      additionalProperties: false
+      required: [device_id, platform, client_version, protocol_version]
+      properties:
+        device_id: { type: string, minLength: 1, maxLength: 128 }
+        platform: { type: string, enum: [weapp, h5, android, ios, test] }
+        client_version: { type: string, minLength: 1, maxLength: 32 }
+        protocol_version: { type: integer, enum: [1] }
+    DispatchOfferActionReq:
+      type: object
+      required: [expected_offer_version, expected_assignment_version]
+      properties:
+        expected_offer_version: { type: integer, minimum: 1 }
+        expected_assignment_version: { type: integer, minimum: 1 }
+    DispatchOfferRejectReq:
+      type: object
+      required: [expected_offer_version, reason_code]
+      properties:
+        expected_offer_version: { type: integer, minimum: 1 }
+        reason_code: { type: string, enum: [busy, too_far, ending_shift, other] }
+        remark: { type: string, maxLength: 255 }
+    DispatchGrabReq:
+      type: object
+      required: [expected_assignment_version]
+      properties:
+        expected_assignment_version: { type: integer, minimum: 1 }
+    DispatchPolicyCreateReq:
+      type: object
+      required:
+        - policy_code
+        - scope_type
+        - scope_id
+        - mode
+        - offer_ttl_seconds
+        - grab_ttl_seconds
+        - candidate_limit
+        - offer_candidate_limit
+        - heartbeat_fresh_seconds
+        - location_fresh_seconds
+        - max_location_accuracy_m
+        - max_pickup_distance_m
+        - max_active_orders_default
+        - idle_full_score_seconds
+        - score_weights
+      properties:
+        policy_code: { type: string, maxLength: 64 }
+        scope_type: { type: string, enum: [global, city, shop] }
+        scope_id: { type: string, maxLength: 64 }
+        mode: { type: string, enum: [hybrid, auto, grab, manual] }
+        auto_rounds: { type: integer, minimum: 0, maximum: 10 }
+        offer_ttl_seconds: { type: integer, minimum: 5, maximum: 60 }
+        grab_ttl_seconds: { type: integer, minimum: 5, maximum: 300 }
+        candidate_limit: { type: integer, minimum: 1, maximum: 500 }
+        offer_candidate_limit: { type: integer, minimum: 1, maximum: 20 }
+        heartbeat_fresh_seconds: { type: integer, minimum: 15, maximum: 300 }
+        location_fresh_seconds: { type: integer, minimum: 30, maximum: 600 }
+        max_location_accuracy_m: { type: integer, minimum: 20, maximum: 1000 }
+        max_pickup_distance_m: { type: integer, minimum: 500, maximum: 50000 }
+        max_active_orders_default: { type: integer, minimum: 1, maximum: 20 }
+        idle_full_score_seconds: { type: integer, minimum: 60, maximum: 86400 }
+        rejection_cooldown_seconds: { type: integer, minimum: 0, maximum: 3600 }
+        score_weights:
+          type: object
+          required: [distance, load, idle, freshness]
+          properties:
+            distance: { type: number, minimum: 0, maximum: 1 }
+            load: { type: number, minimum: 0, maximum: 1 }
+            idle: { type: number, minimum: 0, maximum: 1 }
+            freshness: { type: number, minimum: 0, maximum: 1 }
+    SuccessEnvelope:
+      type: object
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, example: 0 }
+        message: { type: string, example: ok }
+        data: { type: object, additionalProperties: true, nullable: true }
+        request_id: { type: string }
+    RealtimeTicketEnvelope:
+      type: object
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, example: 0 }
+        message: { type: string, example: ok }
+        data:
+          type: object
+          additionalProperties: false
+          required: [ticket, expires_at, ws_path, heartbeat_interval_seconds, max_resume_items, protocol_version]
+          properties:
+            ticket: { type: string, minLength: 20, writeOnly: true }
+            expires_at: { type: string, format: date-time }
+            ws_path: { type: string, example: /api/v1/realtime/ws }
+            heartbeat_interval_seconds: { type: integer, minimum: 5 }
+            max_resume_items: { type: integer, minimum: 1, maximum: 500 }
+            protocol_version: { type: integer, enum: [1] }
+        request_id: { type: string }
+    PageEnvelope:
+      type: object
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, example: 0 }
+        message: { type: string, example: ok }
+        data:
+          type: object
+          required: [items, next_page_token]
+          properties:
+            items:
+              type: array
+              items: { type: object, additionalProperties: true }
+            next_page_token: { type: string }
+        request_id: { type: string }
+    TokenEnvelope:
+      type: object
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, example: 0 }
+        message: { type: string, example: ok }
+        data:
+          type: object
+          required: [access_token, refresh_token, expires_in, account_type, account_id, profile]
+          properties:
+            access_token: { type: string }
+            refresh_token: { type: string }
+            expires_in: { type: integer, format: int64 }
+            account_type: { type: string, enum: [customer, admin, merchant, rider] }
+            account_id: { type: string }
+            profile: { type: object, additionalProperties: true }
+        request_id: { type: string }
+    HealthEnvelope:
+      type: object
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, example: 0 }
+        message: { type: string, example: ok }
+        data:
+          type: object
+          required: [status, checks, unix_time]
+          properties:
+            status: { type: string, enum: [ok, degraded] }
+            checks:
+              type: object
+              additionalProperties: { type: string, enum: [ok, unhealthy, not_configured] }
+            unix_time: { type: integer, format: int64 }
+        request_id: { type: string }
+    SendCodeReq:
+      type: object
+      required: [phone]
+      properties:
+        phone: { type: string }
+    SmsLoginReq:
+      type: object
+      required: [phone, code]
+      properties:
+        phone: { type: string }
+        code: { type: string }
+    WeChatLoginReq:
+      type: object
+      required: [code]
+      properties:
+        code: { type: string, minLength: 4, maxLength: 256 }
+        device_id: { type: string, maxLength: 128 }
+    PhoneBindReq:
+      type: object
+      required: [phone_code]
+      properties:
+        phone_code: { type: string, minLength: 4, maxLength: 256 }
+    PasswordLoginReq:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string }
+        password: { type: string, format: password }
+    OrderCreateReq:
+      type: object
+      required: [shop_id, address_id, items]
+      properties:
+        shop_id: { type: string }
+        address_id: { type: string }
+        items:
+          type: array
+          items:
+            type: object
+            required: [shop_product_id, quantity]
+            properties:
+              shop_product_id: { type: string }
+              quantity: { type: integer }
+    LocationResolveReq:
+      type: object
+      additionalProperties: false
+      required: [source]
+      properties:
+        source: { type: string, enum: [device_location, saved_address] }
+        latitude: { type: number, minimum: -90, maximum: 90 }
+        longitude: { type: number, minimum: -180, maximum: 180 }
+        coordinate_system: { type: string, enum: [gcj02, wgs84, bd09] }
+        accuracy_m: { type: number, minimum: 0, maximum: 1000 }
+        captured_at: { type: string, format: date-time }
+        address_id: { type: string, pattern: "^[1-9][0-9]*$" }
+        city_code_hint: { type: string, pattern: "^[0-9]{6}$" }
+    CityContextReq:
+      type: object
+      additionalProperties: false
+      required: [city_code, source]
+      properties:
+        city_code: { type: string, pattern: "^[0-9]{6}$" }
+        source: { type: string, enum: [manual_city] }
+    SwitchServiceShopReq:
+      type: object
+      additionalProperties: false
+      required: [shop_id, expected_version]
+      properties:
+        shop_id: { type: string, pattern: "^[1-9][0-9]*$" }
+        expected_version: { type: integer, minimum: 1 }
+    CoveredADCodeReq:
+      type: object
+      additionalProperties: false
+      required: [adcode, standard_name, level]
+      properties:
+        adcode: { type: string, pattern: "^[0-9]{6}$" }
+        standard_name: { type: string, minLength: 1, maxLength: 64 }
+        level: { type: string, enum: [city, district, county] }
+    ServiceCityWriteReq:
+      type: object
+      additionalProperties: false
+      required: [city_code, province_code, name, pinyin, covered_adcodes]
+      properties:
+        city_code: { type: string, pattern: "^[0-9]{6}$" }
+        province_code: { type: string, pattern: "^[0-9]{6}$" }
+        name: { type: string, minLength: 1, maxLength: 64 }
+        pinyin: { type: string, minLength: 1, maxLength: 128 }
+        sort_order: { type: integer }
+        default_browse_shop_id: { type: string, pattern: "^[1-9][0-9]*$" }
+        covered_adcodes:
+          type: array
+          minItems: 1
+          maxItems: 100
+          uniqueItems: true
+          items: { $ref: "#/components/schemas/CoveredADCodeReq" }
+        expected_version: { type: integer, minimum: 1 }
+    PromisePolicyWriteReq:
+      type: object
+      additionalProperties: false
+      required: [policy_code, version, title, summary]
+      properties:
+        policy_code: { type: string, pattern: "^[A-Z][A-Z0-9_]{0,63}$" }
+        version: { type: integer, minimum: 1 }
+        title: { type: string, minLength: 1, maxLength: 128 }
+        summary: { type: string, minLength: 1, maxLength: 255 }
+        terms_url: { type: string, format: uri, maxLength: 512 }
+        effective_from: { type: string, format: date-time }
+        effective_to: { type: string, format: date-time }
+        expected_version: { type: integer, minimum: 1 }
+    ResourceStatusReq:
+      type: object
+      additionalProperties: false
+      required: [status, expected_version]
+      properties:
+        status: { type: string, enum: [published, disabled, retired] }
+        expected_version: { type: integer, minimum: 1 }
+    RefreshReq:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token: { type: string }
+    CartItemAddReq:
+      type: object
+      required: [shop_product_id, quantity]
+      properties:
+        shop_product_id: { type: string }
+        quantity: { type: integer, minimum: 1, maximum: 99 }
+    CartItemUpdateReq:
+      type: object
+      required: [quantity]
+      properties:
+        quantity: { type: integer, minimum: 1, maximum: 99 }
+    AddressUpsertReq:
+      type: object
+      required: [contact_name, contact_phone, province, city, city_code, district, address_detail, location_source, latitude, longitude, coordinate_system]
+      properties:
+        contact_name: { type: string, maxLength: 64 }
+        contact_phone: { type: string }
+        province: { type: string }
+        city: { type: string }
+        city_code: { type: string, pattern: "^[0-9]{6}$" }
+        district: { type: string }
+        district_code: { type: string, pattern: "^[0-9]{6}$" }
+        address_detail: { type: string, maxLength: 255 }
+        doorplate: { type: string, maxLength: 128 }
+        poi_id: { type: string, maxLength: 64 }
+        formatted_address: { type: string, maxLength: 255 }
+        location_source: { type: string, enum: [amap_poi, map_pin, manual_import] }
+        latitude: { type: number }
+        longitude: { type: number }
+        coordinate_system: { type: string, enum: [gcj02, wgs84, bd09] }
+        is_default: { type: boolean }
+    AddressUpdateReq:
+      allOf:
+        - $ref: "#/components/schemas/AddressUpsertReq"
+        - type: object
+          required: [version]
+          properties:
+            version: { type: integer, minimum: 1 }
+    Coordinate:
+      type: object
+      additionalProperties: false
+      required: [latitude, longitude]
+      properties:
+        latitude: { type: number, minimum: -90, maximum: 90 }
+        longitude: { type: number, minimum: -180, maximum: 180 }
+    RouteStep:
+      type: object
+      additionalProperties: false
+      required: [instruction, distance_m, duration_seconds, polyline]
+      properties:
+        instruction: { type: string, maxLength: 512 }
+        distance_m: { type: integer, format: int64, minimum: 0 }
+        duration_seconds: { type: integer, format: int64, minimum: 0 }
+        polyline: { type: string, maxLength: 65536 }
+    RoutePlan:
+      type: object
+      additionalProperties: false
+      required: [delivery_order_id, order_id, stage, mode, coordinate_system, origin, destination, distance_m, duration_seconds, polyline, steps, source, degraded, planned_at, expires_at, provider]
+      properties:
+        delivery_order_id: { type: string, pattern: "^[1-9][0-9]*$" }
+        order_id: { type: string, pattern: "^[1-9][0-9]*$" }
+        stage: { type: string, enum: [pickup, delivery] }
+        mode: { type: string, enum: [electric_bicycle, driving] }
+        coordinate_system: { type: string, enum: [gcj02] }
+        origin: { $ref: "#/components/schemas/Coordinate" }
+        destination: { $ref: "#/components/schemas/Coordinate" }
+        distance_m: { type: integer, format: int64, minimum: 0 }
+        duration_seconds: { type: integer, format: int64, minimum: 0 }
+        polyline: { type: string, maxLength: 262144 }
+        steps:
+          type: array
+          maxItems: 200
+          items: { $ref: "#/components/schemas/RouteStep" }
+        source: { type: string, enum: [provider, cache, stale_cache, fake] }
+        degraded: { type: boolean }
+        planned_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        provider: { type: string, enum: [amap, fake] }
+    HomeSlotWriteReq:
+      type: object
+      required: [slot_type, slot_key, title, payload]
+      properties:
+        city_code: { type: string, pattern: "^[0-9]{6}$" }
+        slot_type: { type: string, enum: [popup, banner, category_block, product_block, campaign_block] }
+        slot_key: { type: string, maxLength: 64 }
+        title: { type: string, maxLength: 128 }
+        payload: { type: object, additionalProperties: true }
+        start_at: { type: string, format: date-time }
+        end_at: { type: string, format: date-time }
+        sort_order: { type: integer }
+        version: { type: integer, minimum: 1 }
+    HomeSlotStatusReq:
+      type: object
+      required: [status, version]
+      properties:
+        status: { type: string, enum: [draft, published, disabled] }
+        version: { type: integer, minimum: 1 }
+    MockPayReq:
+      type: object
+      required: [channel]
+      properties:
+        channel: { type: string, enum: [mock] }
+    PaymentCreateReq:
+      type: object
+      required: [provider, client_type]
+      properties:
+        provider: { type: string, enum: [wechat] }
+        client_type: { type: string, enum: [miniapp] }
+        return_context: { type: object, additionalProperties: true }
+    AfterSaleCreateReq:
+      type: object
+      required: [order_id, type, requested_resolution, items, description]
+      properties:
+        order_id: { type: string }
+        type: { type: string, enum: [unopened_return, damaged, missing_item, out_of_stock, late_delivery, other] }
+        requested_resolution: { type: string, enum: [refund_only, return_and_refund, replacement, compensation] }
+        items:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items:
+            type: object
+            required: [order_item_id, quantity]
+            properties:
+              order_item_id: { type: string }
+              quantity: { type: integer, minimum: 1 }
+              requested_amount: { type: integer, format: int64, minimum: 0 }
+        include_delivery_fee: { type: boolean }
+        description: { type: string, minLength: 5, maxLength: 1000 }
+        evidence_tokens: { type: array, maxItems: 9, items: { type: string } }
+    AfterSaleEvidenceReq:
+      type: object
+      required: [evidence_tokens, version]
+      properties:
+        evidence_tokens: { type: array, minItems: 1, maxItems: 9, items: { type: string } }
+        version: { type: integer, minimum: 1 }
+    AfterSaleVersionReq:
+      type: object
+      required: [version]
+      properties:
+        reason: { type: string, maxLength: 1000 }
+        version: { type: integer, minimum: 1 }
+    AfterSaleAppealReq:
+      type: object
+      required: [remark, version]
+      properties:
+        remark: { type: string, minLength: 5, maxLength: 1000 }
+        evidence_tokens: { type: array, maxItems: 9, items: { type: string } }
+        version: { type: integer, minimum: 1 }
+    AfterSaleReviewReq:
+      type: object
+      required: [decision, version]
+      properties:
+        decision: { type: string, enum: [approve, reject, request_evidence, escalate] }
+        resolution: { type: string, enum: [refund_only, return_and_refund, replacement, compensation] }
+        approved_items: { type: array, maxItems: 50, items: { type: object, additionalProperties: true } }
+        refund_delivery_fee: { type: boolean }
+        reason_code: { type: string, maxLength: 64 }
+        remark: { type: string, maxLength: 1000 }
+        version: { type: integer, minimum: 1 }
+    ReturnReceiptReq:
+      type: object
+      required: [disposition, sealed_package_intact, goods_intact, version]
+      properties:
+        disposition: { type: string, enum: [restock, damaged, discard] }
+        sealed_package_intact: { type: boolean }
+        goods_intact: { type: boolean }
+        remark: { type: string, maxLength: 1000 }
+        version: { type: integer, minimum: 1 }
+    PaymentCallbackAck:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string, enum: [SUCCESS, FAIL] }
+        message: { type: string }
+    BusinessStatusReq:
+      type: object
+      required: [business_status]
+      properties:
+        business_status: { type: string, enum: [open, closed, resting] }
+    ShopProductCreateReq:
+      type: object
+      required: [shop_id, product_id, sale_price_amount]
+      properties:
+        shop_id: { type: string }
+        product_id: { type: string }
+        sale_price_amount: { type: integer, format: int64, minimum: 1 }
+        status: { type: string, enum: [draft, on_sale, off_sale] }
+        sort_order: { type: integer }
+        initial_available_qty: { type: integer, minimum: 0 }
+    ShopProductUpdateReq:
+      type: object
+      properties:
+        sale_price_amount: { type: integer, format: int64, minimum: 1 }
+        status: { type: string, enum: [draft, on_sale, off_sale] }
+        sort_order: { type: integer }
+    StockAdjustReq:
+      type: object
+      required: [quantity_delta, reason]
+      properties:
+        quantity_delta: { type: integer }
+        reason: { type: string, minLength: 1, maxLength: 255 }
+    ProductUpsertReq:
+      type: object
+      properties:
+        category_id: { type: string }
+        name: { type: string, minLength: 1, maxLength: 128 }
+        brand_name: { type: string, maxLength: 128 }
+        spec: { type: string, maxLength: 128 }
+        image_url: { type: string, maxLength: 512 }
+        description: { type: string }
+        sale_price_amount: { type: integer, format: int64, minimum: 1 }
+        original_price_amount: { type: integer, format: int64, minimum: 0 }
+        status: { type: string, enum: [draft, on_sale, off_sale] }
+        return_eligible: { type: boolean }
+        return_policy_code: { type: string, maxLength: 64 }
+        return_policy_version: { type: string, maxLength: 32 }
+        sealed_package_required: { type: boolean }
+        age_restricted: { type: boolean }
+    AdminStockAdjustReq:
+      type: object
+      required: [shop_product_id, quantity_delta, reason]
+      properties:
+        shop_product_id: { type: string }
+        quantity_delta: { type: integer }
+        reason: { type: string, minLength: 1, maxLength: 255 }
+    MerchantReviewReq:
+      type: object
+      required: [review_status]
+      properties:
+        review_status: { type: string, enum: [approved, rejected] }
+        review_remark: { type: string, maxLength: 255 }
+    MemberRuleSetCreateReq:
+      type: object
+      required: [version, effective_at, reason, tiers]
+      properties:
+        version: { type: string, maxLength: 32 }
+        effective_at: { type: string, format: date-time }
+        reason: { type: string, minLength: 5, maxLength: 500 }
+        tiers:
+          type: array
+          minItems: 3
+          maxItems: 3
+          items:
+            type: object
+            required: [tier_code, tier_name, min_growth]
+            properties:
+              tier_code: { type: string, enum: [normal, silver, gold] }
+              tier_name: { type: string, maxLength: 64 }
+              min_growth: { type: integer, format: int64, minimum: 0 }
+              benefits: { type: object, additionalProperties: true }
+    AssetAdjustmentCreateReq:
+      type: object
+      required: [customer_id, asset_type, direction, amount, reason_code, reason]
+      properties:
+        customer_id: { type: string }
+        asset_type: { type: string, enum: [growth_value, wine_coin, balance] }
+        direction: { type: string, enum: [credit, debit] }
+        amount: { type: integer, format: int64, minimum: 1 }
+        reason_code: { type: string, maxLength: 64 }
+        reason: { type: string, minLength: 5, maxLength: 500 }
+        evidence_refs: { type: array, maxItems: 9, items: { type: string, maxLength: 512 } }
+    AssetAdjustmentReviewReq:
+      type: object
+      required: [version]
+      properties:
+        version: { type: integer, minimum: 1 }
+        remark: { type: string, maxLength: 500 }
+    AssetReconcileReq:
+      type: object
+      required: [scope]
+      properties:
+        scope: { type: string, enum: [all, customer, account, transaction] }
+        scope_id: { type: string, maxLength: 128 }
+        dry_run: { type: boolean, default: true }
+    ReasonReq:
+      type: object
+      required: [reason]
+      properties:
+        reason: { type: string, minLength: 2, maxLength: 255 }
+    PrintSettingPatchReq:
+      type: object
+      required: [enabled, provider, device_id, template_id, copies, auto_print_events, version]
+      properties:
+        enabled: { type: boolean }
+        provider: { type: string, maxLength: 32 }
+        device_id: { type: string, maxLength: 128, writeOnly: true }
+        template_id: { type: string }
+        copies: { type: integer, minimum: 1, maximum: 3 }
+        auto_print_events: { type: array, items: { type: string, enum: [order_accepted, order_prepared] } }
+        version: { type: integer, minimum: 1 }
+    NotificationTemplateReq:
+      type: object
+      required: [template_code, event_type, channel, version, title_template, body_template, allowed_fields, status]
+      properties:
+        template_code: { type: string, maxLength: 64 }
+        event_type: { type: string, maxLength: 64 }
+        channel: { type: string, enum: [inbox, wechat] }
+        provider_template_id: { type: string, maxLength: 128 }
+        version: { type: string, maxLength: 32 }
+        title_template: { type: string, maxLength: 255 }
+        body_template: { type: string, maxLength: 2000 }
+        allowed_fields: { type: array, items: { type: string } }
+        status: { type: string, enum: [draft, published, retired] }
+    VerificationUnlockReq:
+      type: object
+      required: [stage, reason_code, reason]
+      properties:
+        stage: { type: string, enum: [pickup, delivery] }
+        reason_code: { type: string, maxLength: 64 }
+        reason: { type: string, minLength: 2, maxLength: 255 }
+    MerchantProvisionReq:
+      type: object
+      required: [merchant, shop, account, merchant_user_name]
+      properties:
+        merchant: { type: object, required: [code, name], additionalProperties: true }
+        shop: { type: object, required: [name, city, district, address], additionalProperties: true }
+        account: { type: object, required: [username], properties: { username: { type: string }, phone: { type: string } } }
+        merchant_user_name: { type: string, maxLength: 64 }
+    AccountStatusReq:
+      type: object
+      required: [status, reason]
+      properties:
+        status: { type: string, enum: [active, disabled] }
+        reason: { type: string, minLength: 2, maxLength: 255 }
+    RiderCreateReq:
+      type: object
+      additionalProperties: false
+      required: [name, phone, service_scope]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 64 }
+        phone: { type: string, pattern: "^1[3-9][0-9]{9}$" }
+        service_scope: { $ref: "#/components/schemas/RiderApplicationServiceScope" }
+    RiderReviewReq:
+      type: object
+      additionalProperties: false
+      required: [decision, reason]
+      properties:
+        decision: { type: string, enum: [approved, rejected] }
+        reason: { type: string, minLength: 2, maxLength: 255 }
+    RiderApplicationServiceScope:
+      type: object
+      additionalProperties: false
+      required: [shop_ids]
+      properties:
+        shop_ids:
+          type: array
+          minItems: 1
+          maxItems: 50
+          uniqueItems: true
+          items: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+    RiderApplicationSubmitReq:
+      type: object
+      additionalProperties: false
+      required: [name, phone, code, service_scope]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 64 }
+        phone: { type: string, pattern: "^1[3-9][0-9]{9}$" }
+        code: { type: string, pattern: "^[0-9]{6}$" }
+        service_scope: { $ref: "#/components/schemas/RiderApplicationServiceScope" }
+    RiderApplicationUpdateReq:
+      type: object
+      additionalProperties: false
+      required: [name, service_scope, expected_version]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 64 }
+        service_scope: { $ref: "#/components/schemas/RiderApplicationServiceScope" }
+        expected_version: { type: integer, minimum: 1 }
+    RiderApplicationVersionReq:
+      type: object
+      additionalProperties: false
+      required: [expected_version]
+      properties:
+        expected_version: { type: integer, minimum: 1 }
+    RiderApplicationReviewReq:
+      type: object
+      additionalProperties: false
+      required: [decision, reason, expected_version]
+      properties:
+        decision: { type: string, enum: [approved, rejected] }
+        reason: { type: string, minLength: 2, maxLength: 255 }
+        expected_version: { type: integer, minimum: 1 }
+    OpsReasonVersionReq:
+      type: object
+      required: [reason_code, reason, expected_version]
+      properties:
+        reason_code: { type: string, maxLength: 64 }
+        reason: { type: string, minLength: 2, maxLength: 255 }
+        expected_version: { type: integer, minimum: 1 }
+    AssignmentReq:
+      allOf:
+        - $ref: "#/components/schemas/OpsReasonVersionReq"
+        - type: object
+          required: [rider_id]
+          properties:
+            rider_id: { type: string }
+    ForceCompleteRequestReq:
+      allOf:
+        - $ref: "#/components/schemas/OpsReasonVersionReq"
+        - type: object
+          required: [checker_admin_id]
+          properties:
+            checker_admin_id: { type: string }
+    ForceCompleteReq:
+      type: object
+      required: [approval_id, expected_version]
+      properties:
+        approval_id: { type: string }
+        expected_version: { type: integer, minimum: 1 }
+    IdentitySessionReq:
+      type: object
+      required: [verification_level, consent_version]
+      properties:
+        purpose: { type: string, enum: [alcohol_purchase], default: alcohol_purchase }
+        verification_level: { type: string, enum: [identity, identity_and_liveness] }
+        consent_version: { type: string, minLength: 1, maxLength: 64 }
+    IdentityReviewReq:
+      type: object
+      required: [decision, reason]
+      properties:
+        decision: { type: string, enum: [approved, rejected] }
+        reason: { type: string, minLength: 2, maxLength: 255 }
+        valid_until: { type: string, format: date-time, nullable: true }
+    MQDeadReplayReq:
+      type: object
+      required: [reason_code, reason, expected_version]
+      properties:
+        reason_code: { type: string, maxLength: 64 }
+        reason: { type: string, minLength: 2, maxLength: 512 }
+        expected_version: { type: integer, minimum: 1 }
+        expires_at: { type: string, format: date-time }
+    DeliveryIncidentItemReq:
+      type: object
+      additionalProperties: false
+      required: [order_item_id, quantity]
+      properties:
+        order_item_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        quantity: { type: integer, minimum: 1 }
+    DeliveryReturnCreateReq:
+      type: object
+      additionalProperties: false
+      required: [reason_code, expected_delivery_version]
+      properties:
+        reason_code: { type: string, enum: [customer_unreachable, customer_refused, address_wrong, damaged_in_transit, other] }
+        note: { type: string, maxLength: 500 }
+        incident_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        expected_delivery_version: { type: integer, minimum: 1 }
+    DeliveryReturnApproveReq:
+      type: object
+      additionalProperties: false
+      required: [expected_version, decision_note]
+      properties:
+        expected_version: { type: integer, format: int64, minimum: 1 }
+        decision_note: { type: string, minLength: 1, maxLength: 500 }
+    DeliveryReturnArriveReq:
+      type: object
+      additionalProperties: false
+      required: [expected_version]
+      properties:
+        expected_version: { type: integer, format: int64, minimum: 1 }
+    DeliveryReturnReceiveItemReq:
+      type: object
+      additionalProperties: false
+      required: [after_sale_item_id, received_quantity, disposition]
+      properties:
+        after_sale_item_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        received_quantity: { type: integer, minimum: 0 }
+        disposition: { type: string, enum: [restock, damaged, discard] }
+        note: { type: string, maxLength: 500 }
+    DeliveryReturnReceiveReq:
+      type: object
+      additionalProperties: false
+      required: [expected_version, handoff_code, items]
+      properties:
+        expected_version: { type: integer, format: int64, minimum: 1 }
+        handoff_code: { type: string, pattern: "^[A-Za-z0-9]{6,32}$" }
+        items:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items: { $ref: "#/components/schemas/DeliveryReturnReceiveItemReq" }
+    DeliveryReturnItem:
+      type: object
+      additionalProperties: false
+      required: [after_sale_item_id, order_item_id, shop_product_id, product_id, expected_quantity, policy_code, policy_version]
+      properties:
+        after_sale_item_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        order_item_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        shop_product_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        product_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        expected_quantity: { type: integer, minimum: 1 }
+        received_quantity: { type: integer, minimum: 0 }
+        disposition: { type: string, enum: [restock, damaged, discard] }
+        policy_code: { type: string }
+        policy_version: { type: string }
+        available_before: { type: integer, minimum: 0 }
+        available_after: { type: integer, minimum: 0 }
+        note: { type: string, maxLength: 500 }
+    DeliveryReturnHistory:
+      type: object
+      additionalProperties: false
+      required: [id, action, actor_type, created_at]
+      properties:
+        id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        from_status: { type: string }
+        to_status: { type: string }
+        action: { type: string }
+        actor_type: { type: string, enum: [rider, merchant, admin, system] }
+        actor_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        metadata: { type: object, additionalProperties: true }
+        created_at: { type: string, format: date-time }
+    DeliveryReturn:
+      type: object
+      additionalProperties: false
+      required: [id, return_no, order_id, delivery_order_id, shop_id, rider_id, reason_code, status, initiator_type, logistics_status, refund_status, inventory_status, version, allowed_actions, requested_at, created_at, updated_at]
+      properties:
+        id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        return_no: { type: string, maxLength: 64 }
+        order_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        delivery_order_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        shop_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        rider_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        incident_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        after_sale_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        reason_code: { type: string, enum: [customer_unreachable, customer_refused, address_wrong, damaged_in_transit, other] }
+        status: { type: string, enum: [requested, returning, arrived, received, closed, cancelled, disputed, exception] }
+        initiator_type: { type: string, enum: [rider, admin, system] }
+        logistics_status: { type: string, enum: [requested, returning, arrived, received, exception] }
+        refund_status: { type: string, enum: [not_authorized, processing, succeeded, failed] }
+        inventory_status: { type: string, enum: [not_applicable, pending_receipt, disposed, exception] }
+        version: { type: integer, format: int64, minimum: 1 }
+        allowed_actions: { type: array, items: { type: string } }
+        requested_at: { type: string, format: date-time }
+        approved_at: { type: string, format: date-time }
+        arrived_at: { type: string, format: date-time }
+        received_at: { type: string, format: date-time }
+        closed_at: { type: string, format: date-time }
+        receipt_deadline_at: { type: string, format: date-time }
+        handoff_code: { type: string, writeOnly: true, description: 仅 arrive 首次成功或同幂等键重放时返回 }
+        handoff_code_expires_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        items: { type: array, items: { $ref: "#/components/schemas/DeliveryReturnItem" } }
+        timeline: { type: array, items: { $ref: "#/components/schemas/DeliveryReturnHistory" } }
+        deduplicated: { type: boolean }
+    DeliveryReturnEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, example: 0 }
+        message: { type: string, example: ok }
+        data: { $ref: "#/components/schemas/DeliveryReturn" }
+        request_id: { type: string }
+    DeliveryIncidentContactAttemptsReq:
+      type: object
+      additionalProperties: false
+      required: [count, first_at, last_at]
+      properties:
+        count: { type: integer, minimum: 2 }
+        first_at: { type: string, format: date-time }
+        last_at: { type: string, format: date-time }
+    DeliveryIncidentLocationReq:
+      type: object
+      additionalProperties: false
+      required: [longitude, latitude, accuracy_m, captured_at]
+      properties:
+        longitude: { type: number, minimum: -180, maximum: 180, writeOnly: true }
+        latitude: { type: number, minimum: -90, maximum: 90, writeOnly: true }
+        accuracy_m: { type: number, minimum: 0, maximum: 10000 }
+        captured_at: { type: string, format: date-time }
+    DeliveryIncidentCreateReq:
+      type: object
+      additionalProperties: false
+      required: [type, description]
+      properties:
+        type: { type: string, enum: [out_of_stock, alcohol_damaged, customer_refused, customer_unreachable] }
+        reason_code: { type: string, maxLength: 64 }
+        description: { type: string, minLength: 1, maxLength: 1000 }
+        items:
+          type: array
+          maxItems: 50
+          items: { $ref: "#/components/schemas/DeliveryIncidentItemReq" }
+        contact_attempts: { $ref: "#/components/schemas/DeliveryIncidentContactAttemptsReq" }
+        evidence_tokens:
+          type: array
+          maxItems: 9
+          items: { type: string, minLength: 20, maxLength: 8192, writeOnly: true }
+        location: { $ref: "#/components/schemas/DeliveryIncidentLocationReq" }
+    DeliveryIncidentEvidenceReq:
+      type: object
+      additionalProperties: false
+      required: [expected_version, evidence_tokens]
+      properties:
+        expected_version: { type: integer, minimum: 1 }
+        evidence_tokens:
+          type: array
+          minItems: 1
+          maxItems: 9
+          items: { type: string, minLength: 20, maxLength: 8192, writeOnly: true }
+    DeliveryIncidentAcknowledgeReq:
+      type: object
+      additionalProperties: false
+      required: [expected_version]
+      properties:
+        expected_version: { type: integer, minimum: 1 }
+        note: { type: string, maxLength: 1000 }
+    DeliveryIncidentResolveReq:
+      type: object
+      additionalProperties: false
+      required: [expected_version, resolution_code, resolution_note]
+      properties:
+        expected_version: { type: integer, minimum: 1 }
+        resolution_code: { type: string, enum: [issue_cleared_resume, return_required, returned_to_store, refund_followup, other] }
+        resolution_note: { type: string, minLength: 1, maxLength: 1000 }
+    DeliveryIncidentRejectReq:
+      type: object
+      additionalProperties: false
+      required: [expected_version, reason_code, reason]
+      properties:
+        expected_version: { type: integer, minimum: 1 }
+        reason_code: { type: string, minLength: 1, maxLength: 64 }
+        reason: { type: string, minLength: 1, maxLength: 1000 }
+    DeliveryIncidentItem:
+      type: object
+      additionalProperties: false
+      required: [id, order_item_id, quantity, item_snapshot]
+      properties:
+        id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        order_item_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        quantity: { type: integer, minimum: 1 }
+        item_snapshot: { type: object, additionalProperties: true }
+    DeliveryIncidentEvidence:
+      type: object
+      additionalProperties: false
+      required: [id, mime_type, size_bytes, sha256_suffix, scan_status, view_available, created_at]
+      properties:
+        id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        mime_type: { type: string, enum: [image/jpeg, image/png, image/heic] }
+        size_bytes: { type: integer, format: int64, minimum: 1, maximum: 20971520 }
+        sha256_suffix: { type: string, minLength: 8, maxLength: 8 }
+        scan_status: { type: string, enum: [clean] }
+        view_available: { type: boolean }
+        created_at: { type: string, format: date-time }
+    DeliveryIncidentEvidenceViewEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, example: 0 }
+        message: { type: string, example: ok }
+        data:
+          type: object
+          additionalProperties: false
+          required: [url, expires_at]
+          properties:
+            url: { type: string, format: uri, writeOnly: true, description: "包含不透明加密令牌，不包含对象键" }
+            expires_at: { type: string, format: date-time }
+        request_id: { type: string }
+    DeliveryIncidentHistory:
+      type: object
+      additionalProperties: false
+      required: [id, actor_type, action, to_status, created_at]
+      properties:
+        id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        actor_type: { type: string, enum: [rider, admin, system] }
+        actor_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        action: { type: string, enum: [reported, evidence_added, acknowledged, resolved, rejected] }
+        from_status: { type: string, enum: [evidence_required, open, acknowledged, resolved, rejected] }
+        to_status: { type: string, enum: [evidence_required, open, acknowledged, resolved, rejected] }
+        reason_code: { type: string, maxLength: 64 }
+        remark: { type: string, maxLength: 1000 }
+        created_at: { type: string, format: date-time }
+    DeliveryIncident:
+      type: object
+      additionalProperties: false
+      required: [id, incident_no, delivery_order_id, order_id, shop_id, rider_id, type, stage, status, priority, description, delivery_status_snapshot, assignment_version_snapshot, contact_attempt_count, version, reported_at, created_at, updated_at]
+      properties:
+        id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        incident_no: { type: string, maxLength: 64 }
+        delivery_order_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        order_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        shop_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        rider_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        type: { type: string, enum: [out_of_stock, alcohol_damaged, customer_refused, customer_unreachable] }
+        stage: { type: string, enum: [pickup, delivery] }
+        status: { type: string, enum: [evidence_required, open, acknowledged, resolved, rejected] }
+        priority: { type: string, enum: [high, urgent] }
+        reason_code: { type: string, maxLength: 64 }
+        description: { type: string, maxLength: 1000 }
+        delivery_status_snapshot: { type: string, maxLength: 32 }
+        assignment_version_snapshot: { type: integer, minimum: 1 }
+        contact_attempt_count: { type: integer, minimum: 0 }
+        first_contact_at: { type: string, format: date-time }
+        last_contact_at: { type: string, format: date-time }
+        distance_to_destination_m: { type: integer, minimum: 0 }
+        location_accuracy_m: { type: number, minimum: 0 }
+        location_captured_at: { type: string, format: date-time }
+        acknowledged_by: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        acknowledged_at: { type: string, format: date-time }
+        resolved_by: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        resolved_at: { type: string, format: date-time }
+        resolution_code: { type: string, maxLength: 64 }
+        resolution_note: { type: string, maxLength: 1000 }
+        rejected_by: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        rejected_at: { type: string, format: date-time }
+        rejection_code: { type: string, maxLength: 64 }
+        rejection_reason: { type: string, maxLength: 1000 }
+        version: { type: integer, minimum: 1 }
+        reported_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        items: { type: array, maxItems: 50, items: { $ref: "#/components/schemas/DeliveryIncidentItem" } }
+        evidence: { type: array, maxItems: 9, items: { $ref: "#/components/schemas/DeliveryIncidentEvidence" } }
+        history: { type: array, items: { $ref: "#/components/schemas/DeliveryIncidentHistory" } }
+    DeliveryIncidentEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, example: 0 }
+        message: { type: string, example: ok }
+        data: { $ref: "#/components/schemas/DeliveryIncident" }
+        request_id: { type: string }
+    DeliveryIncidentPageEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, example: 0 }
+        message: { type: string, example: ok }
+        data:
+          type: object
+          additionalProperties: false
+          required: [items, next_page_token]
+          properties:
+            items: { type: array, items: { $ref: "#/components/schemas/DeliveryIncident" } }
+            next_page_token: { type: string }
+        request_id: { type: string }
+    ProblemDetails:
+      type: object
+      required: [type, title, status, error_code]
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        error_code: { type: string }
+        request_id: { type: string }

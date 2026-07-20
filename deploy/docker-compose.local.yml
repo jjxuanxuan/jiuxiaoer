@@ -1,0 +1,65 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: jxe-p0-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: jiuxiaoer_go_p0
+      MYSQL_USER: jxe
+      MYSQL_PASSWORD: p0devpass
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:13306:3306"
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --default-time-zone=+08:00
+    volumes:
+      - jxe-p0-mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-prootpass"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:8
+    container_name: jxe-p0-redis
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:16379:6379"
+    volumes:
+      - jxe-p0-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  rabbitmq:
+    image: rabbitmq:4-management
+    container_name: jxe-p0-rabbitmq
+    profiles:
+      - mq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: jxe
+      RABBITMQ_DEFAULT_PASS: p0devpass
+      RABBITMQ_DEFAULT_VHOST: jxe-events-v2
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
+    volumes:
+      - jxe-p0-rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  jxe-p0-mysql-data:
+  jxe-p0-redis-data:
+  jxe-p0-rabbitmq-data:

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "event://envelope/1.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["spec_version", "event_id", "event_type", "event_version", "aggregate_type", "aggregate_id", "occurred_at", "producer", "partition_key", "payload", "metadata"],
+  "properties": {
+    "spec_version": {"const": "1.0"},
+    "event_id": {"type": "string", "format": "uuid"},
+    "event_type": {"type": "string", "pattern": "^[a-z][a-z0-9_]*(\\.[a-z0-9_]+)+$"},
+    "event_version": {"type": "integer", "minimum": 1},
+    "aggregate_type": {"type": "string", "minLength": 1, "maxLength": 64},
+    "aggregate_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "occurred_at": {"type": "string", "format": "date-time"},
+    "producer": {"type": "string", "minLength": 1, "maxLength": 64},
+    "request_id": {"type": "string", "maxLength": 128},
+    "trace_id": {"type": "string", "maxLength": 128},
+    "partition_key": {"type": "string", "minLength": 1, "maxLength": 160},
+    "payload": {"type": "object"},
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["environment", "schema_ref"],
+      "properties": {
+        "environment": {"type": "string", "minLength": 1, "maxLength": 32},
+        "schema_ref": {"type": "string", "pattern": "^event://"},
+        "replay_of_event_id": {"type": "string", "format": "uuid"}
+      }
+    }
+  }
+}

@@ -1,0 +1,518 @@
+groups:
+  - name: jiuxiaoer-api-l0
+    rules:
+      - alert: JiuxiaoerAPITargetDown
+        expr: up{job="jiuxiaoer-api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Jiuxiaoer API metrics target is down"
+          runbook: "docs/runbooks/l0-operations.md#api-target-down"
+
+      - alert: JiuxiaoerAPIUnready
+        expr: jxe_readiness == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Jiuxiaoer API instance is not ready"
+          runbook: "docs/runbooks/l0-operations.md#instance-not-ready"
+
+      - alert: JiuxiaoerRequiredDependencyUnready
+        expr: jxe_dependency_ready{required="true"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Required dependency {{ $labels.dependency }} is unhealthy"
+          runbook: "docs/runbooks/l0-operations.md#required-dependency-unready"
+
+      - alert: JiuxiaoerOutboxBacklog
+        expr: jxe_outbox_oldest_pending_seconds > 300
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Oldest pending Outbox event is older than five minutes"
+          runbook: "docs/runbooks/l0-operations.md#outbox-backlog-or-dead-events"
+
+      - alert: JiuxiaoerOutboxDeadEvents
+        expr: jxe_outbox_dead > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Outbox contains dead events"
+          runbook: "docs/runbooks/l0-operations.md#outbox-backlog-or-dead-events"
+
+      - alert: JiuxiaoerMQUnroutedEvent
+        expr: sum(increase(jxe_mq_unrouted_total[5m])) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RabbitMQ received an event without an approved binding"
+          runbook: "docs/runbooks/rabbitmq-event-backbone.md#unrouted-event"
+
+      - alert: JiuxiaoerMQDeadLetter
+        expr: sum(increase(jxe_mq_dead_total[5m])) > 0 or jxe_mq_dead_open > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RabbitMQ consumer dead letter requires investigation"
+          runbook: "docs/runbooks/rabbitmq-event-backbone.md#dead-letter"
+
+      - alert: JiuxiaoerMQTopologyDrift
+        expr: jxe_mq_topology_drift == 1
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RabbitMQ topology differs from the declared v1 contract"
+          runbook: "docs/runbooks/rabbitmq-event-backbone.md#topology-drift"
+
+      - alert: JiuxiaoerMQConsumerLag
+        expr: jxe_mq_consumer_lag_seconds > 60
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RabbitMQ consumer {{ $labels.consumer }} processing lag exceeds 60 seconds"
+          runbook: "docs/runbooks/rabbitmq-event-backbone.md#consumer-backlog"
+
+      - alert: JiuxiaoerMQQueueBacklog
+        expr: jxe_mq_queue_oldest_seconds{consumer=~"notification|print|cache|security|dispatch"} > 60 or jxe_mq_queue_ready{consumer=~"notification|print|cache|security|dispatch"} > 1000
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RabbitMQ queue {{ $labels.queue }} for consumer {{ $labels.consumer }} is backlogged"
+          runbook: "docs/runbooks/rabbitmq-event-backbone.md#consumer-backlog"
+
+      - alert: JiuxiaoerMQQueueWithoutConsumer
+        expr: jxe_mq_queue_ready{consumer=~"notification|print|cache|security|dispatch"} > 0 and on(instance, queue, consumer) jxe_mq_queue_consumers == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RabbitMQ queue {{ $labels.queue }} has messages but consumer {{ $labels.consumer }} is absent"
+          runbook: "docs/runbooks/rabbitmq-event-backbone.md#consumer-backlog"
+
+      - alert: JiuxiaoerDispatchJobOverdue
+        expr: jxe_dispatch_oldest_overdue_seconds > 5
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "An actionable dispatch job is more than five seconds overdue"
+          runbook: "docs/runbooks/hybrid-dispatch.md#job-overdue"
+
+      - alert: JiuxiaoerDispatchManualBacklog
+        expr: jxe_dispatch_manual_required > 20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than twenty delivery jobs require manual assignment"
+          runbook: "docs/runbooks/hybrid-dispatch.md#manual-backlog"
+
+      - alert: JiuxiaoerDispatchInvariantViolation
+        expr: jxe_dispatch_duplicate_active_assignments > 0 or jxe_dispatch_paid_orders_without_delivery > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A dispatch durability or single-assignment invariant is violated"
+          runbook: "docs/runbooks/hybrid-dispatch.md#invariant-violation"
+
+      - alert: JiuxiaoerDispatchExpiredOffer
+        expr: jxe_dispatch_expired_pending_offers > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Expired dispatch offers have not been swept"
+          runbook: "docs/runbooks/hybrid-dispatch.md#job-overdue"
+
+      - alert: JiuxiaoerDispatchServiceScopeMismatch
+        expr: jxe_dispatch_service_scope_mismatches > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Legacy and normalized rider service scopes differ"
+          runbook: "docs/runbooks/hybrid-dispatch.md#service-scope-mismatch"
+
+      - alert: JiuxiaoerMapRouteProviderSuccessLow
+        expr: |
+          sum(rate(jxe_route_provider_calls_total{result="success"}[5m]))
+          /
+          clamp_min(sum(rate(jxe_route_provider_calls_total[5m])), 0.001)
+          < 0.95
+          and sum(rate(jxe_route_provider_calls_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Map route provider success rate is below 95 percent"
+          runbook: "docs/runbooks/map-route-planning.md#provider-success-low"
+
+      - alert: JiuxiaoerMapRouteProviderP95High
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(jxe_route_provider_duration_seconds_bucket[5m]))
+          ) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Map route provider P95 latency exceeds two seconds"
+          runbook: "docs/runbooks/map-route-planning.md#provider-latency-high"
+
+      - alert: JiuxiaoerMapRouteQuotaUnavailable
+        expr: sum(increase(jxe_route_provider_calls_total{result="quota"}[5m])) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Map route provider quota is unavailable"
+          runbook: "docs/runbooks/map-route-planning.md#provider-quota-unavailable"
+
+      - alert: JiuxiaoerAPIHigh5xxRate
+        expr: |
+          sum by (instance) (rate(jxe_http_requests_total{status=~"5.."}[5m]))
+          /
+          clamp_min(sum by (instance) (rate(jxe_http_requests_total[5m])), 0.001)
+          > 0.01
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Jiuxiaoer API 5xx rate exceeds one percent"
+          runbook: "docs/runbooks/l0-operations.md#high-5xx-rate"
+
+      - alert: JiuxiaoerOrderExpiryLag
+        expr: jxe_order_expiry_lag_seconds > 60
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Expired unpaid orders are more than 60 seconds behind"
+          runbook: "docs/runbooks/l1-payment-operations.md#order-expiry-lag"
+
+      - alert: JiuxiaoerPaymentOperationFailures
+        expr: sum by (instance, provider, result) (increase(jxe_payment_operations_total{result=~".*(failed|rejected|mismatch).*"}[5m])) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Payment operation failure detected for {{ $labels.provider }}"
+          runbook: "docs/runbooks/l1-payment-operations.md#payment-callback-or-provider-failure"
+
+      - alert: JiuxiaoerServiceAreaTimeout
+        expr: sum by (instance) (increase(jxe_service_area_resolve_total{result="timeout"}[5m])) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service area resolver timed out"
+          runbook: "docs/runbooks/l2-service-area-home.md#resolver-timeout"
+
+      - alert: JiuxiaoerServiceAreaUnavailableSpike
+        expr: sum by (instance) (increase(jxe_service_area_resolve_total{result=~"city_unsupported|out_of_service_area|no_open_shop"}[5m])) > 30
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Service area unavailable results increased"
+          runbook: "docs/runbooks/l2-service-area-home.md#unavailable-spike"
+
+      - alert: JiuxiaoerSnowflakeClockRollback
+        expr: increase(jxe_snowflake_clock_rollbacks_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Snowflake generator observed a wall-clock rollback"
+          runbook: "docs/runbooks/l0-operations.md#snowflake-clock-rollback"
+
+      - alert: JiuxiaoerRefundException
+        expr: jxe_refund_tasks{status="exception"} > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Refund task requires manual investigation"
+          runbook: "docs/runbooks/l3-after-sale-refund.md#refund-exception"
+
+      - alert: JiuxiaoerRefundPendingOld
+        expr: jxe_refund_oldest_pending_seconds > 1800
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Oldest refund has been pending for more than 30 minutes"
+          runbook: "docs/runbooks/l3-after-sale-refund.md#refund-backlog"
+
+      - alert: JiuxiaoerRefundPendingCritical
+        expr: jxe_refund_oldest_pending_seconds > 7200
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Oldest refund has been pending for more than two hours"
+          runbook: "docs/runbooks/l3-after-sale-refund.md#refund-backlog"
+
+      - alert: JiuxiaoerRefundCallbackFailure
+        expr: jxe_refund_callback_failures_5m > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Refund callback verification or reconciliation failed"
+          runbook: "docs/runbooks/l3-after-sale-refund.md#callback-failure"
+
+      - alert: JiuxiaoerAfterSaleReviewBacklog
+        expr: jxe_after_sale_review_oldest_seconds > 7200
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "An after-sale request has waited for review for more than two hours"
+          runbook: "docs/runbooks/l3-after-sale-refund.md#review-backlog"
+
+      - alert: JiuxiaoerAssetLedgerUnbalanced
+        expr: jxe_asset_unbalanced_transactions > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Asset ledger contains an unbalanced posted transaction"
+          runbook: "docs/runbooks/l4-member-asset-ledger.md#ledger-invariant-failure"
+
+      - alert: JiuxiaoerAssetCustomerNegative
+        expr: jxe_asset_negative_customer_balances > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A customer asset balance is negative"
+          runbook: "docs/runbooks/l4-member-asset-ledger.md#ledger-invariant-failure"
+
+      - alert: JiuxiaoerAssetProjectionMismatch
+        expr: jxe_asset_projection_mismatches > 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Asset balance projection differs from immutable entries"
+          runbook: "docs/runbooks/l4-member-asset-ledger.md#projection-mismatch"
+
+      - alert: JiuxiaoerAssetCompensationMismatch
+        expr: jxe_asset_compensation_mismatches > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Compensation issuance and asset transaction do not match"
+          runbook: "docs/runbooks/l4-member-asset-ledger.md#compensation-mismatch"
+
+      - alert: JiuxiaoerAssetHoldStale
+        expr: jxe_asset_holds_stale > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Expired asset holds are not being released"
+          runbook: "docs/runbooks/l4-member-asset-ledger.md#hold-or-expiry-backlog"
+
+      - alert: JiuxiaoerAssetExpiryBacklog
+        expr: jxe_asset_expiry_backlog > 1000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Asset expiry backlog exceeds one thousand lots"
+          runbook: "docs/runbooks/l4-member-asset-ledger.md#hold-or-expiry-backlog"
+
+      - alert: JiuxiaoerCompensationIssueBacklog
+        expr: jxe_compensation_issue_oldest_seconds > 1800
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Oldest approved compensation has not been issued for thirty minutes"
+          runbook: "docs/runbooks/l4-member-asset-ledger.md#compensation-backlog"
+
+      - alert: JiuxiaoerPrintBacklog
+        expr: jxe_print_oldest_pending_seconds > 120
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Print tasks have been pending for more than two minutes"
+          runbook: "docs/runbooks/cp1-launch-closure.md#print-backlog"
+
+      - alert: JiuxiaoerPrintDead
+        expr: jxe_print_tasks_total{status="dead"} > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A print task requires manual recovery"
+          runbook: "docs/runbooks/cp1-launch-closure.md#print-backlog"
+
+      - alert: JiuxiaoerNotificationBacklog
+        expr: jxe_notification_oldest_pending_seconds > 120
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Notification deliveries have been pending for more than two minutes"
+          runbook: "docs/runbooks/cp1-launch-closure.md#notification-backlog"
+
+      - alert: JiuxiaoerNotificationDead
+        expr: jxe_notification_deliveries_total{status="dead"} > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A transaction notification requires manual recovery"
+          runbook: "docs/runbooks/cp1-launch-closure.md#notification-backlog"
+
+      - alert: JiuxiaoerDeliveryIncidentCreateSLO
+        expr: (sum(increase(jxe_delivery_incident_requests_total{action="report",result="success"}[5m])) / clamp_min(sum(increase(jxe_delivery_incident_requests_total{action="report"}[5m])), 1) < 0.999) and (sum(increase(jxe_delivery_incident_requests_total{action="report"}[5m])) >= 20)
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Delivery incident creation success rate is below 99.9%"
+          runbook: "docs/runbooks/delivery-incident-ops.md#create-slo-or-latency"
+
+      - alert: JiuxiaoerDeliveryIncidentLatency
+        expr: max(jxe_delivery_incident_request_duration_seconds{action="report",quantile="0.99"}) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Delivery incident creation P99 exceeds 800ms"
+          runbook: "docs/runbooks/delivery-incident-ops.md#create-slo-or-latency"
+
+      - alert: JiuxiaoerDeliveryIncidentInvariantViolation
+        expr: max(jxe_delivery_incident_duplicate_active) > 0 or max(jxe_delivery_incident_inconsistent_facts) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A delivery incident uniqueness or durability invariant is violated"
+          runbook: "docs/runbooks/delivery-incident-ops.md#fact-invariant-violation"
+
+      - alert: JiuxiaoerDeliveryIncidentNaturalCloseResidual
+        expr: max(jxe_delivery_incident_stale_after_natural_close_total) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "An active delivery incident remains after natural fulfillment closure"
+          runbook: "docs/runbooks/delivery-incident-ops.md#natural-close-residual"
+
+      - alert: JiuxiaoerDeliveryIncidentCustomerNotification
+        expr: max(jxe_delivery_incident_customer_notifications) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A customer notification was created for an internal delivery incident"
+          runbook: "docs/runbooks/delivery-incident-ops.md#customer-notification"
+
+      - alert: JiuxiaoerDeliveryIncidentUnacknowledged
+        expr: max(jxe_delivery_incident_unacknowledged_ratio) > 0.05 and max(jxe_delivery_incident_unacknowledged_over_10m) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 5% of open delivery incidents are unacknowledged after ten minutes"
+          runbook: "docs/runbooks/delivery-incident-ops.md#unacknowledged-backlog"
+
+      - alert: JiuxiaoerDeliveryReturnReceiptSLAWarning
+        expr: max(jxe_delivery_return_oldest_pending_receipt_seconds) > 7200
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A delivery return has awaited store receipt for more than two hours"
+          runbook: "docs/runbooks/delivery-return-ops.md#receipt-sla-or-branch-divergence"
+
+      - alert: JiuxiaoerDeliveryReturnReceiptSLABreached
+        expr: max(jxe_delivery_return_sla_breached) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A delivery return exceeded its physical receipt deadline"
+          runbook: "docs/runbooks/delivery-return-ops.md#receipt-sla-or-branch-divergence"
+
+      - alert: JiuxiaoerDeliveryReturnBranchDivergence
+        expr: max(jxe_delivery_return_refund_succeeded_unreceived) > 0 or max(jxe_delivery_return_received_refund_problem) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Delivery return financial and physical branches are diverged"
+          runbook: "docs/runbooks/delivery-return-ops.md#receipt-sla-or-branch-divergence"
+
+      - alert: JiuxiaoerDeliveryReturnInvariantViolation
+        expr: max(jxe_delivery_return_inconsistent_closed) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A closed delivery return violates refund, receipt, or inventory invariants"
+          runbook: "docs/runbooks/delivery-return-ops.md#closed-invariant-violation"
+
+      - alert: JiuxiaoerDeliveryReturnCustomerPrematureNotification
+        expr: max(jxe_delivery_return_requested_customer_notifications) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A customer was notified before a delivery return was approved"
+          runbook: "docs/runbooks/delivery-return-ops.md#premature-customer-notification"
+
+      - alert: JiuxiaoerDeliveryReturnHandoffRejectionSpike
+        expr: max(jxe_delivery_return_handoff_rejections_5m) > 20
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Delivery return handoff-code rejections spiked"
+          runbook: "docs/runbooks/delivery-return-ops.md#handoff-rejection-spike"
+
+      - alert: JiuxiaoerVerificationFailureSpike
+        expr: sum(delta(jxe_delivery_verification_total{result="failed"}[5m])) > 20
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Delivery verification failures spiked"
+          runbook: "docs/runbooks/cp1-launch-closure.md#verification-failures-or-suspected-code-exposure"
+
+      - alert: JiuxiaoerProvisioningFailure
+        expr: jxe_provisioning_operations_total{status="failed"} > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A provisioning command requires investigation"
+          runbook: "docs/runbooks/cp1-launch-closure.md#rollback"
+
+      - alert: JiuxiaoerAdminOverrideSpike
+        expr: sum(delta(jxe_admin_override_total[15m])) > 5
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Unusually many admin force-complete overrides occurred"
+          runbook: "docs/runbooks/cp1-launch-closure.md#force-completion"

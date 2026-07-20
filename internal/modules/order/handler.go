@@ -1,0 +1,186 @@
+package order
+
+import (
+	"io"
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+
+	"jiuxiaoer-admin/backend-go/internal/modules/auth"
+	"jiuxiaoer-admin/backend-go/internal/pkg/pagination"
+	"jiuxiaoer-admin/backend-go/internal/pkg/problem"
+	"jiuxiaoer-admin/backend-go/internal/pkg/response"
+)
+
+type Handler struct {
+	service *Service
+}
+
+// NewHandler 创建并初始化Handler。
+func NewHandler(service *Service) *Handler {
+	return &Handler{service: service}
+}
+
+// RegisterRoutes 注册Routes。
+func RegisterRoutes(router *gin.RouterGroup, handler *Handler) {
+	router.POST("", handler.Create)
+	router.GET("", handler.List)
+	router.GET("/:id", handler.Detail)
+	router.POST("/:id/cancel", handler.Cancel)
+	router.POST("/:id/payments", handler.CreatePayment)
+	router.GET("/:id/payment", handler.GetPayment)
+	if handler.service.cfg.Feature.PaymentMockEnabled {
+		router.POST("/:id/pay/mock", handler.MockPay)
+	}
+}
+
+// RegisterCallbackRoute 注册回调路由。
+func RegisterCallbackRoute(api *gin.RouterGroup, handler *Handler) {
+	if handler.service.cfg.WeChat.PayEnabled {
+		api.POST("/payments/:provider/callbacks", handler.PaymentCallback)
+	}
+}
+
+// Create 创建订单。
+func (h *Handler) Create(c *gin.Context) {
+	claims, ok := auth.ClaimsFromContext(c)
+	if !ok {
+		response.Error(c, problem.Unauthorized("AUTH_UNAUTHORIZED", "unauthorized"))
+		return
+	}
+	var req OrderCreateReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, problem.InvalidArgument("VALIDATION_FAILED", err.Error()))
+		return
+	}
+	resp, err := h.service.Create(c.Request.Context(), claims, c.Request.Method, c.FullPath(), c.GetHeader("Idempotency-Key"), req)
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.OK(c, resp)
+}
+
+// List 查询订单列表。
+func (h *Handler) List(c *gin.Context) {
+	claims, ok := auth.ClaimsFromContext(c)
+	if !ok {
+		response.Error(c, problem.Unauthorized("AUTH_UNAUTHORIZED", "unauthorized"))
+		return
+	}
+	query, err := pagination.FromGin(c)
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	items, nextPageToken, err := h.service.List(c.Request.Context(), claims, query)
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.Page(c, items, nextPageToken)
+}
+
+// Detail 处理Detail相关逻辑。
+func (h *Handler) Detail(c *gin.Context) {
+	claims, ok := auth.ClaimsFromContext(c)
+	if !ok {
+		response.Error(c, problem.Unauthorized("AUTH_UNAUTHORIZED", "unauthorized"))
+		return
+	}
+	item, err := h.service.Detail(c.Request.Context(), claims, c.Param("id"))
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.OK(c, item)
+}
+
+// Cancel 取消订单。
+func (h *Handler) Cancel(c *gin.Context) {
+	claims, ok := auth.ClaimsFromContext(c)
+	if !ok {
+		response.Error(c, problem.Unauthorized("AUTH_UNAUTHORIZED", "unauthorized"))
+		return
+	}
+	var req OrderCancelReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, problem.InvalidArgument("VALIDATION_FAILED", err.Error()))
+		return
+	}
+	item, err := h.service.Cancel(c.Request.Context(), claims, c.Request.Method, c.FullPath(), c.GetHeader("Idempotency-Key"), c.Param("id"), req)
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.OK(c, item)
+}
+
+// MockPay 处理Mock Pay相关逻辑。
+func (h *Handler) MockPay(c *gin.Context) {
+	claims, ok := auth.ClaimsFromContext(c)
+	if !ok {
+		response.Error(c, problem.Unauthorized("AUTH_UNAUTHORIZED", "unauthorized"))
+		return
+	}
+	var req MockPayReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, problem.InvalidArgument("VALIDATION_FAILED", err.Error()))
+		return
+	}
+	item, err := h.service.MockPay(c.Request.Context(), claims, c.Request.Method, c.FullPath(), c.GetHeader("Idempotency-Key"), c.Param("id"), req)
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.OK(c, item)
+}
+
+// CreatePayment 创建支付。
+func (h *Handler) CreatePayment(c *gin.Context) {
+	claims, ok := auth.ClaimsFromContext(c)
+	if !ok {
+		response.Error(c, problem.Unauthorized("AUTH_UNAUTHORIZED", "unauthorized"))
+		return
+	}
+	var req PaymentCreateReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, problem.InvalidArgument("VALIDATION_FAILED", err.Error()))
+		return
+	}
+	item, err := h.service.CreatePayment(c.Request.Context(), claims, c.Request.Method, c.FullPath(), c.GetHeader("Idempotency-Key"), c.Param("id"), req)
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.OK(c, item)
+}
+
+// GetPayment 获取支付。
+func (h *Handler) GetPayment(c *gin.Context) {
+	claims, ok := auth.ClaimsFromContext(c)
+	if !ok {
+		response.Error(c, problem.Unauthorized("AUTH_UNAUTHORIZED", "unauthorized"))
+		return
+	}
+	item, err := h.service.GetPayment(c.Request.Context(), claims, c.Param("id"))
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.OK(c, item)
+}
+
+// PaymentCallback 处理支付回调相关逻辑。
+func (h *Handler) PaymentCallback(c *gin.Context) {
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 256*1024+1))
+	if err != nil || len(body) > 256*1024 {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"code": "FAIL", "message": "callback rejected"})
+		return
+	}
+	if err := h.service.ProcessPaymentCallback(c.Request.Context(), c.Param("provider"), c.Request, body); err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"code": "FAIL", "message": "callback rejected"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"code": "SUCCESS", "message": "成功"})
+}

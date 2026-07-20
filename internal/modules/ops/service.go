@@ -1,0 +1,459 @@
+package ops
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"github.com/google/uuid"
+	"gorm.io/datatypes"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+	"jiuxiaoer-admin/backend-go/internal/config"
+	"jiuxiaoer-admin/backend-go/internal/modules/auth"
+	"jiuxiaoer-admin/backend-go/internal/modules/deliveryverification"
+	"jiuxiaoer-admin/backend-go/internal/modules/dispatch"
+	"jiuxiaoer-admin/backend-go/internal/modules/order"
+	"jiuxiaoer-admin/backend-go/internal/pkg/idempotency"
+	"jiuxiaoer-admin/backend-go/internal/pkg/problem"
+	"jiuxiaoer-admin/backend-go/internal/pkg/requestctx"
+	"jiuxiaoer-admin/backend-go/internal/pkg/snowflake"
+	"strconv"
+	"time"
+)
+
+type Service struct {
+	cfg       config.Config
+	db        *gorm.DB
+	ids       *snowflake.Generator
+	idem      *idempotency.Store
+	orders    *order.Service
+	dispatch  *dispatch.Service
+	incidents IncidentResolver
+	returns   ReturnGuard
+}
+
+type IncidentResolver interface {
+	ResolveActiveLocked(ctx context.Context, tx *gorm.DB, deliveryID uint64, stage, resolutionCode string) error
+}
+
+type ReturnGuard interface {
+	HasActiveLocked(ctx context.Context, tx *gorm.DB, deliveryID uint64) (bool, error)
+}
+
+// NewService 创建并初始化服务。
+func NewService(cfg config.Config, db *gorm.DB, ids *snowflake.Generator, orders *order.Service) *Service {
+	return &Service{cfg: cfg, db: db, ids: ids, idem: idempotency.NewStore(db), orders: orders}
+}
+
+// WithDispatch 设置调度并返回更新后的值。
+func (s *Service) WithDispatch(service *dispatch.Service) *Service { s.dispatch = service; return s }
+
+func (s *Service) WithIncidentResolver(resolver IncidentResolver) *Service {
+	s.incidents = resolver
+	return s
+}
+
+func (s *Service) WithReturnGuard(guard ReturnGuard) *Service {
+	s.returns = guard
+	return s
+}
+
+// Cancel 取消订单DTO。
+func (s *Service) Cancel(ctx context.Context, c *auth.Claims, method, path, key, idRaw string, req CancelReq) (order.OrderDTO, error) {
+	actor, e := adminID(c, "order:cancel_all")
+	if e != nil {
+		return order.OrderDTO{}, e
+	}
+	_ = actor
+	return s.orders.Cancel(ctx, c, method, path, key, idRaw, order.OrderCancelReq{Reason: req.Reason, ReasonCode: req.ReasonCode, ExpectedVersion: req.ExpectedVersion})
+}
+
+// Assign 分配配送DTO。
+func (s *Service) Assign(ctx context.Context, c *auth.Claims, method, path, key, idRaw string, req AssignmentReq) (DeliveryDTO, error) {
+	return s.assign(ctx, c, method, path, key, idRaw, req, "manual", "delivery:assign")
+}
+
+// Reassign 重新分配配送DTO。
+func (s *Service) Reassign(ctx context.Context, c *auth.Claims, method, path, key, idRaw string, req AssignmentReq) (DeliveryDTO, error) {
+	return s.assign(ctx, c, method, path, key, idRaw, req, "reassign", "delivery:reassign")
+}
+
+// assign 分配配送DTO。
+func (s *Service) assign(ctx context.Context, c *auth.Claims, method, path, key, idRaw string, req AssignmentReq, kind, perm string) (DeliveryDTO, error) {
+	actor, e := adminID(c, perm)
+	if e != nil {
+		return DeliveryDTO{}, e
+	}
+	id, e := parseID(idRaw)
+	if e != nil {
+		return DeliveryDTO{}, problem.InvalidArgument("VALIDATION_FAILED", "invalid delivery id")
+	}
+	rider, e := parseID(req.RiderID)
+	if e != nil {
+		return DeliveryDTO{}, problem.InvalidArgument("VALIDATION_FAILED", "invalid rider id")
+	}
+	if s.dispatch != nil {
+		result, err := s.dispatch.CommitAssignment(ctx, method, path, key, dispatch.CommitInput{
+			Source: kind, DeliveryOrderID: id, RiderID: rider, ExpectedAssignmentVersion: req.ExpectedVersion,
+			ActorType: "admin", ActorID: actor, ReasonCode: req.ReasonCode, Reason: req.Reason,
+		})
+		if err != nil {
+			return DeliveryDTO{}, err
+		}
+		return DeliveryDTO{ID: result.DeliveryOrderID, OrderID: result.OrderID, RiderID: result.RiderID, Status: result.Status, AssignmentVersion: result.AssignmentVersion}, nil
+	}
+	var out DeliveryDTO
+	e = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		started, e := s.idem.Start(ctx, tx, s.ids.Next(), "admin", actor, method, path, key, idempotency.RequestHash(req))
+		if e != nil {
+			return e
+		}
+		if !started {
+			return cached(ctx, s.idem, tx, "admin", actor, path, key, &out)
+		}
+		var row Delivery
+		if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&row, id).Error; errors.Is(e, gorm.ErrRecordNotFound) {
+			return problem.NotFound("DELIVERY_NOT_FOUND", "delivery not found")
+		} else if e != nil {
+			return e
+		}
+		if row.AssignmentVersion != req.ExpectedVersion {
+			return problem.Conflict("VERSION_CONFLICT", "delivery assignment version changed")
+		}
+		if kind == "manual" {
+			if row.Status != "pending_assign" || row.RiderID != nil {
+				return problem.Conflict("DELIVERY_INVALID_STATUS", "delivery is not assignable")
+			}
+		} else {
+			if row.Status != "accepted" && row.Status != "pending_assign" {
+				return problem.Conflict("DELIVERY_INVALID_STATUS", "delivery cannot be reassigned")
+			}
+		}
+		var active int64
+		if e := tx.Table("riders r").Joins("JOIN accounts a ON a.id=r.account_id").Where("r.id=? AND r.status='active' AND r.review_status='approved' AND a.status='active' AND (JSON_CONTAINS(r.service_scope, JSON_QUOTE(?), '$.shop_ids') OR JSON_CONTAINS(r.service_scope, JSON_ARRAY(?), '$.shop_ids'))", rider, idString(row.ShopID), row.ShopID).Count(&active).Error; e != nil {
+			return e
+		}
+		if active != 1 {
+			return problem.Conflict("RIDER_UNAVAILABLE", "rider is not active, approved, and in shop scope")
+		}
+		before := row.AssignmentVersion
+		after := before + 1
+		if row.RiderID != nil {
+			if e := tx.Model(&Assignment{}).Where("delivery_order_id=? AND status='active'", id).Update("status", "superseded").Error; e != nil {
+				return e
+			}
+		}
+		assignment := Assignment{ID: s.ids.Next(), DeliveryOrderID: id, FromRiderID: row.RiderID, ToRiderID: rider, AssignmentType: kind, Status: "active", ReasonCode: &req.ReasonCode, Reason: &req.Reason, ActorType: "admin", ActorID: actor, VersionBefore: before, VersionAfter: after, RequestID: requestctx.RequestIDPtr(ctx)}
+		if e := tx.Create(&assignment).Error; e != nil {
+			return e
+		}
+		status := "accepted"
+		if e := tx.Model(&Delivery{}).Where("id=? AND assignment_version=?", id, before).Updates(map[string]any{"rider_id": rider, "status": status, "assignment_version": after, "accepted_at": time.Now()}).Error; e != nil {
+			return e
+		}
+		if e := tx.Table("orders").Where("id=?", row.OrderID).Update("delivery_status", "accepted").Error; e != nil {
+			return e
+		}
+		if kind == "reassign" {
+			if e := deliveryverification.InvalidateAndRegenerate(ctx, tx, s.cfg.CP1, s.ids, id); e != nil {
+				return e
+			}
+		}
+		eventType := "delivery.assigned"
+		if kind == "reassign" {
+			eventType = "delivery.reassigned"
+		}
+		if e := event(ctx, tx, s.ids.Next(), eventType, "delivery_order", id, map[string]any{"delivery_order_id": idString(id), "order_id": idString(row.OrderID), "rider_id": idString(rider), "from_rider_id": uintString(row.RiderID)}); e != nil {
+			return e
+		}
+		if e := audit(ctx, tx, s.ids.Next(), actor, "delivery."+kind, id, map[string]any{"from_rider_id": uintString(row.RiderID), "to_rider_id": idString(rider), "reason_code": req.ReasonCode}); e != nil {
+			return e
+		}
+		row.RiderID = &rider
+		row.Status = status
+		row.AssignmentVersion = after
+		out = deliveryDTO(row)
+		return s.idem.Succeed(ctx, tx, "admin", actor, path, key, out)
+	})
+	return out, e
+}
+
+// RequestForceComplete 返回请求强制操作 Complete。
+func (s *Service) RequestForceComplete(ctx context.Context, c *auth.Claims, method, path, key, idRaw string, req ForceCompleteRequestReq) (ApprovalDTO, error) {
+	maker, e := adminID(c, "delivery:force_complete")
+	if e != nil {
+		return ApprovalDTO{}, e
+	}
+	if !s.cfg.CP1.ForceActionEnabled {
+		return ApprovalDTO{}, problem.Forbidden("FORCE_ACTION_DISABLED", "force actions are disabled")
+	}
+	checker, e := parseID(req.CheckerAdminID)
+	if e != nil || checker == maker {
+		return ApprovalDTO{}, problem.Forbidden("MAKER_CHECKER_REQUIRED", "a distinct checker is required")
+	}
+	if ok, e := s.checkerAllowed(ctx, checker, "delivery:force_complete"); e != nil || !ok {
+		return ApprovalDTO{}, problem.Forbidden("CHECKER_PERMISSION_REQUIRED", "checker lacks force-complete permission")
+	}
+	id, e := parseID(idRaw)
+	if e != nil {
+		return ApprovalDTO{}, problem.InvalidArgument("VALIDATION_FAILED", "invalid delivery id")
+	}
+	var out ApprovalDTO
+	e = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		started, e := s.idem.Start(ctx, tx, s.ids.Next(), "admin", maker, method, path, key, idempotency.RequestHash(req))
+		if e != nil {
+			return e
+		}
+		if !started {
+			return cached(ctx, s.idem, tx, "admin", maker, path, key, &out)
+		}
+		var row Delivery
+		if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&row, id).Error; e != nil {
+			return problem.NotFound("DELIVERY_NOT_FOUND", "delivery not found")
+		}
+		if row.AssignmentVersion != req.ExpectedVersion {
+			return problem.Conflict("VERSION_CONFLICT", "delivery version changed")
+		}
+		if row.Status != "delivering" {
+			return problem.Conflict("DELIVERY_INVALID_STATUS", "only delivering orders can be force completed")
+		}
+		now := time.Now()
+		approval := Approval{ID: s.ids.Next(), Action: "delivery.force_complete", ResourceType: "delivery_order", ResourceID: id, MakerAdminID: maker, CheckerAdminID: checker, ReasonCode: req.ReasonCode, Reason: req.Reason, ExpectedVersion: req.ExpectedVersion, Status: "pending", ExpiresAt: now.Add(30 * time.Minute), RequestID: requestctx.RequestIDPtr(ctx)}
+		if e := tx.Create(&approval).Error; e != nil {
+			return e
+		}
+		out = approvalDTO(approval)
+		if e := audit(ctx, tx, s.ids.Next(), maker, "delivery.force_complete.request", id, map[string]any{"approval_id": idString(approval.ID), "checker_admin_id": idString(checker), "reason_code": req.ReasonCode, "delivery_status": row.Status}); e != nil {
+			return e
+		}
+		return s.idem.Succeed(ctx, tx, "admin", maker, path, key, out)
+	})
+	return out, e
+}
+
+// ForceComplete 强制执行Complete。
+func (s *Service) ForceComplete(ctx context.Context, c *auth.Claims, method, path, key, idRaw string, req ForceCompleteReq) (DeliveryDTO, error) {
+	checker, e := adminID(c, "delivery:force_complete")
+	if e != nil {
+		return DeliveryDTO{}, e
+	}
+	if !s.cfg.CP1.ForceActionEnabled {
+		return DeliveryDTO{}, problem.Forbidden("FORCE_ACTION_DISABLED", "force actions are disabled")
+	}
+	id, e := parseID(idRaw)
+	if e != nil {
+		return DeliveryDTO{}, problem.InvalidArgument("VALIDATION_FAILED", "invalid delivery id")
+	}
+	approvalID, e := parseID(req.ApprovalID)
+	if e != nil {
+		return DeliveryDTO{}, problem.InvalidArgument("VALIDATION_FAILED", "invalid approval id")
+	}
+	var out DeliveryDTO
+	e = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		started, e := s.idem.Start(ctx, tx, s.ids.Next(), "admin", checker, method, path, key, idempotency.RequestHash(req))
+		if e != nil {
+			return e
+		}
+		if !started {
+			return cached(ctx, s.idem, tx, "admin", checker, path, key, &out)
+		}
+		var approval Approval
+		if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=? AND action='delivery.force_complete' AND resource_type='delivery_order' AND resource_id=?", approvalID, id).First(&approval).Error; e != nil {
+			return problem.NotFound("OVERRIDE_APPROVAL_NOT_FOUND", "force-complete approval not found")
+		}
+		if approval.Status != "pending" {
+			return problem.Conflict("OVERRIDE_APPROVAL_USED", "force-complete approval is no longer pending")
+		}
+		if approval.CheckerAdminID != checker || approval.MakerAdminID == checker {
+			return problem.Forbidden("CHECKER_MISMATCH", "approval must be executed by its distinct checker")
+		}
+		if !approval.ExpiresAt.After(time.Now()) {
+			return problem.Conflict("OVERRIDE_APPROVAL_EXPIRED", "force-complete approval expired")
+		}
+		if approval.ExpectedVersion != req.ExpectedVersion {
+			return problem.Conflict("VERSION_CONFLICT", "approval version does not match request")
+		}
+		var row Delivery
+		if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&row, id).Error; e != nil {
+			return problem.NotFound("DELIVERY_NOT_FOUND", "delivery not found")
+		}
+		if row.AssignmentVersion != req.ExpectedVersion {
+			return problem.Conflict("VERSION_CONFLICT", "delivery version changed")
+		}
+		if row.Status != "delivering" {
+			return problem.Conflict("DELIVERY_INVALID_STATUS", "only delivering orders can be force completed")
+		}
+		var orderRow Order
+		if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&orderRow, row.OrderID).Error; e != nil {
+			return e
+		}
+		now := time.Now()
+		if e := tx.Model(&Delivery{}).Where("id=?", id).Updates(map[string]any{"status": "completed", "completed_at": now}).Error; e != nil {
+			return e
+		}
+		if e := tx.Model(&Order{}).Where("id=?", row.OrderID).Updates(map[string]any{"status": "completed", "delivery_status": "completed", "completed_at": now, "version": gorm.Expr("version+1")}).Error; e != nil {
+			return e
+		}
+		if s.incidents != nil {
+			if e := s.incidents.ResolveActiveLocked(ctx, tx, id, "delivery", "force_completed"); e != nil {
+				return e
+			}
+		}
+		if s.returns != nil {
+			active, guardErr := s.returns.HasActiveLocked(ctx, tx, id)
+			if guardErr != nil {
+				return guardErr
+			}
+			if active {
+				return problem.Conflict("INVALID_RETURN_STATE", "delivery order has an active return and cannot be force completed")
+			}
+		}
+		if e := tx.Model(&deliveryverification.Verification{}).Where("delivery_order_id=? AND stage='delivery' AND status<>'verified'", id).Updates(map[string]any{"status": "overridden", "verified_at": now, "verified_by_type": "admin", "verified_by_id": checker, "override_reason_code": approval.ReasonCode, "override_reason": approval.Reason}).Error; e != nil {
+			return e
+		}
+		approvalUpdate := tx.Model(&Approval{}).
+			Where("id=? AND status='pending'", approval.ID).
+			Updates(map[string]any{"status": "approved", "approved_at": now})
+		if approvalUpdate.Error != nil {
+			return approvalUpdate.Error
+		}
+		if approvalUpdate.RowsAffected != 1 {
+			return problem.Conflict("OVERRIDE_APPROVAL_USED", "force-complete approval is no longer pending")
+		}
+		if e := event(ctx, tx, s.ids.Next(), "delivery.force_completed", "delivery_order", id, map[string]any{"delivery_order_id": idString(id), "order_id": idString(row.OrderID), "approval_id": idString(approval.ID)}); e != nil {
+			return e
+		}
+		if e := event(ctx, tx, s.ids.Next(), "order.completed", "order", row.OrderID, map[string]any{"order_id": idString(row.OrderID), "admin_override": true}); e != nil {
+			return e
+		}
+		if e := audit(ctx, tx, s.ids.Next(), checker, "delivery.force_complete.approve", id, map[string]any{"approval_id": idString(approval.ID), "maker_admin_id": idString(approval.MakerAdminID), "checker_admin_id": idString(checker), "reason_code": approval.ReasonCode, "before": map[string]any{"delivery": row.Status, "order": orderRow.Status}, "after": "completed"}); e != nil {
+			return e
+		}
+		row.Status = "completed"
+		row.CompletedAt = &now
+		out = deliveryDTO(row)
+		return s.idem.Succeed(ctx, tx, "admin", checker, path, key, out)
+	})
+	return out, e
+}
+
+// Assignments 返回Assignments。
+func (s *Service) Assignments(ctx context.Context, c *auth.Claims, idRaw string) ([]AssignmentDTO, error) {
+	if _, e := adminID(c, "delivery_assignment:view"); e != nil {
+		return nil, e
+	}
+	id, e := parseID(idRaw)
+	if e != nil {
+		return nil, problem.InvalidArgument("VALIDATION_FAILED", "invalid delivery id")
+	}
+	var rows []Assignment
+	if e := s.db.WithContext(ctx).Where("delivery_order_id=?", id).Order("id DESC").Find(&rows).Error; e != nil {
+		return nil, e
+	}
+	out := make([]AssignmentDTO, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, assignmentDTO(r))
+	}
+	return out, nil
+}
+
+// checkerAllowed 返回checker 允许状态。
+func (s *Service) checkerAllowed(ctx context.Context, id uint64, perm string) (bool, error) {
+	var count int64
+	e := s.db.WithContext(ctx).Table("admin_users au").Joins("JOIN accounts a ON a.id=au.account_id AND a.status='active'").Joins("JOIN role_permissions rp ON rp.role_id=au.role_id AND rp.deleted_at IS NULL").Joins("JOIN permissions p ON p.id=rp.permission_id AND p.code=? AND p.status='active'", perm).Where("au.id=? AND au.status='active'", id).Count(&count).Error
+	return count > 0, e
+}
+
+// adminID 从认证声明中解析并返回管理员 ID。
+func adminID(c *auth.Claims, p string) (uint64, error) {
+	if c == nil || c.AccountType != "admin" || !has(c.Permissions, p) {
+		return 0, problem.Forbidden("PERM_FORBIDDEN", "permission denied")
+	}
+	return parseID(c.AdminUserID)
+}
+
+// has 判断是否存在运营。
+func has(v []string, x string) bool {
+	for _, s := range v {
+		if s == x {
+			return true
+		}
+	}
+	return false
+}
+
+// parseID 解析并校验字符串形式的 ID。
+func parseID(v string) (uint64, error) {
+	id, e := strconv.ParseUint(v, 10, 64)
+	if e != nil || id == 0 {
+		return 0, fmt.Errorf("invalid id")
+	}
+	return id, nil
+}
+
+// idString 将数字 ID 转换为字符串。
+func idString(v uint64) string { return strconv.FormatUint(v, 10) }
+
+// uintString 将无符号整数转换为字符串。
+func uintString(v *uint64) string {
+	if v == nil {
+		return ""
+	}
+	return idString(*v)
+}
+
+// str 返回str。
+func str(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return *v
+}
+
+// ts 返回ts。
+func ts(v *time.Time) string {
+	if v == nil {
+		return ""
+	}
+	return v.Format(time.RFC3339)
+}
+
+// deliveryDTO 返回配送DTO。
+func deliveryDTO(r Delivery) DeliveryDTO {
+	return DeliveryDTO{ID: idString(r.ID), OrderID: idString(r.OrderID), RiderID: uintString(r.RiderID), Status: r.Status, AssignmentVersion: r.AssignmentVersion, CompletedAt: ts(r.CompletedAt)}
+}
+
+// assignmentDTO 返回分配DTO。
+func assignmentDTO(r Assignment) AssignmentDTO {
+	return AssignmentDTO{ID: idString(r.ID), DeliveryOrderID: idString(r.DeliveryOrderID), FromRiderID: uintString(r.FromRiderID), ToRiderID: idString(r.ToRiderID), AssignmentType: r.AssignmentType, Status: r.Status, ReasonCode: str(r.ReasonCode), Reason: str(r.Reason), ActorID: idString(r.ActorID), VersionBefore: r.VersionBefore, VersionAfter: r.VersionAfter, CreatedAt: r.CreatedAt.Format(time.RFC3339)}
+}
+
+// approvalDTO 返回审批DTO。
+func approvalDTO(r Approval) ApprovalDTO {
+	return ApprovalDTO{ID: idString(r.ID), DeliveryOrderID: idString(r.ResourceID), MakerAdminID: idString(r.MakerAdminID), CheckerAdminID: idString(r.CheckerAdminID), ReasonCode: r.ReasonCode, Reason: r.Reason, ExpectedVersion: r.ExpectedVersion, Status: r.Status, ExpiresAt: r.ExpiresAt.Format(time.RFC3339), ApprovedAt: ts(r.ApprovedAt)}
+}
+
+// cached 返回缓存。
+func cached(ctx context.Context, s *idempotency.Store, tx *gorm.DB, t string, id uint64, path, key string, target any) error {
+	ok, e := s.CachedResponse(ctx, tx, t, id, path, key, target)
+	if e != nil {
+		return e
+	}
+	if !ok {
+		return problem.Conflict("IDEMPOTENCY_CONFLICT", "idempotency response missing")
+	}
+	return nil
+}
+
+// event 返回事件。
+func event(ctx context.Context, tx *gorm.DB, id uint64, eventType, aggregate string, aggregateID uint64, payload any) error {
+	raw, _ := json.Marshal(payload)
+	return tx.Create(&Outbox{ID: id, EventID: uuid.NewString(), EventType: eventType, AggregateType: aggregate, AggregateID: aggregateID, Payload: raw, Status: "pending", RequestID: requestctx.RequestIDPtr(ctx)}).Error
+}
+
+// audit 返回审计。
+func audit(ctx context.Context, tx *gorm.DB, id, actor uint64, action string, resource uint64, after any) error {
+	raw, _ := json.Marshal(after)
+	return tx.Table("audit_logs").Create(map[string]any{"id": id, "actor_type": "admin", "actor_id": actor, "action": action, "resource_type": "delivery_order", "resource_id": resource, "after_data": datatypes.JSON(raw), "result": "success", "request_id": requestctx.RequestIDPtr(ctx)}).Error
+}

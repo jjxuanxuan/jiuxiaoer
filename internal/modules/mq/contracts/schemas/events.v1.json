@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "event://payloads/v1",
+  "description": "Phase 1.5 payloads are JSON objects. Required fields and size limits are authoritative in registry.yaml and enforced by the Go runtime.",
+  "type": "object",
+  "additionalProperties": true
+}
