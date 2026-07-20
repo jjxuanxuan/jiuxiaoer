@@ -8,6 +8,7 @@ import (
 
 	"jiuxiaoer-admin/backend-go/internal/modules/auth"
 	"jiuxiaoer-admin/backend-go/internal/pkg/pagination"
+	"jiuxiaoer-admin/backend-go/internal/pkg/paygateway"
 	"jiuxiaoer-admin/backend-go/internal/pkg/problem"
 	"jiuxiaoer-admin/backend-go/internal/pkg/response"
 )
@@ -29,6 +30,7 @@ func RegisterRoutes(router *gin.RouterGroup, handler *Handler) {
 	router.POST("/:id/cancel", handler.Cancel)
 	router.POST("/:id/payments", handler.CreatePayment)
 	router.GET("/:id/payment", handler.GetPayment)
+	router.POST("/:id/payment/confirm", handler.ConfirmPayment)
 	if handler.service.cfg.Feature.PaymentMockEnabled {
 		router.POST("/:id/pay/mock", handler.MockPay)
 	}
@@ -171,10 +173,26 @@ func (h *Handler) GetPayment(c *gin.Context) {
 	response.OK(c, item)
 }
 
+// ConfirmPayment queries WeChat Pay and returns the backend-confirmed payment
+// state. Miniapp client callbacks are never treated as the financial result.
+func (h *Handler) ConfirmPayment(c *gin.Context) {
+	claims, ok := auth.ClaimsFromContext(c)
+	if !ok {
+		response.Error(c, problem.Unauthorized("AUTH_UNAUTHORIZED", "unauthorized"))
+		return
+	}
+	item, err := h.service.ConfirmPayment(c.Request.Context(), claims, c.Param("id"))
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.OK(c, item)
+}
+
 // PaymentCallback 处理支付回调相关逻辑。
 func (h *Handler) PaymentCallback(c *gin.Context) {
-	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 256*1024+1))
-	if err != nil || len(body) > 256*1024 {
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, paygateway.MaxCallbackBodyBytes+1))
+	if err != nil || int64(len(body)) > paygateway.MaxCallbackBodyBytes {
 		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"code": "FAIL", "message": "callback rejected"})
 		return
 	}

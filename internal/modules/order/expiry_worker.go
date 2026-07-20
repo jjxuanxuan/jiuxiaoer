@@ -6,25 +6,30 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	"gorm.io/gorm"
 
 	"jiuxiaoer-admin/backend-go/internal/config"
 	"jiuxiaoer-admin/backend-go/internal/pkg/metrics"
+	"jiuxiaoer-admin/backend-go/internal/pkg/paygateway"
 	"jiuxiaoer-admin/backend-go/internal/pkg/snowflake"
 )
 
 type ExpiryWorker struct {
-	cfg     config.OrderConfig
-	service *Service
-	metrics *metrics.Registry
-	log     *slog.Logger
+	cfg                  config.OrderConfig
+	service              *Service
+	metrics              *metrics.Registry
+	log                  *slog.Logger
+	lastReconcileSuccess atomic.Int64
 }
 
 // NewExpiryWorker 创建并初始化过期工作器。
 func NewExpiryWorker(cfg config.Config, db *gorm.DB, idGen *snowflake.Generator, registry *metrics.Registry, log *slog.Logger, providers ...PaymentProvider) *ExpiryWorker {
 	service := NewService(cfg, db, idGen)
+	service.WithLogger(log)
 	if len(providers) > 0 {
 		service.WithPaymentProvider(providers[0], registry)
 	}
@@ -57,6 +62,9 @@ func (w *ExpiryWorker) Run(ctx context.Context) {
 		} else if reconciled > 0 {
 			w.log.Info("reconciled creating payments", slog.Int("count", reconciled))
 		}
+		if reconcileErr == nil {
+			w.lastReconcileSuccess.Store(time.Now().Unix())
+		}
 		processed, err := w.ExpireBatch(ctx, time.Now(), w.cfg.ExpiryBatchSize)
 		if err != nil {
 			w.metrics.IncOrderExpiry("failed")
@@ -80,7 +88,7 @@ func (w *ExpiryWorker) ReconcileCreatingBatch(ctx context.Context, now time.Time
 	processed := 0
 	staleBefore := now.Add(-w.cfg.CreatingReconcileAge)
 	for processed < limit {
-		payment, err := w.service.repo.ClaimNextCreatingPayment(ctx, w.service.payment.Code(), now, staleBefore)
+		payment, err := w.service.repo.ClaimNextReconcilablePayment(ctx, w.service.payment.Code(), now, staleBefore)
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			break
 		}
@@ -91,36 +99,20 @@ func (w *ExpiryWorker) ReconcileCreatingBatch(ctx context.Context, now time.Time
 		state, queryErr := w.service.payment.Query(providerCtx, payment.PaymentNo)
 		cancel()
 		if queryErr != nil {
-			w.metrics.IncOrderExpiry("creating_provider_query_failed")
-			return processed, queryErr
+			if markErr := w.service.MarkPaymentReconcileError(ctx, payment, queryErr); markErr != nil {
+				return processed, markErr
+			}
+			w.metrics.IncOrderExpiry("payment_provider_query_failed")
+			w.log.Warn("payment reconciliation query failed", slog.String("payment_no", payment.PaymentNo), slog.String("provider_code", paygateway.Code(queryErr, "PROVIDER_UNAVAILABLE")), slog.String("provider_request_id", paygateway.RequestID(queryErr)), slog.Bool("retryable", paygateway.Retryable(queryErr)))
+			processed++
+			continue
 		}
-		if state.Status == "SUCCESS" {
-			if state.PaymentNo != payment.PaymentNo || state.Amount != payment.Amount || state.Currency != payment.Currency {
-				w.metrics.IncOrderExpiry("creating_provider_query_mismatch")
-				return processed, fmt.Errorf("provider payment does not match local payment %s", payment.PaymentNo)
-			}
-			err = w.service.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-				row, err := w.service.repo.LockOrder(ctx, tx, payment.OrderID)
-				if err != nil || row.Status != "pending_payment" {
-					return err
-				}
-				lockedPayment, err := w.service.repo.LockPaymentByNo(ctx, tx, payment.PaymentNo, payment.Provider)
-				if err != nil || lockedPayment.Status != "creating" {
-					return err
-				}
-				event := PaymentCallbackEvent{ProviderTradeNo: state.ProviderTradeNo, PaymentNo: state.PaymentNo, Status: state.Status, Amount: state.Amount, Currency: state.Currency, PaidAt: state.PaidAt}
-				return w.service.applyPaymentSuccess(ctx, tx, row, lockedPayment, event, "system", 0, "creating-query:"+payment.PaymentNo)
-			})
-			if err != nil {
-				return processed, err
-			}
-			w.metrics.IncOrderExpiry("creating_payment_reconciled")
-		} else {
-			if err := w.service.repo.UpdatePayment(ctx, w.service.repo.DB(), payment.ID, map[string]any{"provider_status": state.Status}); err != nil {
-				return processed, err
-			}
-			w.metrics.IncOrderExpiry("creating_payment_not_paid")
+		if _, err := w.service.ApplyProviderPaymentState(ctx, payment.PaymentNo, payment.Provider, state, "system", 0, "reconcile:"+payment.PaymentNo); err != nil {
+			w.metrics.IncOrderExpiry("payment_provider_state_failed")
+			return processed, err
 		}
+		w.metrics.IncOrderExpiry("payment_reconciled_" + strings.ToLower(state.Status))
+		w.log.Info("payment reconciliation completed", slog.String("payment_no", payment.PaymentNo), slog.String("provider_status", state.Status), slog.String("provider_request_id", state.RequestID))
 		processed++
 	}
 	return processed, nil
@@ -165,25 +157,17 @@ func (w *ExpiryWorker) expireCandidate(ctx context.Context, candidate Order, now
 			cancel()
 			if queryErr != nil {
 				w.metrics.IncOrderExpiry("provider_query_failed")
+				w.log.Warn("final payment query failed", slog.String("payment_no", payment.PaymentNo), slog.String("provider_code", paygateway.Code(queryErr, "PROVIDER_UNAVAILABLE")), slog.String("provider_request_id", paygateway.RequestID(queryErr)), slog.Bool("retryable", paygateway.Retryable(queryErr)))
+				if paygateway.IsCode(queryErr, "ORDER_NOT_EXIST") || paygateway.IsCode(queryErr, "ORDER_NOT_EXISTS") {
+					// The provider explicitly confirms that no transaction exists, so
+					// there is nothing to close and local stock can be released.
+					goto cancelLocal
+				}
 				return false, true, queryErr
 			}
+			w.log.Info("payment provider call completed", slog.String("operation", "payment.query"), slog.String("payment_no", payment.PaymentNo), slog.String("provider_status", state.Status), slog.String("provider_request_id", state.RequestID))
 			if state.Status == "SUCCESS" {
-				if state.PaymentNo != payment.PaymentNo || state.Amount != payment.Amount || state.Currency != payment.Currency {
-					w.metrics.IncOrderExpiry("provider_query_mismatch")
-					return false, true, fmt.Errorf("provider payment does not match local payment %s", payment.PaymentNo)
-				}
-				err := w.service.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-					row, err := w.service.repo.LockOrder(ctx, tx, candidate.ID)
-					if err != nil || row.Status != "pending_payment" {
-						return err
-					}
-					lockedPayment, err := w.service.repo.LockPaymentByNo(ctx, tx, payment.PaymentNo, payment.Provider)
-					if err != nil {
-						return err
-					}
-					event := PaymentCallbackEvent{ProviderTradeNo: state.ProviderTradeNo, PaymentNo: state.PaymentNo, Status: state.Status, Amount: state.Amount, Currency: state.Currency, PaidAt: state.PaidAt}
-					return w.service.applyPaymentSuccess(ctx, tx, row, lockedPayment, event, "system", 0, "query:"+payment.PaymentNo)
-				})
+				_, err := w.service.ApplyProviderPaymentState(ctx, payment.PaymentNo, payment.Provider, state, "system", 0, "expiry-query:"+payment.PaymentNo)
 				if err != nil {
 					return false, false, err
 				}
@@ -191,21 +175,32 @@ func (w *ExpiryWorker) expireCandidate(ctx context.Context, candidate Order, now
 				return true, false, nil
 			}
 			if state.Status == "USERPAYING" {
+				if _, err := w.service.ApplyProviderPaymentState(ctx, payment.PaymentNo, payment.Provider, state, "system", 0, "expiry-query:"+payment.PaymentNo); err != nil {
+					return false, false, err
+				}
 				w.metrics.IncOrderExpiry("provider_user_paying")
 				return false, true, nil
 			}
-			providerCtx, cancel = context.WithTimeout(ctx, 5*time.Second)
-			closeErr := w.service.payment.Close(providerCtx, payment.PaymentNo)
-			cancel()
-			if closeErr != nil && state.Status != "CLOSED" && state.Status != "REVOKED" && state.Status != "PAYERROR" {
-				w.metrics.IncOrderExpiry("provider_close_failed")
-				return false, true, closeErr
+			if _, err := w.service.ApplyProviderPaymentState(ctx, payment.PaymentNo, payment.Provider, state, "system", 0, "expiry-query:"+payment.PaymentNo); err != nil {
+				return false, false, err
+			}
+			if state.Status != "CLOSED" && state.Status != "REVOKED" && state.Status != "PAYERROR" {
+				providerCtx, cancel = context.WithTimeout(ctx, 5*time.Second)
+				closeResult, closeErr := w.service.payment.Close(providerCtx, payment.PaymentNo)
+				cancel()
+				if closeErr != nil {
+					w.service.logPaymentProviderFailure(payment.PaymentNo, closeErr, "retry_before_local_expiry")
+					w.metrics.IncOrderExpiry("provider_close_failed")
+					return false, true, closeErr
+				}
+				w.log.Info("payment provider call completed", slog.String("operation", "payment.close"), slog.String("payment_no", payment.PaymentNo), slog.String("provider_request_id", closeResult.RequestID))
 			}
 		} else if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 			return false, false, err
 		}
 	}
 
+cancelLocal:
 	handled := false
 	err := w.service.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		row, err := w.service.repo.LockOrder(ctx, tx, candidate.ID)
@@ -236,8 +231,12 @@ func (w *ExpiryWorker) collectMetrics() []metrics.Sample {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	var pending int64
+	var paymentPending int64
 	var oldest struct {
 		ExpiresAt sql.NullTime `gorm:"column:expires_at"`
+	}
+	var oldestPayment struct {
+		DueAt sql.NullTime `gorm:"column:due_at"`
 	}
 	now := time.Now()
 	_ = w.service.repo.DB().WithContext(ctx).Model(&Order{}).
@@ -246,6 +245,12 @@ func (w *ExpiryWorker) collectMetrics() []metrics.Sample {
 	_ = w.service.repo.DB().WithContext(ctx).Model(&Order{}).
 		Where("status = 'pending_payment' AND expires_at IS NOT NULL AND expires_at <= ?", now).
 		Select("MIN(expires_at) AS expires_at").Scan(&oldest).Error
+	_ = w.service.repo.DB().WithContext(ctx).Model(&Payment{}).
+		Where("provider=? AND status IN ? AND deleted_at IS NULL", w.service.paymentCode(), []string{"creating", "pending"}).
+		Count(&paymentPending).Error
+	_ = w.service.repo.DB().WithContext(ctx).Model(&Payment{}).
+		Where("provider=? AND status IN ? AND deleted_at IS NULL", w.service.paymentCode(), []string{"creating", "pending"}).
+		Select("MIN(COALESCE(next_reconcile_at,updated_at)) AS due_at").Scan(&oldestPayment).Error
 	lag := float64(0)
 	if oldest.ExpiresAt.Valid {
 		lag = now.Sub(oldest.ExpiresAt.Time).Seconds()
@@ -253,8 +258,18 @@ func (w *ExpiryWorker) collectMetrics() []metrics.Sample {
 			lag = 0
 		}
 	}
+	paymentLag := float64(0)
+	if oldestPayment.DueAt.Valid {
+		paymentLag = now.Sub(oldestPayment.DueAt.Time).Seconds()
+		if paymentLag < 0 {
+			paymentLag = 0
+		}
+	}
 	return []metrics.Sample{
 		{Name: "jxe_order_expiry_pending", Help: "Expired unpaid orders awaiting closure.", Type: "gauge", Value: float64(pending)},
 		{Name: "jxe_order_expiry_lag_seconds", Help: "Age of the oldest expired unpaid order.", Type: "gauge", Value: lag},
+		{Name: "jxe_payment_reconcile_active", Help: "Creating or pending payments awaiting provider reconciliation.", Type: "gauge", Value: float64(paymentPending)},
+		{Name: "jxe_payment_reconcile_oldest_due_seconds", Help: "Age past schedule for the oldest active payment reconciliation.", Type: "gauge", Value: paymentLag},
+		{Name: "jxe_payment_reconcile_last_success_unixtime", Help: "Unix timestamp of the last successful payment reconciliation worker cycle.", Type: "gauge", Value: float64(w.lastReconcileSuccess.Load())},
 	}
 }

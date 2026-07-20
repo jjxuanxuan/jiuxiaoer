@@ -151,7 +151,10 @@ func (p *successfulQueryProvider) Query(context.Context, string) (order.Provider
 }
 
 // Close 关闭当前实例并释放相关资源。
-func (p *successfulQueryProvider) Close(context.Context, string) error { p.closeCount++; return nil }
+func (p *successfulQueryProvider) Close(context.Context, string) (order.ProviderOperationResult, error) {
+	p.closeCount++
+	return order.ProviderOperationResult{}, nil
+}
 
 // ParseCallback 解析回调。
 func (p *successfulQueryProvider) ParseCallback(context.Context, *http.Request) (order.PaymentCallbackEvent, error) {

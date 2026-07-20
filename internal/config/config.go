@@ -1040,8 +1040,14 @@ func (c Config) Validate() error {
 		if !c.WeChat.PayEnabled || c.WeChat.PayMchID == "" || c.WeChat.PayCertSerial == "" || c.WeChat.PayPrivateKeyPath == "" || len(c.WeChat.PayAPIv3Key) != 32 || c.WeChat.PayNotifyURL == "" {
 			problems = append(problems, "production requires complete WeChat Pay API v3 credentials and callback URL")
 		}
+		if c.WeChat.PayEnabled && !c.Order.ExpiryWorkerEnabled {
+			problems = append(problems, "production WeChat Pay requires JXE_ORDER_EXPIRY_WORKER_ENABLED=true")
+		}
 		if c.AfterSale.RefundExecutionEnabled && c.WeChat.RefundNotifyURL == "" {
 			problems = append(problems, "production refund execution requires JXE_WECHAT_REFUND_NOTIFY_URL")
+		}
+		if c.AfterSale.RefundExecutionEnabled && !c.AfterSale.WorkerEnabled {
+			problems = append(problems, "production refund execution requires JXE_REFUND_WORKER_ENABLED=true")
 		}
 		if strings.Contains(c.AfterSale.EvidenceTokenSecret, "change_me") {
 			problems = append(problems, "production requires a non-default evidence token secret")

@@ -150,28 +150,30 @@ type StockRecord struct {
 func (StockRecord) TableName() string { return "stock_records" }
 
 type Payment struct {
-	ID               uint64
-	PaymentNo        string
-	OrderID          uint64
-	CustomerID       uint64
-	Channel          string
-	Provider         string
-	ProviderTradeNo  *string
-	ProviderStatus   *string
-	ProviderPrepayID *string
-	Status           string
-	Amount           int64
-	Currency         string
-	ClientPayload    datatypes.JSON
-	ExpiresAt        *time.Time
-	PaidAt           *time.Time
-	FailedAt         *time.Time
-	FailureCode      *string
-	RefundedAmount   int64
-	Version          int
-	IdempotencyKey   *string
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ID                uint64
+	PaymentNo         string
+	OrderID           uint64
+	CustomerID        uint64
+	Channel           string
+	Provider          string
+	ProviderTradeNo   *string
+	ProviderStatus    *string
+	ProviderPrepayID  *string
+	Status            string
+	Amount            int64
+	Currency          string
+	ClientPayload     datatypes.JSON
+	ExpiresAt         *time.Time
+	PaidAt            *time.Time
+	FailedAt          *time.Time
+	FailureCode       *string
+	ReconcileAttempts uint32
+	NextReconcileAt   *time.Time
+	RefundedAmount    int64
+	Version           int
+	IdempotencyKey    *string
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 // TableName 返回当前数据模型对应的数据库表名。

@@ -29,6 +29,28 @@ func TestProductionConfigAcceptsExplicitSafeValues(t *testing.T) {
 	}
 }
 
+func TestProductionPaymentAndRefundWorkersAreMandatory(t *testing.T) {
+	t.Run("payment reconciliation worker", func(t *testing.T) {
+		cfg := validProductionConfig()
+		cfg.Order.ExpiryWorkerEnabled = false
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "JXE_ORDER_EXPIRY_WORKER_ENABLED=true") {
+			t.Fatalf("expected disabled payment worker to fail, got %v", err)
+		}
+	})
+	t.Run("refund worker", func(t *testing.T) {
+		cfg := validProductionConfig()
+		cfg.AfterSale.Enabled = true
+		cfg.AfterSale.RefundExecutionEnabled = true
+		cfg.AfterSale.WorkerEnabled = false
+		cfg.WeChat.RefundNotifyURL = "https://api.example.com/api/v1/refunds/wechat/callbacks"
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "JXE_REFUND_WORKER_ENABLED=true") {
+			t.Fatalf("expected disabled refund worker to fail, got %v", err)
+		}
+	})
+}
+
 func TestProductionConfigRequiresTencentCloudSMS(t *testing.T) {
 	cfg := validProductionConfig()
 	cfg.SMS.SecretKey = ""

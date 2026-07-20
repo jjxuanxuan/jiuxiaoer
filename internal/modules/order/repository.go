@@ -225,22 +225,31 @@ func (r *Repository) NextExpiredOrder(ctx context.Context, now time.Time) (Order
 	return row, err
 }
 
-// ClaimNextCreatingPayment 认领Next 创建中支付。
-// ClaimNextCreatingPayment applies a short DB claim before any provider call.
-// Updating updated_at provides a cross-instance cooldown without holding a row
-// lock across the external request.
-func (r *Repository) ClaimNextCreatingPayment(ctx context.Context, provider string, now, staleBefore time.Time) (Payment, error) {
+// ClaimNextReconcilablePayment claims one creating or pending payment without
+// holding a database lock across the provider request. next_reconcile_at is a
+// short lease as well as the explicit retry schedule.
+func (r *Repository) ClaimNextReconcilablePayment(ctx context.Context, provider string, now, staleBefore time.Time) (Payment, error) {
 	var payment Payment
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Table("payments AS p").Select("p.*").
 			Joins("JOIN orders o ON o.id = p.order_id AND o.deleted_at IS NULL").
 			Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
-			Where("p.provider = ? AND p.status = 'creating' AND p.updated_at <= ? AND p.expires_at > ? AND p.deleted_at IS NULL AND o.status = 'pending_payment'", provider, staleBefore, now).
-			Order("p.updated_at ASC, p.id ASC").Take(&payment).Error; err != nil {
+			Where("p.provider = ? AND p.status IN ? AND ((p.next_reconcile_at IS NOT NULL AND p.next_reconcile_at <= ?) OR (p.next_reconcile_at IS NULL AND (p.status = 'pending' OR p.updated_at <= ?))) AND p.expires_at > ? AND p.deleted_at IS NULL AND o.status = 'pending_payment'", provider, []string{"creating", "pending"}, now, staleBefore, now).
+			Order("COALESCE(p.next_reconcile_at,p.updated_at) ASC, p.id ASC").Take(&payment).Error; err != nil {
 			return err
 		}
-		return tx.Model(&Payment{}).Where("id = ? AND status = 'creating'", payment.ID).
-			Updates(map[string]any{"provider_status": "RECONCILING", "updated_at": now, "version": gorm.Expr("version + 1")}).Error
+		leaseUntil := now.Add(30 * time.Second)
+		result := tx.Model(&Payment{}).Where("id = ? AND status IN ?", payment.ID, []string{"creating", "pending"}).
+			Updates(map[string]any{"next_reconcile_at": leaseUntil, "reconcile_attempts": gorm.Expr("reconcile_attempts + 1"), "version": gorm.Expr("version + 1")})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+		payment.ReconcileAttempts++
+		payment.NextReconcileAt = &leaseUntil
+		return nil
 	})
 	return payment, err
 }

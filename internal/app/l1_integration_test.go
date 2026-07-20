@@ -285,9 +285,9 @@ func (p *fixedPaymentProvider) Query(context.Context, string) (order.ProviderPay
 }
 
 // Close 关闭当前实例并释放相关资源。
-func (p *fixedPaymentProvider) Close(context.Context, string) error {
+func (p *fixedPaymentProvider) Close(context.Context, string) (order.ProviderOperationResult, error) {
 	p.closed = true
-	return nil
+	return order.ProviderOperationResult{}, nil
 }
 
 // ParseCallback 解析回调。

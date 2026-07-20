@@ -651,6 +651,15 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/Success" }
         default: { $ref: "#/components/responses/Problem" }
+  /orders/{id}/payment/confirm:
+    post:
+      summary: 主动向微信确认本人订单支付结果
+      description: 小程序支付结果以该接口或服务端回调为准；仅 creating、pending 会请求微信，已成功支付直接返回本地结果。
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
   /payments/{provider}/callbacks:
     post:
       summary: 支付供应商签名回调

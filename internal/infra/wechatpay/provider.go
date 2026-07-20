@@ -38,7 +38,7 @@ func New(ctx context.Context, cfg config.WeChatConfig) (order.PaymentProvider, e
 		return nil, nil
 	}
 	if cfg.PayMockEnabled {
-		return &fakeProvider{appID: cfg.MiniAppID, mchID: "local-mch", secret: FakeCallbackSecret, refunds: make(map[string]refund.State)}, nil
+		return &fakeProvider{appID: cfg.MiniAppID, mchID: "local-mch", secret: FakeCallbackSecret, payments: make(map[string]order.ProviderPaymentState), refunds: make(map[string]refund.State)}, nil
 	}
 	privateKey, err := utils.LoadPrivateKeyWithPath(cfg.PayPrivateKeyPath)
 	if err != nil {
@@ -82,7 +82,7 @@ func (p *provider) Code() string { return "wechat" }
 
 // Create 创建提供器支付结果。
 func (p *provider) Create(ctx context.Context, input order.CreateProviderPaymentInput) (order.ProviderPaymentResult, error) {
-	response, _, err := p.service.PrepayWithRequestPayment(ctx, jsapi.PrepayRequest{
+	response, apiResult, err := p.service.PrepayWithRequestPayment(ctx, jsapi.PrepayRequest{
 		Appid:       core.String(p.cfg.MiniAppID),
 		Mchid:       core.String(p.cfg.PayMchID),
 		Description: core.String(input.Description),
@@ -96,7 +96,7 @@ func (p *provider) Create(ctx context.Context, input order.CreateProviderPayment
 		Payer: &jsapi.Payer{Openid: core.String(input.OpenID)},
 	})
 	if err != nil {
-		return order.ProviderPaymentResult{}, fmt.Errorf("create WeChat Pay transaction: %w", err)
+		return order.ProviderPaymentResult{}, providerCallError("payment.create", apiResult, err)
 	}
 	payload := map[string]any{
 		"appId":     stringValue(response.Appid),
@@ -109,29 +109,32 @@ func (p *provider) Create(ctx context.Context, input order.CreateProviderPayment
 	return order.ProviderPaymentResult{
 		ProviderPrepayID: stringValue(response.PrepayId),
 		Status:           "NOTPAY",
+		RequestID:        apiRequestID(apiResult),
 		ClientPayload:    payload,
 	}, nil
 }
 
 // Query 查询提供器支付状态。
 func (p *provider) Query(ctx context.Context, paymentNo string) (order.ProviderPaymentState, error) {
-	transaction, _, err := p.service.QueryOrderByOutTradeNo(ctx, jsapi.QueryOrderByOutTradeNoRequest{
+	transaction, apiResult, err := p.service.QueryOrderByOutTradeNo(ctx, jsapi.QueryOrderByOutTradeNoRequest{
 		OutTradeNo: core.String(paymentNo),
 		Mchid:      core.String(p.cfg.PayMchID),
 	})
 	if err != nil {
-		return order.ProviderPaymentState{}, fmt.Errorf("query WeChat Pay transaction: %w", err)
+		return order.ProviderPaymentState{}, providerCallError("payment.query", apiResult, err)
 	}
-	return transactionState(transaction), nil
+	state := transactionState(transaction)
+	state.RequestID = apiRequestID(apiResult)
+	return state, nil
 }
 
 // Close 关闭当前实例并释放相关资源。
-func (p *provider) Close(ctx context.Context, paymentNo string) error {
-	_, err := p.service.CloseOrder(ctx, jsapi.CloseOrderRequest{OutTradeNo: core.String(paymentNo), Mchid: core.String(p.cfg.PayMchID)})
+func (p *provider) Close(ctx context.Context, paymentNo string) (order.ProviderOperationResult, error) {
+	apiResult, err := p.service.CloseOrder(ctx, jsapi.CloseOrderRequest{OutTradeNo: core.String(paymentNo), Mchid: core.String(p.cfg.PayMchID)})
 	if err != nil {
-		return fmt.Errorf("close WeChat Pay transaction: %w", err)
+		return order.ProviderOperationResult{}, providerCallError("payment.close", apiResult, err)
 	}
-	return nil
+	return order.ProviderOperationResult{RequestID: apiRequestID(apiResult)}, nil
 }
 
 // ParseCallback 解析回调。
@@ -291,8 +294,11 @@ func transactionState(transaction *paymentmodel.Transaction) order.ProviderPayme
 		ProviderTradeNo: stringValue(transaction.TransactionId),
 		PaymentNo:       stringValue(transaction.OutTradeNo),
 		Status:          stringValue(transaction.TradeState),
+		AppID:           stringValue(transaction.Appid),
+		MchID:           stringValue(transaction.Mchid),
 	}
 	if transaction.Amount != nil {
+		state.AmountPresent = true
 		state.Amount = int64Value(transaction.Amount.Total)
 		state.Currency = stringValue(transaction.Amount.Currency)
 	}
@@ -305,11 +311,12 @@ func transactionState(transaction *paymentmodel.Transaction) order.ProviderPayme
 }
 
 type fakeProvider struct {
-	appID   string
-	mchID   string
-	secret  string
-	mu      sync.Mutex
-	refunds map[string]refund.State
+	appID    string
+	mchID    string
+	secret   string
+	mu       sync.Mutex
+	payments map[string]order.ProviderPaymentState
+	refunds  map[string]refund.State
 }
 
 // Code 返回代码。
@@ -318,6 +325,9 @@ func (p *fakeProvider) Code() string { return "wechat" }
 // Create 创建提供器支付结果。
 func (p *fakeProvider) Create(_ context.Context, input order.CreateProviderPaymentInput) (order.ProviderPaymentResult, error) {
 	prepayID := "test-prepay-" + input.PaymentNo
+	p.mu.Lock()
+	p.payments[input.PaymentNo] = order.ProviderPaymentState{PaymentNo: input.PaymentNo, Status: "NOTPAY", AppID: p.appID, MchID: p.mchID, Amount: input.Amount, Currency: input.Currency, AmountPresent: true}
+	p.mu.Unlock()
 	return order.ProviderPaymentResult{
 		ProviderPrepayID: prepayID,
 		Status:           "NOTPAY",
@@ -334,16 +344,30 @@ func (p *fakeProvider) Create(_ context.Context, input order.CreateProviderPayme
 
 // Query 查询提供器支付状态。
 func (p *fakeProvider) Query(_ context.Context, paymentNo string) (order.ProviderPaymentState, error) {
-	return order.ProviderPaymentState{PaymentNo: paymentNo, Status: "NOTPAY", Currency: "CNY"}, nil
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	state, ok := p.payments[paymentNo]
+	if !ok {
+		return order.ProviderPaymentState{}, &paygateway.ProviderError{Operation: "payment.query", HTTPStatus: http.StatusNotFound, Code: "ORDER_NOT_EXIST", Message: "payment not found", Retryable: false}
+	}
+	return state, nil
 }
 
 // Close 关闭当前实例并释放相关资源。
-func (p *fakeProvider) Close(_ context.Context, _ string) error { return nil }
+func (p *fakeProvider) Close(_ context.Context, paymentNo string) (order.ProviderOperationResult, error) {
+	p.mu.Lock()
+	if state, ok := p.payments[paymentNo]; ok {
+		state.Status = "CLOSED"
+		p.payments[paymentNo] = state
+	}
+	p.mu.Unlock()
+	return order.ProviderOperationResult{}, nil
+}
 
 // ParseCallback 解析回调。
 func (p *fakeProvider) ParseCallback(_ context.Context, request *http.Request) (order.PaymentCallbackEvent, error) {
-	body, err := io.ReadAll(io.LimitReader(request.Body, 256*1024+1))
-	if err != nil || len(body) > 256*1024 {
+	body, err := io.ReadAll(io.LimitReader(request.Body, paygateway.MaxCallbackBodyBytes+1))
+	if err != nil || int64(len(body)) > paygateway.MaxCallbackBodyBytes {
 		return order.PaymentCallbackEvent{}, errors.New("invalid callback body")
 	}
 	mac := hmac.New(sha256.New, []byte(p.secret))
@@ -413,8 +437,8 @@ func (p *fakeProvider) QueryRefund(_ context.Context, refundNo string) (refund.S
 
 // ParseRefundCallback 解析退款回调。
 func (p *fakeProvider) ParseRefundCallback(_ context.Context, request *http.Request) (refund.CallbackEvent, error) {
-	body, err := io.ReadAll(io.LimitReader(request.Body, 256*1024+1))
-	if err != nil || len(body) > 256*1024 {
+	body, err := io.ReadAll(io.LimitReader(request.Body, paygateway.MaxCallbackBodyBytes+1))
+	if err != nil || int64(len(body)) > paygateway.MaxCallbackBodyBytes {
 		return refund.CallbackEvent{}, errors.New("invalid callback body")
 	}
 	mac := hmac.New(sha256.New, []byte(p.secret))

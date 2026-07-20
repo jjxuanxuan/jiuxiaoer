@@ -152,7 +152,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	dispatchHandler := dispatch.NewHandler(dispatchService)
 	incidentService := deliveryincident.NewService(deps.Config, deps.DB, idGen, deps.Metrics, deps.Redis)
 	incidentHandler := deliveryincident.NewHandler(incidentService)
-	orderService := order.NewService(deps.Config, deps.DB, idGen).WithServiceArea(serviceAreaService).WithCustomerLocation(customerLocationService).WithPaymentProvider(deps.PaymentProvider, deps.Metrics).WithDispatch(dispatchService).WithIncidentResolver(incidentService)
+	orderService := order.NewService(deps.Config, deps.DB, idGen).WithLogger(deps.Log).WithServiceArea(serviceAreaService).WithCustomerLocation(customerLocationService).WithPaymentProvider(deps.PaymentProvider, deps.Metrics).WithDispatch(dispatchService).WithIncidentResolver(incidentService)
 	orderHandler := order.NewHandler(orderService)
 	order.RegisterCallbackRoute(api, orderHandler)
 	order.RegisterRoutes(protected.Group("/orders"), orderHandler)

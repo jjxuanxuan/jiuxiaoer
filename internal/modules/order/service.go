@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,6 +29,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/pkg/idempotency"
 	"jiuxiaoer-admin/backend-go/internal/pkg/metrics"
 	"jiuxiaoer-admin/backend-go/internal/pkg/pagination"
+	"jiuxiaoer-admin/backend-go/internal/pkg/paygateway"
 	"jiuxiaoer-admin/backend-go/internal/pkg/problem"
 	"jiuxiaoer-admin/backend-go/internal/pkg/requestctx"
 	"jiuxiaoer-admin/backend-go/internal/pkg/snowflake"
@@ -43,6 +46,7 @@ type Service struct {
 	dispatch    *dispatch.Service
 	locations   *customerlocation.Service
 	incidents   IncidentResolver
+	log         *slog.Logger
 }
 
 type IncidentResolver interface {
@@ -67,6 +71,13 @@ func (s *Service) WithPaymentProvider(provider PaymentProvider, registry *metric
 	return s
 }
 
+func (s *Service) paymentCode() string {
+	if s.payment == nil {
+		return ""
+	}
+	return s.payment.Code()
+}
+
 // WithDispatch 设置调度并返回更新后的值。
 func (s *Service) WithDispatch(service *dispatch.Service) *Service {
 	s.dispatch = service
@@ -78,6 +89,13 @@ func (s *Service) WithIncidentResolver(resolver IncidentResolver) *Service {
 	return s
 }
 
+func (s *Service) WithLogger(log *slog.Logger) *Service {
+	if log != nil {
+		s.log = log
+	}
+	return s
+}
+
 // NewService 组装订单写入、幂等和 Snowflake ID 生成能力。
 func NewService(cfg config.Config, db *gorm.DB, idGen *snowflake.Generator) *Service {
 	return &Service{
@@ -85,6 +103,7 @@ func NewService(cfg config.Config, db *gorm.DB, idGen *snowflake.Generator) *Ser
 		repo:    NewRepository(db),
 		idStore: idempotency.NewStore(db),
 		idGen:   idGen,
+		log:     slog.Default(),
 	}
 }
 
@@ -927,18 +946,33 @@ func (s *Service) CreatePayment(ctx context.Context, claims *auth.Claims, method
 	})
 	cancel()
 	if providerErr != nil {
+		s.logPaymentProviderFailure(payment.PaymentNo, providerErr, "reconcile_or_retry")
 		s.metrics.IncPayment(req.Provider, "create_failed")
-		now := time.Now()
+		next := time.Now()
 		_ = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-			if err := s.repo.UpdatePayment(ctx, tx, payment.ID, map[string]any{"status": "failed", "failed_at": &now, "failure_code": "PROVIDER_UNAVAILABLE", "version": gorm.Expr("version + 1")}); err != nil {
+			values := map[string]any{"status": "creating", "next_reconcile_at": &next, "failure_code": paygateway.Code(providerErr, "PROVIDER_UNAVAILABLE"), "version": gorm.Expr("version + 1")}
+			if !paygateway.Retryable(providerErr) {
+				values["status"] = "failed"
+				values["failed_at"] = &next
+				values["next_reconcile_at"] = nil
+			}
+			if err := s.repo.UpdatePayment(ctx, tx, payment.ID, values); err != nil {
 				return err
 			}
 			return s.idStore.Fail(ctx, tx, claims.AccountType, customerID, path, key)
 		})
-		return PaymentDTO{}, problem.New(503, "PAYMENT_PROVIDER_UNAVAILABLE", "Service Unavailable", "payment provider is unavailable")
+		message := "payment creation was rejected by the provider"
+		if paygateway.Retryable(providerErr) {
+			message = "payment creation result is unknown; backend reconciliation has been scheduled"
+		}
+		detail := problem.New(503, "PAYMENT_PROVIDER_UNAVAILABLE", "Service Unavailable", message)
+		detail.Data = map[string]any{"retryable": paygateway.Retryable(providerErr), "provider_code": paygateway.Code(providerErr, "PROVIDER_UNAVAILABLE"), "provider_request_id": paygateway.RequestID(providerErr)}
+		return PaymentDTO{}, detail
 	}
+	s.log.Info("payment provider call completed", slog.String("operation", "payment.create"), slog.String("payment_no", payment.PaymentNo), slog.String("provider_status", providerResult.Status), slog.String("provider_request_id", providerResult.RequestID))
 
 	payload := jsonData(providerResult.ClientPayload)
+	nextReconcileAt := nextPaymentReconcileAt(payment, time.Now())
 	err = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		locked, err := s.repo.LockPaymentByOrderProvider(ctx, tx, orderID, req.Provider)
 		if err != nil {
@@ -953,6 +987,8 @@ func (s *Service) CreatePayment(ctx context.Context, claims *auth.Claims, method
 			"provider_prepay_id": optionalString(providerResult.ProviderPrepayID),
 			"provider_trade_no":  optionalString(providerResult.ProviderTradeNo),
 			"client_payload":     payload,
+			"next_reconcile_at":  nextReconcileAt,
+			"failure_code":       nil,
 			"version":            gorm.Expr("version + 1"),
 		}); err != nil {
 			return err
@@ -963,18 +999,20 @@ func (s *Service) CreatePayment(ctx context.Context, claims *auth.Claims, method
 		payment.ProviderTradeNo = optionalString(providerResult.ProviderTradeNo)
 		payment.ClientPayload = payload
 		response = paymentDTO(payment)
-		if err := s.createOutbox(ctx, tx, "payment.created", "payment", payment.ID, map[string]any{"payment_id": idString(payment.ID), "order_id": idString(orderID), "provider": req.Provider}); err != nil {
+		if err := s.createOutbox(ctx, tx, "payment.created", "payment", payment.ID, map[string]any{"payment_id": idString(payment.ID), "order_id": idString(orderID), "provider": req.Provider, "provider_request_id": providerResult.RequestID}); err != nil {
 			return err
 		}
 		return s.idStore.Succeed(ctx, tx, claims.AccountType, customerID, path, key, response)
 	})
 	if err != nil {
 		closeCtx, cancel := context.WithTimeout(context.Background(), s.cfg.WeChat.HTTPTimeout)
-		closeErr := s.payment.Close(closeCtx, payment.PaymentNo)
+		closeResult, closeErr := s.payment.Close(closeCtx, payment.PaymentNo)
 		cancel()
 		if closeErr != nil {
+			s.logPaymentProviderFailure(payment.PaymentNo, closeErr, "manual_investigation")
 			s.metrics.IncPayment(req.Provider, "create_compensation_failed")
 		} else {
+			s.log.Info("payment provider call completed", slog.String("operation", "payment.close"), slog.String("payment_no", payment.PaymentNo), slog.String("provider_request_id", closeResult.RequestID))
 			s.metrics.IncPayment(req.Provider, "create_compensated")
 		}
 		return PaymentDTO{}, err
@@ -1058,41 +1096,19 @@ func (s *Service) ProcessPaymentCallback(ctx context.Context, providerCode strin
 		if err := s.repo.UpdatePaymentCallback(ctx, tx, callback.ID, map[string]any{"payment_id": payment.ID}); err != nil {
 			return err
 		}
-		if event.Amount != payment.Amount || event.Currency != payment.Currency {
-			now := time.Now()
-			callbackReject = problem.Conflict("PAYMENT_AMOUNT_MISMATCH", "payment callback amount mismatch")
-			return s.repo.UpdatePaymentCallback(ctx, tx, callback.ID, map[string]any{"process_status": "failed", "error_code": "PAYMENT_AMOUNT_MISMATCH", "processed_at": &now})
-		}
-		if event.Status != "SUCCESS" {
-			now := time.Now()
-			if err := s.repo.UpdatePayment(ctx, tx, payment.ID, map[string]any{"provider_status": event.Status, "version": gorm.Expr("version + 1")}); err != nil {
-				return err
-			}
-			return s.repo.UpdatePaymentCallback(ctx, tx, callback.ID, map[string]any{"process_status": "ignored", "processed_at": &now})
-		}
-		if payment.Status != "succeeded" {
-			if orderRow.Status == "pending_payment" {
-				if err := s.applyPaymentSuccess(ctx, tx, orderRow, payment, event, "system", 0, "callback:"+event.EventID); err != nil {
-					return err
-				}
-			} else {
-				paidAt := event.PaidAt
-				if paidAt == nil {
-					now := time.Now()
-					paidAt = &now
-				}
-				if err := s.repo.UpdatePayment(ctx, tx, payment.ID, map[string]any{"status": "succeeded", "provider_status": event.Status, "provider_trade_no": event.ProviderTradeNo, "paid_at": paidAt, "version": gorm.Expr("version + 1")}); err != nil {
-					return err
-				}
-				if err := s.repo.UpdateOrder(ctx, tx, orderRow.ID, map[string]any{"status": "payment_exception", "pay_status": "succeeded", "paid_amount": payment.Amount, "paid_at": paidAt, "version": gorm.Expr("version + 1")}); err != nil {
-					return err
-				}
-				if err := s.createOutbox(ctx, tx, "payment.exception", "payment", payment.ID, map[string]any{"payment_id": idString(payment.ID), "order_id": idString(orderRow.ID), "reason_code": "PAYMENT_AFTER_ORDER_CLOSED"}); err != nil {
-					return err
-				}
-			}
+		state := ProviderPaymentState{ProviderTradeNo: event.ProviderTradeNo, PaymentNo: event.PaymentNo, Status: event.Status, AppID: event.AppID, MchID: event.MchID, Amount: event.Amount, Currency: event.Currency, AmountPresent: true, PaidAt: event.PaidAt}
+		_, stateReject, err := s.applyProviderPaymentStateTx(ctx, tx, orderRow, payment, state, "system", 0, "callback:"+event.EventID)
+		if err != nil {
+			return err
 		}
 		now := time.Now()
+		if stateReject != nil {
+			callbackReject = stateReject
+			return s.repo.UpdatePaymentCallback(ctx, tx, callback.ID, map[string]any{"process_status": "failed", "error_code": "PAYMENT_PROVIDER_DATA_MISMATCH", "processed_at": &now})
+		}
+		if strings.ToUpper(event.Status) != "SUCCESS" {
+			return s.repo.UpdatePaymentCallback(ctx, tx, callback.ID, map[string]any{"process_status": "ignored", "processed_at": &now})
+		}
 		return s.repo.UpdatePaymentCallback(ctx, tx, callback.ID, map[string]any{"process_status": "processed", "processed_at": &now})
 	})
 	if err != nil {
@@ -1161,7 +1177,7 @@ func (s *Service) applyPaymentSuccess(ctx context.Context, tx *gorm.DB, row Orde
 	}
 	if err := s.repo.UpdatePayment(ctx, tx, payment.ID, map[string]any{
 		"status": "succeeded", "provider_status": event.Status, "provider_trade_no": optionalString(event.ProviderTradeNo),
-		"paid_at": paidAt, "failure_code": nil, "version": gorm.Expr("version + 1"),
+		"paid_at": paidAt, "failure_code": nil, "next_reconcile_at": nil, "version": gorm.Expr("version + 1"),
 	}); err != nil {
 		return err
 	}

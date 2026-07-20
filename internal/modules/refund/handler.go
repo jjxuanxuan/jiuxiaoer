@@ -9,6 +9,7 @@ import (
 
 	"jiuxiaoer-admin/backend-go/internal/modules/auth"
 	"jiuxiaoer-admin/backend-go/internal/pkg/pagination"
+	"jiuxiaoer-admin/backend-go/internal/pkg/paygateway"
 	"jiuxiaoer-admin/backend-go/internal/pkg/problem"
 	"jiuxiaoer-admin/backend-go/internal/pkg/response"
 )
@@ -93,8 +94,8 @@ func (h *Handler) RepairStored(c *gin.Context) {
 
 // Callback 处理回调相关逻辑。
 func (h *Handler) Callback(c *gin.Context) {
-	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 256*1024+1))
-	if err != nil || len(body) > 256*1024 {
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, paygateway.MaxCallbackBodyBytes+1))
+	if err != nil || int64(len(body)) > paygateway.MaxCallbackBodyBytes {
 		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"code": "FAIL", "message": "callback rejected"})
 		return
 	}
