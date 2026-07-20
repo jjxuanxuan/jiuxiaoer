@@ -1,0 +1,52 @@
+name: payment-refund-gate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: payment-refund-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  payment-refund:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: jxe
+          MYSQL_ROOT_PASSWORD: integration-root-password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -pintegration-root-password"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    env:
+      JXE_MYSQL_DSN: "root:integration-root-password@tcp(127.0.0.1:3306)/jxe?charset=utf8mb4&parseTime=true&loc=Local"
+      JXE_MYSQL_REQUIRED: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Apply schema migrations
+        run: go run github.com/pressly/goose/v3/cmd/goose@v3.26.0 -dir ./migrations mysql "$JXE_MYSQL_DSN" up
+      - name: Unit and package tests
+        run: go test -count=1 ./...
+      - name: Payment and refund race tests
+        run: go test -race ./internal/infra/wechatpay ./internal/modules/order ./internal/modules/refund ./internal/modules/aftersale
+      - name: Static analysis
+        run: go vet ./...
+      - name: MySQL money-flow acceptance tests
+        env:
+          JXE_RUN_INTEGRATION: "1"
+        run: go test -p 1 -count=1 ./internal/modules/order ./internal/modules/refund ./internal/modules/aftersale

@@ -1,4 +1,4 @@
-.PHONY: run run-worker fmt-check openapi-check alerts-check mq-contract-check mq-vhost-provision mq-topology-apply mq-topology-verify test test-race test-integration test-mq-integration acceptance-phase15 verify verify-cp1 tidy seed migrate-up migrate-down migrate-check provision-runtime-user deps-up deps-down deps-mq-up
+.PHONY: run run-worker fmt-check openapi-check alerts-check mq-contract-check mq-vhost-provision mq-topology-apply mq-topology-verify test test-race test-integration test-mq-integration payment-refund-gate acceptance-phase15 verify verify-cp1 tidy seed migrate-up migrate-down migrate-check provision-runtime-user deps-up deps-down deps-mq-up
 
 ENV_FILE ?= .env.local
 
@@ -41,6 +41,12 @@ test-race:
 
 test-integration:
 	$(load_env) JXE_MYSQL_RUNTIME_DSN="$$JXE_MYSQL_DSN" JXE_MYSQL_DSN="$${JXE_MYSQL_MIGRATION_DSN:-$$JXE_MYSQL_DSN}" JXE_RUN_INTEGRATION=1 go test -p 1 ./internal/... -count=1 -v
+
+payment-refund-gate:
+	go test -count=1 ./...
+	go test -race ./internal/infra/wechatpay ./internal/modules/order ./internal/modules/refund ./internal/modules/aftersale
+	go vet ./...
+	$(load_env) JXE_RUN_INTEGRATION=1 go test -p 1 -count=1 ./internal/modules/order ./internal/modules/refund ./internal/modules/aftersale
 
 test-mq-integration:
 	@set -e; vhost=jxe-rmq-integration; \
