@@ -20,20 +20,25 @@ func (r *Repository) DB() *gorm.DB { return r.db }
 // LockOrder 加锁并获取订单。
 func (r *Repository) LockOrder(ctx context.Context, tx *gorm.DB, orderID uint64) (OrderRow, error) {
 	var row OrderRow
-	err := tx.WithContext(ctx).Table("orders").Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND deleted_at IS NULL", orderID).Take(&row).Error
+	err := tx.WithContext(ctx).
+	Table("orders").Clauses(clause.Locking{Strength: "UPDATE"}).
+	Where("id = ? AND deleted_at IS NULL", orderID).
+	Take(&row).Error
 	return row, err
 }
 
 // OrderItems 返回订单明细。
 func (r *Repository) OrderItems(ctx context.Context, tx *gorm.DB, orderID uint64, ids []uint64) ([]OrderItemRow, error) {
 	var rows []OrderItemRow
-	err := tx.WithContext(ctx).Table("order_items").Where("order_id = ? AND id IN ? AND deleted_at IS NULL", orderID, ids).Order("id").Find(&rows).Error
+	err := tx.WithContext(ctx).Table("order_items").
+	Where("order_id = ? AND id IN ? AND deleted_at IS NULL", orderID, ids).
+	Order("id").Find(&rows).Error
 	return rows, err
 }
 
-// AllOrderItems returns the immutable item snapshots used by a system-created
-// delivery-return after-sale. Keeping this query in the after-sale repository
-// avoids duplicating refund allocation rules in the orchestration module.
+//AllOrderItems 返回系统创建的不可变商品快照
+//发货-退货售后。将此查询保留在售后存储库中
+//避免在编排模块中重复退款分配规则。
 func (r *Repository) AllOrderItems(ctx context.Context, tx *gorm.DB, orderID uint64) ([]OrderItemRow, error) {
 	var rows []OrderItemRow
 	err := tx.WithContext(ctx).Table("order_items").
@@ -41,15 +46,17 @@ func (r *Repository) AllOrderItems(ctx context.Context, tx *gorm.DB, orderID uin
 	return rows, err
 }
 
-// BySource returns the one system after-sale owned by a delivery return.
+// BySource退货归一系统售后归一发货退货.
 func (r *Repository) BySource(ctx context.Context, tx *gorm.DB, sourceType string, sourceID uint64) (AfterSale, error) {
 	var row AfterSale
-	err := tx.WithContext(ctx).Where("source_type=? AND source_id=? AND deleted_at IS NULL", sourceType, sourceID).Take(&row).Error
+	err := tx.WithContext(ctx).
+	Where("source_type=? AND source_id=? AND deleted_at IS NULL", sourceType, sourceID).
+	Take(&row).Error
 	return row, err
 }
 
-// ActiveConflicts locks active after-sales for the order. A system full refund
-// must not race a customer application or silently refund only a remainder.
+//ActiveConflicts 锁定订单的有效售后。系统全额退款
+//不得与客户应用程序竞争或仅默默退还剩余部分。
 func (r *Repository) ActiveConflicts(ctx context.Context, tx *gorm.DB, orderID uint64) (bool, error) {
 	var rows []struct{ ID uint64 }
 	err := tx.WithContext(ctx).Table("after_sales").Select("id").
@@ -68,7 +75,7 @@ func (r *Repository) RefundByAfterSale(ctx context.Context, tx *gorm.DB, afterSa
 
 func repositoryNotFound(err error) bool { return errors.Is(err, gorm.ErrRecordNotFound) }
 
-// ActiveRequested 返回启用状态 Requested。
+// ActiveRequested 统计所有未释放售后记录曾经申请占用的数量和金额
 func (r *Repository) ActiveRequested(ctx context.Context, tx *gorm.DB, orderItemIDs []uint64) (map[uint64]struct {
 	Quantity int
 	Amount   int64
@@ -79,9 +86,11 @@ func (r *Repository) ActiveRequested(ctx context.Context, tx *gorm.DB, orderItem
 		Amount      int64
 	}
 	var rows []row
-	err := tx.WithContext(ctx).Table("after_sale_items asi").Select("asi.order_item_id, SUM(asi.requested_quantity) quantity, SUM(asi.requested_amount) amount").
+	err := tx.WithContext(ctx).Table("after_sale_items asi").
+		Select("asi.order_item_id, SUM(asi.requested_quantity) quantity, SUM(asi.requested_amount) amount").
 		Joins("JOIN after_sales a ON a.id = asi.after_sale_id AND a.deleted_at IS NULL").
-		Where("asi.order_item_id IN ? AND asi.deleted_at IS NULL AND a.status NOT IN ?", orderItemIDs, []string{"rejected", "withdrawn", "closed_manual"}).Group("asi.order_item_id").Scan(&rows).Error
+		Where("asi.order_item_id IN ? AND asi.deleted_at IS NULL AND a.status NOT IN ?", orderItemIDs, []string{"rejected", "withdrawn", "closed_manual"}).
+		Group("asi.order_item_id").Scan(&rows).Error
 	out := make(map[uint64]struct {
 		Quantity int
 		Amount   int64
@@ -102,7 +111,7 @@ func (r *Repository) DeliveryFeeClaimed(ctx context.Context, tx *gorm.DB, orderI
 	return count > 0, err
 }
 
-// CreateRateCounts 创建速率 Counts。
+// CreateRateCounts 统计客户近期创建售后的次数
 func (r *Repository) CreateRateCounts(ctx context.Context, tx *gorm.DB, customerID, orderID uint64, hourAgo, dayAgo time.Time) (int64, int64, error) {
 	var orderCount, customerCount int64
 	if err := tx.WithContext(ctx).Model(&AfterSale{}).Where("order_id=? AND initiator_type='customer' AND created_at>=? AND deleted_at IS NULL", orderID, hourAgo).Count(&orderCount).Error; err != nil {

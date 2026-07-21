@@ -246,7 +246,7 @@ func (f *deliveryIncidentE2EFixture) createFulfillment(t *testing.T, status stri
 	}
 	order := map[string]any{
 		"id": row.OrderID, "order_no": fmt.Sprintf("DIE2E%d", row.OrderID), "customer_id": f.ids.Next(),
-		"merchant_id": f.merchantID, "shop_id": f.shopID, "status": orderStatus, "pay_status": "paid",
+		"merchant_id": f.merchantID, "shop_id": f.shopID, "status": orderStatus, "pay_status": "succeeded",
 		"delivery_status": status, "goods_amount": 2000, "payable_amount": 2000, "paid_amount": 2000,
 		"address_snapshot": datatypes.JSON(`{"contact_phone":"13800000000","longitude":113.93,"latitude":22.54}`), "version": 1,
 	}

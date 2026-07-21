@@ -61,6 +61,7 @@ func (s *Service) Create(ctx context.Context, claims *auth.Claims, method, path,
 	}
 	var out DTO
 	err = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		//先取幂等
 		started, err := s.idem.Start(ctx, tx, s.ids.Next(), claims.AccountType, customerID, method, path, key, idempotency.RequestHash(req))
 		if err != nil {
 			return err
@@ -69,6 +70,7 @@ func (s *Service) Create(ctx context.Context, claims *auth.Claims, method, path,
 			return s.cached(ctx, tx, claims.AccountType, customerID, path, key, &out)
 		}
 		now := s.now().UTC()
+		//查询出统计客户近期创建售后的次数
 		orderCount, customerCount, err := s.repo.CreateRateCounts(ctx, tx, customerID, orderID, now.Add(-time.Hour), now.Add(-24*time.Hour))
 		if err != nil {
 			return err
@@ -76,6 +78,7 @@ func (s *Service) Create(ctx context.Context, claims *auth.Claims, method, path,
 		if orderCount >= 5 || customerCount >= 20 {
 			return problem.TooManyRequests("AFTER_SALE_RATE_LIMITED", "too many after-sale applications")
 		}
+		//加锁
 		orderRow, err := s.repo.LockOrder(ctx, tx, orderID)
 		if errors.Is(err, gorm.ErrRecordNotFound) || orderRow.CustomerID != customerID {
 			return problem.NotFound("ORDER_NOT_FOUND", "order not found")
@@ -83,19 +86,22 @@ func (s *Service) Create(ctx context.Context, claims *auth.Claims, method, path,
 		if err != nil {
 			return err
 		}
+		//根据订单状态和支付状态判断售后类型
 		if err := s.eligible(orderRow, req.Type); err != nil {
 			return err
 		}
+		//根据商品ID是否合法和重复
 		ids := make([]uint64, 0, len(req.Items))
 		seen := map[uint64]bool{}
 		for _, v := range req.Items {
-			id, e := parseID(v.OrderItemID)
-			if e != nil || seen[id] {
+			id, err := parseID(v.OrderItemID)
+			if err != nil || seen[id] {
 				return problem.InvalidArgument("VALIDATION_FAILED", "invalid or duplicate order_item_id")
 			}
 			seen[id] = true
 			ids = append(ids, id)
 		}
+		//根据订单ID和订单商品ID，批量查询未被删除的商品信息
 		orderItems, err := s.repo.OrderItems(ctx, tx, orderID, ids)
 		if err != nil {
 			return err
@@ -103,6 +109,7 @@ func (s *Service) Create(ctx context.Context, claims *auth.Claims, method, path,
 		if len(orderItems) != len(ids) {
 			return problem.New(422, "AFTER_SALE_AMOUNT_EXCEEDED", "Unprocessable Entity", "order item is invalid")
 		}
+		//退货政策检查
 		initialStatus := "submitted"
 		if req.Type == "unopened_return" {
 			for _, item := range orderItems {
@@ -193,9 +200,13 @@ func returnPolicy(snapshot datatypes.JSON) (known bool, eligible bool) {
 	return true, value.ReturnPolicy.Eligible
 }
 
-// eligible 返回eligible。
+// eligible 判断允许申请什么类型的售后
+// 普通售后：2天
+// 未开封：7天
 func (s *Service) eligible(row OrderRow, kind string) error {
-	if row.PayStatus != "paid" && row.Status != "paid" && row.Status != "accepted" && row.Status != "preparing" && row.Status != "ready_for_pickup" && row.Status != "delivering" && row.Status != "completed" {
+	allowStatus := row.Status == "paid" || row.Status == "accepted" || row.Status == "preparing" ||
+		row.Status == "ready_for_pickup" || row.Status == "delivering" || row.Status == "completed"
+	if row.PayStatus != "succeeded" || !allowStatus {
 		return problem.Conflict("AFTER_SALE_NOT_ELIGIBLE", "order is not eligible for after-sale")
 	}
 	if row.Status == "completed" && row.CompletedAt != nil {

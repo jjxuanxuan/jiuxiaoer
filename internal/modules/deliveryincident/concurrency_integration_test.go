@@ -237,7 +237,7 @@ func createIncidentConcurrencyFixture(t *testing.T, db *gorm.DB, ids *snowflake.
 	}
 	if err := db.Table("orders").Create(map[string]any{
 		"id": fixture.OrderID, "order_no": fmt.Sprintf("DICON%d", fixture.OrderID), "customer_id": ids.Next(), "merchant_id": ids.Next(),
-		"shop_id": fixture.ShopID, "status": orderStatus, "pay_status": "paid", "delivery_status": status, "address_snapshot": datatypes.JSON(`{}`), "version": 1,
+		"shop_id": fixture.ShopID, "status": orderStatus, "pay_status": "succeeded", "delivery_status": status, "address_snapshot": datatypes.JSON(`{}`), "version": 1,
 	}).Error; err != nil {
 		t.Fatal(err)
 	}

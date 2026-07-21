@@ -506,7 +506,7 @@ func (s *Service) Cancel(ctx context.Context, claims *auth.Claims, method string
 			return problem.Conflict("VERSION_CONFLICT", "order version changed")
 		}
 		if row.Status != "pending_payment" {
-			if !actor.IsAdmin || row.PayStatus != "paid" || row.Status == "completed" || row.Status == "cancelled" || row.Status == "refunded" || row.Status == "refunding" {
+			if !actor.IsAdmin || row.PayStatus != "succeeded" || row.Status == "completed" || row.Status == "cancelled" || row.Status == "refunded" || row.Status == "refunding" {
 				return problem.Conflict("ORDER_INVALID_STATUS", "order cannot be cancelled")
 			}
 			var cancelErr error

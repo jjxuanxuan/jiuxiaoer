@@ -347,7 +347,7 @@ func (f *mqDomainFixture) createNotificationOrder(t *testing.T) (uint64, uint64)
 	orderID, deliveryID := f.ids.Next(), f.ids.Next()
 	order := map[string]any{
 		"id": orderID, "order_no": fmt.Sprintf("ACC%d", orderID), "customer_id": orderID,
-		"merchant_id": uint64(4001), "shop_id": uint64(4201), "status": "paid", "pay_status": "paid",
+		"merchant_id": uint64(4001), "shop_id": uint64(4201), "status": "paid", "pay_status": "succeeded",
 		"delivery_status": "pending", "address_snapshot": datatypes.JSON(`{}`), "version": 1,
 	}
 	if err := f.db.Table("orders").Create(order).Error; err != nil {

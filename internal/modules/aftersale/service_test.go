@@ -101,6 +101,9 @@ func TestEligibleWindowsAndOrderState(t *testing.T) {
 	}{
 		{name: "active paid order", row: OrderRow{Status: "delivering", PayStatus: "succeeded"}, kind: "damaged"},
 		{name: "unpaid order", row: OrderRow{Status: "pending_payment", PayStatus: "pending"}, kind: "damaged", code: "AFTER_SALE_NOT_ELIGIBLE"},
+		{name: "allowed status without successful payment", row: OrderRow{Status: "delivering", PayStatus: "pending"}, kind: "damaged", code: "AFTER_SALE_NOT_ELIGIBLE"},
+		{name: "successful payment with disallowed order status", row: OrderRow{Status: "payment_exception", PayStatus: "succeeded"}, kind: "damaged", code: "AFTER_SALE_NOT_ELIGIBLE"},
+		{name: "legacy paid payment status", row: OrderRow{Status: "pending_payment", PayStatus: "paid"}, kind: "damaged", code: "AFTER_SALE_NOT_ELIGIBLE"},
 		{name: "unopened before completion", row: OrderRow{Status: "delivering", PayStatus: "succeeded"}, kind: "unopened_return", code: "AFTER_SALE_NOT_ELIGIBLE"},
 		{name: "standard expired", row: completed(now.Add(-49 * time.Hour)), kind: "damaged", code: "AFTER_SALE_NOT_ELIGIBLE"},
 		{name: "unopened within seven days", row: completed(now.Add(-6 * 24 * time.Hour)), kind: "unopened_return"},
