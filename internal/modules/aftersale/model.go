@@ -124,7 +124,7 @@ func (ReturnReceipt) TableName() string { return "return_receipts" }
 
 type ProductStock struct {
 	ID, ShopProductID, ShopID, ProductID uint64
-	AvailableQty, ReservedQty            int
+	AvailableQty, ReservedQty, LockedQty int
 	Version                              int
 }
 
@@ -136,6 +136,8 @@ type StockRecord struct {
 	ChangeType, SourceType                string
 	QuantityDelta                         int
 	BeforeAvailableQty, AfterAvailableQty int
+	TotalQuantityDelta                    int
+	BeforeTotalQty, AfterTotalQty         int
 	SourceID                              *uint64
 	IdempotencyKey                        *string
 }
@@ -157,7 +159,12 @@ type AuditLog struct {
 	ID, ActorID, ResourceID                 uint64
 	ActorType, Action, ResourceType, Result string
 	BeforeData, AfterData                   datatypes.JSON
-	RequestID, IP, UserAgent                *string
+	EventID                                 *string
+	AccountID, ShopID, OrderID, DeliveryID  *uint64
+	Version                                 *uint64
+	ErrorCode, ReasonCode                   *string
+	BeforeStatus, AfterStatus               *string
+	RequestID, IP, IPHash, UserAgent        *string
 }
 
 // TableName 返回当前数据模型对应的数据库表名。

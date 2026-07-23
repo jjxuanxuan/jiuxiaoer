@@ -69,11 +69,12 @@ func (h Handler) CompatibleHealth(c *gin.Context) {
 // readiness 返回readiness。
 func (h Handler) readiness(ctx context.Context) (CheckResponse, int) {
 	checks := map[string]string{
-		"mysql":             h.checkMySQL(ctx),
-		"redis":             h.checkRedis(ctx),
-		"rabbitmq":          h.checkRabbitMQ(),
-		"rabbitmq_topology": h.checkRabbitMQTopology(ctx),
-		"snowflake_lease":   h.checkNodeLease(),
+		"mysql":               h.checkMySQL(ctx),
+		"redis":               h.checkRedis(ctx),
+		"rabbitmq":            h.checkRabbitMQ(),
+		"rabbitmq_topology":   h.checkRabbitMQTopology(ctx),
+		"snowflake_lease":     h.checkNodeLease(),
+		"cp1_release_profile": h.checkCP1ReleaseProfile(),
 	}
 
 	ready := true
@@ -90,6 +91,9 @@ func (h Handler) readiness(ctx context.Context) (CheckResponse, int) {
 		ready = false
 	}
 	if h.cfg.Redis.Required && checks["snowflake_lease"] != "ok" {
+		ready = false
+	}
+	if h.cfg.CP1.ReleaseProfile != config.CP1ReleaseProfileOff && checks["cp1_release_profile"] != "ok" {
 		ready = false
 	}
 	status := "ok"
@@ -168,7 +172,17 @@ func (h Handler) checkRabbitMQTopology(ctx context.Context) string {
 
 // mqEnabled 判断消息队列启用状态。
 func (h Handler) mqEnabled() bool {
-	return h.cfg.Feature.MQPublisherEnabled || h.cfg.MQ.ConsumerNotificationEnabled || h.cfg.MQ.ConsumerPrintEnabled || h.cfg.MQ.ConsumerCacheEnabled || h.cfg.MQ.ConsumerSecurityEnabled || h.cfg.MQ.ConsumerRealtimeEnabled
+	return h.cfg.Feature.MQPublisherEnabled || h.cfg.MQ.ConsumerNotificationEnabled || h.cfg.MQ.ConsumerPrintEnabled || h.cfg.MQ.ConsumerCacheEnabled || h.cfg.MQ.ConsumerSecurityEnabled || h.cfg.MQ.ConsumerDispatchEnabled || h.cfg.MQ.ConsumerRealtimeEnabled
+}
+
+func (h Handler) checkCP1ReleaseProfile() string {
+	if h.cfg.CP1.ReleaseProfile == config.CP1ReleaseProfileOff {
+		return "disabled"
+	}
+	if h.cfg.CP1.ReleaseProfile != config.CP1ReleaseProfilePhaseOne || len(h.cfg.CP1ReleaseProfileProblems()) > 0 {
+		return "misconfigured"
+	}
+	return "ok"
 }
 
 // checkNodeLease 检查节点租约是否满足要求。
@@ -195,13 +209,14 @@ func (h Handler) collectMetrics() []metrics.Sample {
 		{Name: "jxe_readiness", Help: "Whether this instance is ready to serve traffic.", Type: "gauge", Value: ready},
 	}
 	required := map[string]bool{
-		"mysql":             h.cfg.MySQL.Required,
-		"redis":             h.cfg.Redis.Required,
-		"rabbitmq":          h.cfg.RabbitMQ.Required || h.mqEnabled(),
-		"rabbitmq_topology": h.cfg.MQ.FailOnTopologyDrift && h.mqEnabled(),
-		"snowflake_lease":   h.cfg.Redis.Required,
+		"mysql":               h.cfg.MySQL.Required,
+		"redis":               h.cfg.Redis.Required,
+		"rabbitmq":            h.cfg.RabbitMQ.Required || h.mqEnabled(),
+		"rabbitmq_topology":   h.cfg.MQ.FailOnTopologyDrift && h.mqEnabled(),
+		"snowflake_lease":     h.cfg.Redis.Required,
+		"cp1_release_profile": h.cfg.CP1.ReleaseProfile != config.CP1ReleaseProfileOff,
 	}
-	for _, dependency := range []string{"mysql", "redis", "rabbitmq", "rabbitmq_topology", "snowflake_lease"} {
+	for _, dependency := range []string{"mysql", "redis", "rabbitmq", "rabbitmq_topology", "snowflake_lease", "cp1_release_profile"} {
 		value := float64(0)
 		if result.Checks[dependency] == "ok" {
 			value = 1

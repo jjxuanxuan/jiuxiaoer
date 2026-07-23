@@ -175,15 +175,18 @@ func (f *deliveryIncidentE2EFixture) installAdminPermissions(t *testing.T) {
 	codes := []string{
 		"delivery_incident:list_all", "delivery_incident:view_all", "delivery_incident:acknowledge",
 		"delivery_incident:resolve", "delivery_incident:reject", "delivery_incident:audit",
-		"order:cancel_all", "delivery:force_complete",
+		"order:cancel_all", "delivery:force_complete_request", "delivery:force_complete_approve",
 	}
 	for index, code := range codes {
 		permissionID := uint64(2115 + index)
 		if code == "order:cancel_all" {
 			permissionID = 2078
 		}
-		if code == "delivery:force_complete" {
-			permissionID = 2068
+		if code == "delivery:force_complete_request" {
+			permissionID = 2143
+		}
+		if code == "delivery:force_complete_approve" {
+			permissionID = 2144
 		}
 		parts := strings.SplitN(code, ":", 2)
 		if err := f.db.Exec(`INSERT INTO permissions (id,code,resource,action,description,status)
@@ -225,7 +228,7 @@ func (f *deliveryIncidentE2EFixture) createSecondaryIdentities(t *testing.T) {
 	if err := f.db.Table("merchants").Create(map[string]any{"id": otherMerchantID, "code": fmt.Sprintf("incident-%d", otherMerchantID), "name": "Other merchant", "status": "active", "review_status": "approved"}).Error; err != nil {
 		t.Fatalf("create other merchant: %v", err)
 	}
-	if err := f.db.Table("merchant_users").Create(map[string]any{"id": otherUserID, "account_id": otherAccountID, "merchant_id": otherMerchantID, "name": "Other merchant user", "status": "active"}).Error; err != nil {
+	if err := f.db.Table("merchant_users").Create(map[string]any{"id": otherUserID, "account_id": otherAccountID, "merchant_id": otherMerchantID, "role_id": uint64(1006), "name": "Other merchant user", "status": "active"}).Error; err != nil {
 		t.Fatalf("create other merchant user: %v", err)
 	}
 	if err := f.db.Table("shops").Create(map[string]any{"id": f.otherShopID, "merchant_id": otherMerchantID, "name": "Other shop", "city": "深圳市", "district": "南山区", "address": "E2E other shop", "status": "active", "business_status": "open"}).Error; err != nil {
@@ -435,7 +438,8 @@ func (f *deliveryIncidentE2EFixture) testNaturalClosureEntrypoints(t *testing.T)
 	pickupIncident := f.createIncident(t, pickupFulfillment, "out_of_stock", "")
 	pickupID := stringValue(t, pickupIncident["id"])
 	pickup := performOK(t, f.router, http.MethodPost, fmt.Sprintf("/api/v1/delivery/orders/%d/pickup", pickupFulfillment.DeliveryID), f.riderToken, fmt.Sprintf("delivery-pickup-%d", pickupFulfillment.DeliveryID), map[string]any{})
-	if object(t, pickup["data"])["status"] != "delivering" {
+	pickupData := object(t, pickup["data"])
+	if pickupData["status"] != "delivering" || pickupData["picked_up_at"] == nil || pickupData["picked_up_verified_at"] == nil || pickupData["started_at"] == nil {
 		t.Fatalf("pickup did not advance delivery: %#v", pickup)
 	}
 	f.assertNaturalClose(t, pickupID, "pickup_resumed")
@@ -444,7 +448,8 @@ func (f *deliveryIncidentE2EFixture) testNaturalClosureEntrypoints(t *testing.T)
 	completeIncident := f.createIncident(t, completeFulfillment, "customer_refused", "CUSTOMER_CHANGED_MIND")
 	completeID := stringValue(t, completeIncident["id"])
 	complete := performOK(t, f.router, http.MethodPost, fmt.Sprintf("/api/v1/delivery/orders/%d/complete", completeFulfillment.DeliveryID), f.riderToken, fmt.Sprintf("delivery-complete-%d", completeFulfillment.DeliveryID), map[string]any{})
-	if object(t, complete["data"])["status"] != "completed" {
+	completeData := object(t, complete["data"])
+	if completeData["status"] != "completed" || completeData["completed_at"] == nil || completeData["completed_verified_at"] == nil {
 		t.Fatalf("complete did not advance delivery: %#v", complete)
 	}
 	f.assertNaturalClose(t, completeID, "delivery_completed")
@@ -465,6 +470,14 @@ func (f *deliveryIncidentE2EFixture) testNaturalClosureEntrypoints(t *testing.T)
 	cancelFulfillment := f.createFulfillment(t, "accepted")
 	cancelFirst := f.createIncident(t, cancelFulfillment, "out_of_stock", "")
 	cancelSecond := f.createIncident(t, cancelFulfillment, "alcohol_damaged", "")
+	verificationExpiry := time.Now().UTC().Add(time.Hour)
+	verificationLock := time.Now().UTC().Add(15 * time.Minute)
+	if err := f.db.Table("delivery_verifications").Create(&[]map[string]any{
+		{"id": f.ids.Next(), "delivery_order_id": cancelFulfillment.DeliveryID, "stage": "pickup", "mode_snapshot": "enforce", "code_hash": strings.Repeat("a", 64), "code_ciphertext": []byte("pickup"), "code_mask": "****11", "policy_version": "cp1-v1", "secret_key_version": "v1", "status": "active", "max_attempts": 5, "expires_at": verificationExpiry, "activated_at": time.Now().UTC(), "version": 1},
+		{"id": f.ids.Next(), "delivery_order_id": cancelFulfillment.DeliveryID, "stage": "delivery", "mode_snapshot": "enforce", "code_hash": strings.Repeat("b", 64), "code_ciphertext": []byte("delivery"), "code_mask": "****22", "policy_version": "cp1-v1", "secret_key_version": "v1", "status": "locked", "max_attempts": 5, "expires_at": verificationExpiry, "activated_at": time.Now().UTC(), "locked_until": verificationLock, "version": 2},
+	}).Error; err != nil {
+		t.Fatalf("create cancellation verifications: %v", err)
+	}
 	cancelled := performOK(t, f.router, http.MethodPost, fmt.Sprintf("/api/v1/admin/orders/%d/cancel", cancelFulfillment.OrderID), f.adminToken, fmt.Sprintf("admin-cancel-%d", cancelFulfillment.OrderID), map[string]any{"reason_code": "CUSTOMER_REQUEST", "reason": "customer requested cancellation", "expected_version": 1})
 	if object(t, cancelled["data"])["status"] != "refunding" {
 		t.Fatalf("paid order cancel did not enter refund workflow: %#v", cancelled)
@@ -474,6 +487,10 @@ func (f *deliveryIncidentE2EFixture) testNaturalClosureEntrypoints(t *testing.T)
 	var active int64
 	if err := f.db.Table("delivery_incidents").Where("delivery_order_id=? AND status IN ('evidence_required','open','acknowledged')", cancelFulfillment.DeliveryID).Count(&active).Error; err != nil || active != 0 {
 		t.Fatalf("cancel left active incidents: count=%d err=%v", active, err)
+	}
+	var invalidated int64
+	if err := f.db.Table("delivery_verifications").Where("delivery_order_id=? AND status='invalidated' AND invalidation_reason_code='order_cancelled' AND invalidated_at IS NOT NULL AND locked_until IS NULL", cancelFulfillment.DeliveryID).Count(&invalidated).Error; err != nil || invalidated != 2 {
+		t.Fatalf("cancel left usable verification credentials: count=%d err=%v", invalidated, err)
 	}
 }
 

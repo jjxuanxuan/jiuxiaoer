@@ -80,3 +80,45 @@ func TestStoredRepairResubmissionClassification(t *testing.T) {
 		t.Fatal("ABNORMAL must remain a merchant-platform manual recovery")
 	}
 }
+
+func TestGuardTerminalRefundTransition(t *testing.T) {
+	closed := "CLOSED"
+	tests := []struct {
+		name       string
+		row        Row
+		incoming   string
+		idempotent bool
+		errorCode  string
+	}{
+		{name: "success duplicate", row: Row{Status: "succeeded"}, incoming: "SUCCESS", idempotent: true},
+		{name: "success regression", row: Row{Status: "succeeded"}, incoming: "ABNORMAL", errorCode: "REFUND_STATUS_REGRESSION"},
+		{name: "closed duplicate", row: Row{Status: "failed", ProviderStatus: &closed}, incoming: "CLOSED", idempotent: true},
+		{name: "closed cannot process again", row: Row{Status: "failed", ProviderStatus: &closed}, incoming: "PROCESSING", errorCode: "REFUND_STATUS_REGRESSION"},
+		{name: "closed cannot succeed", row: Row{Status: "failed", ProviderStatus: &closed}, incoming: "SUCCESS", errorCode: "REFUND_STATUS_REGRESSION"},
+		{name: "abnormal may recover", row: Row{Status: "exception"}, incoming: "SUCCESS"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			idempotent, err := guardTerminalRefundTransition(test.row, test.incoming)
+			if idempotent != test.idempotent || refundErrorCode(err) != test.errorCode {
+				t.Fatalf("idempotent=%v error=%v", idempotent, err)
+			}
+		})
+	}
+}
+
+func TestWorkerResultApplicableRequiresExactActiveClaim(t *testing.T) {
+	if !workerResultApplicable(Row{Status: "pending", Version: 8}, 8) {
+		t.Fatal("current pending claim must accept its worker result")
+	}
+	for _, row := range []Row{
+		{Status: "pending", Version: 9},
+		{Status: "failed", Version: 8},
+		{Status: "exception", Version: 8},
+		{Status: "succeeded", Version: 8},
+	} {
+		if workerResultApplicable(row, 8) {
+			t.Fatalf("stale or terminal row accepted worker result: %+v", row)
+		}
+	}
+}

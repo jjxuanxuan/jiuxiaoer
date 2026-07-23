@@ -19,6 +19,8 @@ type MQHandler struct {
 	service *Service
 }
 
+var _ mq.ReliableAfterCommitConsumerHandler = (*MQHandler)(nil)
+
 // NewMQHandler 创建并初始化消息队列 Handler。
 func NewMQHandler(service *Service) *MQHandler { return &MQHandler{service: service} }
 
@@ -43,6 +45,22 @@ func (h *MQHandler) Handle(ctx context.Context, tx *gorm.DB, envelope mq.EventEn
 	var payload map[string]any
 	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
 		return mq.ConsumerResult{}, mq.TerminalConsumerError("REALTIME_PAYLOAD_INVALID", "realtime event payload is invalid", err)
+	}
+	if envelope.EventType == "order.paid" {
+		orderID, err := idFromPayload(payload, "order_id")
+		if err != nil {
+			return mq.ConsumerResult{}, mq.TerminalConsumerError("REALTIME_ORDER_ID_INVALID", "paid order id is invalid", err)
+		}
+		if _, _, err := merchantPaidOrderRecipients(ctx, tx, orderID); err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, errMerchantPaidOrderInvalid) {
+				return mq.ConsumerResult{}, mq.TerminalConsumerError("REALTIME_PAID_ORDER_INVALID", "paid order fact is unavailable", err)
+			}
+			return mq.ConsumerResult{}, mq.TemporaryConsumerError("REALTIME_RECIPIENT_LOOKUP_FAILED", "realtime recipient lookup failed", err)
+		}
+		// mq_consumer_receipts is the durable event_id de-duplication point.
+		// Merchant WS events themselves are intentionally transient because the
+		// scoped store order list is the reconnect source of truth.
+		return mq.ConsumerResult{RefType: "merchant_paid_order", RefID: orderID}, nil
 	}
 	targets, err := h.targets(ctx, tx, envelope, payload)
 	if err != nil {
@@ -107,6 +125,24 @@ func (h *MQHandler) Handle(ctx context.Context, tx *gorm.DB, envelope mq.EventEn
 
 // AfterCommit 返回售后 Commit。
 func (h *MQHandler) AfterCommit(ctx context.Context, envelope mq.EventEnvelope, _ mq.ConsumerResult) error {
+	if h == nil || h.service == nil || !h.service.cfg.Realtime.Enabled {
+		return nil
+	}
+	if envelope.EventType == "order.paid" {
+		var payload map[string]any
+		if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+			return err
+		}
+		orderID, err := idFromPayload(payload, "order_id")
+		if err != nil {
+			return err
+		}
+		event, accountIDs, err := h.service.MerchantPaidOrderEvent(ctx, envelope.EventID, orderID, envelope.OccurredAt)
+		if err != nil {
+			return err
+		}
+		return h.service.PublishMerchantPaidOrder(ctx, event, accountIDs)
+	}
 	var rows []Delivery
 	if err := h.service.db.WithContext(ctx).Where("source_event_id=?", envelope.EventID).Order("id").Find(&rows).Error; err != nil {
 		return err
@@ -121,6 +157,13 @@ func (h *MQHandler) AfterCommit(ctx context.Context, envelope mq.EventEnvelope, 
 		}
 	}
 	return h.service.PublishWakeups(ctx, live)
+}
+
+// RequiresSuccessfulAfterCommit makes the MQ receipt itself the retryable
+// handoff for transient merchant Redis fanout. Rider events already have a
+// durable realtime_deliveries relay and therefore keep the existing behavior.
+func (h *MQHandler) RequiresSuccessfulAfterCommit(envelope mq.EventEnvelope, result mq.ConsumerResult) bool {
+	return h != nil && h.service != nil && h.service.cfg.Realtime.Enabled && envelope.EventType == "order.paid" && result.RefType == "merchant_paid_order"
 }
 
 // targets 返回targets。

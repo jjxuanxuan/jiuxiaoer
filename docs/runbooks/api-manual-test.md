@@ -336,11 +336,12 @@ curl -X POST "$BASE/api/v1/identity-verifications" \
 | POST | `/api/v1/auth/rider/sms-login` | 公开 | 仅审核通过且已启用的骑手可登录 |
 | GET | `/api/v1/delivery/orders` | 骑手 | 可按 `status` 筛选；返回可接和本人配送单 |
 | POST | `/api/v1/delivery/orders/{id}/accept` | 骑手，写 | 接配送单 |
-| POST | `/api/v1/delivery/orders/{id}/pickup` | 骑手，写 | 取货 |
-| POST | `/api/v1/delivery/orders/{id}/start` | 骑手，写 | 开始配送 |
+| POST | `/api/v1/delivery/orders/{id}/pickup` | 骑手，写 | 取货并开始配送 |
 | POST | `/api/v1/delivery/orders/{id}/complete` | 骑手，写 | 完成配送 |
 
-骑手履约顺序：商户备货完成 → `accept` → `pickup` → `start` → `complete`。这里的 `{id}` 为配送单 ID，不是订单 ID；先通过配送单列表取得 `data.items[].id`。
+骑手申请会先按手机号、路径、幂等键和请求摘要检查已完成结果，再消费一次性短信验证码。相同幂等键与相同请求重试会返回首次申请；使用新幂等键提交、申请人登录或正式骑手登录时，都必须先重新发送并使用一枚未消费的验证码。
+
+骑手履约顺序：商户备货完成 → `accept` → `pickup` → `complete`。`pickup` 会直接将配送单转为配送中。这里的 `{id}` 为配送单 ID，不是订单 ID；先通过配送单列表取得 `data.items[].id`。
 
 ### 管理端
 
@@ -389,7 +390,7 @@ curl -X POST "$BASE/api/v1/admin/home-slots" \
 4. 创建地址，记录 `$ADDRESS_ID`；创建订单，记录 `$ORDER_ID`。
 5. 使用 `/orders/{id}/pay/mock` 完成支付，读取 `/orders/{id}/payment` 确认 `status=succeeded`，读取订单确认 `status=paid`。
 6. 用商户 token 按 `accept → start-preparing → prepare` 处理订单。
-7. 用骑手 token 在 `/delivery/orders` 找到配送单 ID，按 `accept → pickup → start → complete` 完成配送。
+7. 用骑手 token 在 `/delivery/orders` 找到配送单 ID，按 `accept → pickup → complete` 完成配送。
 8. 用顾客 token 查询订单，用管理员 token 查询订单、库存和审计日志，确认最终状态、库存扣减和操作记录。
 
 建议对每个写接口额外验证一次幂等性：完全相同的请求与 `Idempotency-Key` 重发，应返回首次结果且不产生重复订单、重复库存变动或重复状态迁移。

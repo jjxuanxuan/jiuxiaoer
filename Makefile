@@ -1,4 +1,4 @@
-.PHONY: run run-worker fmt-check openapi-check alerts-check mq-contract-check mq-vhost-provision mq-topology-apply mq-topology-verify test test-race test-integration test-mq-integration payment-refund-gate acceptance-phase15 verify verify-cp1 tidy seed migrate-up migrate-down migrate-check provision-runtime-user deps-up deps-down deps-mq-up
+.PHONY: run run-worker fmt-check openapi-check alerts-check mq-contract-check mq-vhost-provision mq-topology-apply mq-topology-verify test test-race test-integration test-mq-integration payment-refund-gate acceptance-phase15 verify verify-cp1 cp1-dq cp1-backfill tidy seed migrate-up migrate-down migrate-check provision-runtime-user deps-up deps-down deps-mq-up
 
 ENV_FILE ?= .env.local
 
@@ -67,6 +67,15 @@ verify: fmt-check openapi-check mq-contract-check
 	go test -race ./...
 
 verify-cp1: verify migrate-check seed test-integration alerts-check
+
+# CP1_DATA_ARGS carries the explicit cutover/audit/range parameters documented
+# in docs/runbooks/cp1-launch-closure.md. cp1-backfill is always dry-run unless
+# the operator supplies every write gate required by the command.
+cp1-dq:
+	$(load_env) go run ./cmd/cp1-data -operation dq $(CP1_DATA_ARGS)
+
+cp1-backfill:
+	$(load_env) go run ./cmd/cp1-data -operation backfill $(CP1_DATA_ARGS)
 
 tidy:
 	go mod tidy

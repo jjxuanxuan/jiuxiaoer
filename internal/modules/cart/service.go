@@ -30,7 +30,7 @@ func NewService(db *gorm.DB, idGen *snowflake.Generator) *Service {
 
 // GetCart 获取购物车。
 func (s *Service) GetCart(ctx context.Context, claims *auth.Claims) (CartResp, error) {
-	customerID, err := customerIDFromClaims(claims)
+	customerID, err := customerIDFromClaims(claims, "cart:view")
 	if err != nil {
 		return CartResp{}, err
 	}
@@ -39,7 +39,7 @@ func (s *Service) GetCart(ctx context.Context, claims *auth.Claims) (CartResp, e
 
 // AddItem 在修改购物车前校验门店商品当前是否可售。
 func (s *Service) AddItem(ctx context.Context, claims *auth.Claims, method string, path string, key string, req CartItemAddReq) (CartResp, error) {
-	customerID, err := customerIDFromClaims(claims)
+	customerID, err := customerIDFromClaims(claims, "cart:update")
 	if err != nil {
 		return CartResp{}, err
 	}
@@ -77,8 +77,16 @@ func (s *Service) AddItem(ctx context.Context, claims *auth.Claims, method strin
 		if err != nil {
 			return err
 		}
-		if productRow.Status != "on_sale" || productRow.ShopStatus != "active" || productRow.BusinessStatus != "open" {
-			return problem.Conflict("PRODUCT_NOT_ON_SALE", "product not on sale")
+		currentQuantity, err := s.repo.CartItemQuantity(ctx, tx, cartRow.ID, shopProductID)
+		if err != nil {
+			return err
+		}
+		resultingQuantity := currentQuantity + req.Quantity
+		if resultingQuantity > 99 {
+			return problem.InvalidArgument("CART_QUANTITY_LIMIT", "cart item quantity exceeds 99")
+		}
+		if err := validateCartProduct(productRow, resultingQuantity); err != nil {
+			return err
 		}
 		conflict, err := s.repo.HasSelectedOtherShop(ctx, tx, cartRow.ID, productRow.ShopID)
 		if err != nil {
@@ -102,7 +110,7 @@ func (s *Service) AddItem(ctx context.Context, claims *auth.Claims, method strin
 
 // SetItemSelection 设置明细选中状态。
 func (s *Service) SetItemSelection(ctx context.Context, claims *auth.Claims, method, path, key, itemID string, req CartItemSelectionReq) (CartResp, error) {
-	customerID, err := customerIDFromClaims(claims)
+	customerID, err := customerIDFromClaims(claims, "cart:update")
 	if err != nil {
 		return CartResp{}, err
 	}
@@ -134,8 +142,14 @@ func (s *Service) SetItemSelection(ctx context.Context, claims *auth.Claims, met
 		for _, row := range rows {
 			if row.ID == id {
 				targetShop = row.ShopID
+				if availability := cartAvailability(row); availability != "available" {
+					return cartUnavailableMutationError(availability)
+				}
 				break
 			}
+		}
+		if targetShop == 0 {
+			return problem.NotFound("CART_ITEM_NOT_FOUND", "cart item not found")
 		}
 		for _, row := range rows {
 			if row.Selected && row.ShopID != targetShop {
@@ -148,7 +162,7 @@ func (s *Service) SetItemSelection(ctx context.Context, claims *auth.Claims, met
 
 // SetShopSelection 设置门店选中状态。
 func (s *Service) SetShopSelection(ctx context.Context, claims *auth.Claims, method, path, key string, req CartSelectionReq) (CartResp, error) {
-	customerID, err := customerIDFromClaims(claims)
+	customerID, err := customerIDFromClaims(claims, "cart:update")
 	if err != nil {
 		return CartResp{}, err
 	}
@@ -169,6 +183,18 @@ func (s *Service) SetShopSelection(ctx context.Context, claims *auth.Claims, met
 			if conflict {
 				return problem.Conflict("CART_SHOP_CONFLICT", "selected cart items must belong to one shop")
 			}
+			rows, err := s.repo.ListItems(ctx, tx, customerID)
+			if err != nil {
+				return err
+			}
+			for _, row := range rows {
+				if row.ShopID != shopID {
+					continue
+				}
+				if availability := cartAvailability(row); availability != "available" {
+					return cartUnavailableMutationError(availability)
+				}
+			}
 		}
 		return s.repo.SetShopSelection(ctx, tx, customerID, shopID, req.Selected)
 	})
@@ -176,7 +202,7 @@ func (s *Service) SetShopSelection(ctx context.Context, claims *auth.Claims, met
 
 // ClearItems 清空明细。
 func (s *Service) ClearItems(ctx context.Context, claims *auth.Claims, method, path, key, shopIDRaw string) error {
-	customerID, err := customerIDFromClaims(claims)
+	customerID, err := customerIDFromClaims(claims, "cart:update")
 	if err != nil {
 		return err
 	}
@@ -230,7 +256,7 @@ func (s *Service) cartMutation(ctx context.Context, claims *auth.Claims, custome
 
 // UpdateItem 更新明细。
 func (s *Service) UpdateItem(ctx context.Context, claims *auth.Claims, method string, path string, key string, itemID string, req CartItemUpdateReq) (CartResp, error) {
-	customerID, err := customerIDFromClaims(claims)
+	customerID, err := customerIDFromClaims(claims, "cart:update")
 	if err != nil {
 		return CartResp{}, err
 	}
@@ -250,6 +276,23 @@ func (s *Service) UpdateItem(ctx context.Context, claims *auth.Claims, method st
 			return err
 		}
 		if started {
+			item, err := s.repo.LockCustomerCartItem(ctx, tx, customerID, parsedItemID)
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return problem.NotFound("CART_ITEM_NOT_FOUND", "cart item not found")
+			}
+			if err != nil {
+				return err
+			}
+			productRow, err := s.repo.SaleableShopProduct(ctx, tx, item.ShopProductID)
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return problem.Conflict("PRODUCT_NOT_ON_SALE", "product not on sale")
+			}
+			if err != nil {
+				return err
+			}
+			if err := validateCartProduct(productRow, req.Quantity); err != nil {
+				return err
+			}
 			if err := s.repo.UpdateItem(ctx, tx, customerID, parsedItemID, req.Quantity); errors.Is(err, gorm.ErrRecordNotFound) {
 				return problem.NotFound("CART_ITEM_NOT_FOUND", "cart item not found")
 			} else if err != nil {
@@ -277,7 +320,7 @@ func (s *Service) UpdateItem(ctx context.Context, claims *auth.Claims, method st
 
 // DeleteItem 删除明细。
 func (s *Service) DeleteItem(ctx context.Context, claims *auth.Claims, method string, path string, key string, itemID string) error {
-	customerID, err := customerIDFromClaims(claims)
+	customerID, err := customerIDFromClaims(claims, "cart:update")
 	if err != nil {
 		return err
 	}
@@ -313,10 +356,13 @@ func (s *Service) cartResp(ctx context.Context, db *gorm.DB, customerID uint64) 
 	for _, row := range rows {
 		totalAmount := int64(row.Quantity) * row.SalePriceAmount
 		availability := cartAvailability(row)
-		if availability != "available" {
+		available := availability == "available"
+		var unavailableReason *string
+		if !available {
 			resp.UnavailableCount++
+			unavailableReason = &availability
 		}
-		if row.Selected && availability == "available" {
+		if row.Selected && available {
 			resp.TotalQuantity += row.Quantity
 			resp.TotalAmount += totalAmount
 		}
@@ -334,6 +380,8 @@ func (s *Service) cartResp(ctx context.Context, db *gorm.DB, customerID uint64) 
 			TotalAmount:        totalAmount,
 			Selected:           row.Selected,
 			AvailabilityStatus: availability,
+			Available:          available,
+			UnavailableReason:  unavailableReason,
 		})
 	}
 	return resp, nil
@@ -341,7 +389,10 @@ func (s *Service) cartResp(ctx context.Context, db *gorm.DB, customerID uint64) 
 
 // cartAvailability 返回购物车 Availability。
 func cartAvailability(row CartItemRow) string {
-	if row.ProductStatus != "on_sale" || row.ShopProductStatus != "on_sale" || row.ShopStatus != "active" || row.BusinessStatus != "open" {
+	if row.ShopStatus != "active" || row.BusinessStatus != "open" {
+		return "shop_closed"
+	}
+	if row.ProductStatus != "on_sale" || row.CategoryStatus != "active" || row.ShopProductStatus != "on_sale" {
 		return "not_on_sale"
 	}
 	if row.AvailableQty < row.Quantity {
@@ -350,12 +401,52 @@ func cartAvailability(row CartItemRow) string {
 	return "available"
 }
 
+// cartUnavailableMutationError maps the stable read-side reason to the same
+// write-side business error used by add/update operations.
+func cartUnavailableMutationError(reason string) error {
+	switch reason {
+	case "shop_closed":
+		return problem.Conflict("SHOP_CLOSED", "shop is closed")
+	case "not_on_sale":
+		return problem.Conflict("PRODUCT_NOT_ON_SALE", "product not on sale")
+	case "out_of_stock":
+		return problem.Conflict("STOCK_NOT_ENOUGH", "stock not enough")
+	default:
+		return problem.Conflict("CART_ITEM_UNAVAILABLE", "cart item is unavailable")
+	}
+}
+
+func validateCartProduct(row ShopProductRow, quantity int) error {
+	if row.ShopStatus != "active" || row.BusinessStatus != "open" {
+		return problem.Conflict("SHOP_CLOSED", "shop is closed")
+	}
+	if row.ProductStatus != "on_sale" || row.CategoryStatus != "active" || row.ShopProductStatus != "on_sale" {
+		return problem.Conflict("PRODUCT_NOT_ON_SALE", "product not on sale")
+	}
+	if row.AvailableQty < quantity {
+		return problem.Conflict("STOCK_NOT_ENOUGH", "stock not enough")
+	}
+	return nil
+}
+
 // customerIDFromClaims 从认证声明中解析并返回用户 ID。
-func customerIDFromClaims(claims *auth.Claims) (uint64, error) {
+func customerIDFromClaims(claims *auth.Claims, permission string) (uint64, error) {
 	if claims == nil || claims.AccountType != "customer" {
 		return 0, problem.Forbidden("PERM_FORBIDDEN", "customer account required")
 	}
+	if !hasPermission(claims.Permissions, permission) {
+		return 0, problem.Forbidden("PERM_FORBIDDEN", "permission denied")
+	}
 	return parseID(claims.CustomerID)
+}
+
+func hasPermission(permissions []string, required string) bool {
+	for _, permission := range permissions {
+		if permission == required {
+			return true
+		}
+	}
+	return false
 }
 
 // parseID 解析并校验字符串形式的 ID。

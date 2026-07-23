@@ -16,6 +16,7 @@ import (
 
 	"jiuxiaoer-admin/backend-go/internal/modules/aftersale"
 	"jiuxiaoer-admin/backend-go/internal/modules/auth"
+	"jiuxiaoer-admin/backend-go/internal/modules/deliveryverification"
 	"jiuxiaoer-admin/backend-go/internal/pkg/idempotency"
 	"jiuxiaoer-admin/backend-go/internal/pkg/problem"
 	"jiuxiaoer-admin/backend-go/internal/pkg/requestctx"
@@ -158,6 +159,12 @@ func (s *Service) approveReturnLocked(ctx context.Context, tx *gorm.DB, row *Ret
 	if err := s.repo.UpdateDelivery(ctx, tx, delivery.ID, map[string]any{
 		"status": "returning", "assignment_version": gorm.Expr("assignment_version+1"),
 	}); err != nil {
+		return err
+	}
+	// Approval ends the original last-mile fulfilment. Any delivery code that
+	// has not already been verified must never remain usable during reverse
+	// logistics.
+	if err := deliveryverification.Invalidate(ctx, tx, s.ids, delivery.ID, "delivery_return_approved"); err != nil {
 		return err
 	}
 	if err := s.repo.UpdateOrder(ctx, tx, row.OrderID, map[string]any{
@@ -433,8 +440,10 @@ func (s *Service) Receive(ctx context.Context, claims *auth.Claims, method, rout
 			}
 		}
 		available := map[uint64]int{}
+		totals := map[uint64]int{}
 		for id, stock := range stocks {
 			available[id] = stock.AvailableQty
+			totals[id] = stock.AvailableQty + stock.ReservedQty + stock.LockedQty
 		}
 		for index := range receiptItems {
 			item := &receiptItems[index]
@@ -446,16 +455,19 @@ func (s *Service) Receive(ctx context.Context, claims *auth.Claims, method, rout
 				return problem.Conflict("STOCK_NOT_FOUND", "return stock row not found")
 			}
 			before := available[item.ShopProductID]
+			beforeTotal := totals[item.ShopProductID]
 			if err := s.repo.AddAvailable(ctx, tx, stock, item.ReceivedQuantity); err != nil {
 				return err
 			}
 			after := before + item.ReceivedQuantity
 			available[item.ShopProductID] = after
+			totals[item.ShopProductID] = beforeTotal + item.ReceivedQuantity
 			item.AvailableBefore, item.AvailableAfter = &before, &after
 			businessKey := fmt.Sprintf("delivery_return:%d:%d:restock", row.ID, item.AfterSaleItemID)
 			if err := s.repo.CreateStockRecord(ctx, tx, StockRecord{
 				ID: s.ids.Next(), ShopProductID: item.ShopProductID, ShopID: row.ShopID, ProductID: item.ProductID,
 				ChangeType: "return", QuantityDelta: item.ReceivedQuantity, BeforeAvailableQty: before, AfterAvailableQty: after,
+				TotalQuantityDelta: item.ReceivedQuantity, BeforeTotalQty: beforeTotal, AfterTotalQty: beforeTotal + item.ReceivedQuantity,
 				SourceType: "delivery_return", SourceID: &row.ID, IdempotencyKey: optionalString(key), BusinessActionKey: &businessKey,
 			}); err != nil {
 				return err
@@ -485,6 +497,9 @@ func (s *Service) Receive(ctx context.Context, claims *auth.Claims, method, rout
 			return problem.Conflict("VERSION_CONFLICT", "delivery return version changed")
 		}
 		if err := s.repo.UpdateDelivery(ctx, tx, delivery.ID, map[string]any{"status": "returned", "assignment_version": gorm.Expr("assignment_version+1")}); err != nil {
+			return err
+		}
+		if err := deliveryverification.Invalidate(ctx, tx, s.ids, delivery.ID, "delivery_return_received"); err != nil {
 			return err
 		}
 		if err := s.repo.UpdateOrder(ctx, tx, row.OrderID, map[string]any{"delivery_status": "returned", "version": gorm.Expr("version+1")}); err != nil {
@@ -541,6 +556,9 @@ func (s *Service) TryCloseByAfterSaleWithTx(ctx context.Context, tx *gorm.DB, af
 		"status": StatusClosed, "closed_at": now, "active_delivery_order_id": nil,
 	})
 	if err != nil || !updated {
+		return err
+	}
+	if err := deliveryverification.Invalidate(ctx, tx, s.ids, row.DeliveryOrderID, "delivery_return_closed"); err != nil {
 		return err
 	}
 	from := row.Status
@@ -742,7 +760,7 @@ func (s *Service) persistRejectedHandoff(ctx context.Context, tx *gorm.DB, row *
 		ID: s.ids.Next(), ActorType: "merchant", ActorID: actorID, Action: "delivery_return.handoff_rejected",
 		ResourceType: "delivery_return", ResourceID: row.ID,
 		AfterData: jsonData(map[string]any{"reason": reason, "attempts": attempts}), Result: "denied",
-		RequestID: requestctx.RequestIDPtr(ctx), IP: requestctx.IPPtr(ctx), UserAgent: requestctx.UserAgentPtr(ctx),
+		RequestID: requestctx.RequestIDPtr(ctx), IPHash: requestctx.IPHashPtr(ctx), UserAgent: requestctx.UserAgentPtr(ctx),
 	}); err != nil {
 		return err
 	}

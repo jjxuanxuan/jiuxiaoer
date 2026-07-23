@@ -141,7 +141,7 @@ func (s *Service) Retry(ctx context.Context, c *auth.Claims, method, path, key, 
 	}
 	var out DeliveryDTO
 	e = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		started, e := s.idem.Start(ctx, tx, s.ids.Next(), "admin", actor, method, path, key, idempotency.RequestHash(req))
+		started, e := s.idem.Start(ctx, tx, s.ids.Next(), "admin", actor, method, path, key, idempotency.ResourceRequestHash("notification.retry", id, req))
 		if e != nil {
 			return e
 		}
@@ -256,7 +256,7 @@ func (s *Service) UpdateTemplate(ctx context.Context, c *auth.Claims, method, pa
 	}
 	var out TemplateDTO
 	e = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		started, e := s.idem.Start(ctx, tx, s.ids.Next(), "admin", actor, method, path, key, idempotency.RequestHash(req))
+		started, e := s.idem.Start(ctx, tx, s.ids.Next(), "admin", actor, method, path, key, idempotency.ResourceRequestHash("notification_template.update", id, req))
 		if e != nil {
 			return e
 		}

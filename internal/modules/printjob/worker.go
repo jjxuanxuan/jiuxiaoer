@@ -91,7 +91,7 @@ func (w *Worker) claimTask(ctx context.Context, taskID uint64) (Task, Setting, b
 		claimToken := w.owner + ":" + uuid.NewString()
 		query := `
 			UPDATE print_tasks SET status='processing', locked_by=?, locked_until=?
-			WHERE ((status IN ('pending','retry_wait') AND (next_retry_at IS NULL OR next_retry_at<=?))
+			WHERE ((status IN ('pending','retry_wait','querying') AND (next_retry_at IS NULL OR next_retry_at<=?))
 			    OR (status='processing' AND locked_until<?))
 			  AND (locked_until IS NULL OR locked_until<?)
 		`
@@ -122,6 +122,11 @@ func (w *Worker) claimTask(ctx context.Context, taskID uint64) (Task, Setting, b
 // execute 处理execute相关逻辑。
 func (w *Worker) execute(ctx context.Context, task Task, setting Setting) {
 	started := time.Now()
+	if task.ProviderRequestID != nil && task.SubmittedAt != nil {
+		result, err := w.provider.Query(ctx, *task.ProviderRequestID)
+		w.finish(ctx, task, started, "query", result, err)
+		return
+	}
 	device, e := securevalue.Open(w.cfg.DataEncryptionKey, setting.DeviceIDCiphertext)
 	if e != nil {
 		w.finish(ctx, task, started, "submit", PrintResult{}, &ProviderError{Code: "device_decrypt_failed", Retryable: false})
@@ -131,9 +136,18 @@ func (w *Worker) execute(ctx context.Context, task Task, setting Setting) {
 	result, e := w.provider.Submit(ctx, PrintRequest{TaskNo: task.TaskNo, ProviderRequestID: providerID, DeviceID: device, Copies: setting.Copies, Payload: task.RenderPayload})
 	var pe *ProviderError
 	if errors.As(e, &pe) && pe.Unknown {
-		w.recordAttempt(ctx, task, started, "submit", result, e)
+		providerRequestID := result.ProviderRequestID
+		if providerRequestID == "" {
+			providerRequestID = providerID
+		}
+		if err := w.recordUnknownSubmission(ctx, task, started, providerRequestID, result, e); err != nil {
+			w.log.Error("record unknown print submission", slog.Uint64("task_id", task.ID), slog.Any("error", err))
+			return
+		}
+		task.ProviderRequestID = &providerRequestID
+		task.SubmittedAt = &started
 		started = time.Now()
-		result, e = w.provider.Query(ctx, providerID)
+		result, e = w.provider.Query(ctx, providerRequestID)
 		w.finish(ctx, task, started, "query", result, e)
 		return
 	}
@@ -142,7 +156,7 @@ func (w *Worker) execute(ctx context.Context, task Task, setting Setting) {
 
 // finish 完成printjob。
 func (w *Worker) finish(ctx context.Context, task Task, started time.Time, operation string, result PrintResult, callErr error) {
-	_ = w.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := w.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		now := time.Now()
 		attempt := task.Attempts + 1
 		status := "succeeded"
@@ -150,8 +164,10 @@ func (w *Worker) finish(ctx context.Context, task Task, started time.Time, opera
 		var safe *string
 		var next *time.Time
 		providerStatus := "succeeded"
+		possiblySubmitted := operation == "query" || result.ProviderRequestID != ""
 		if callErr == nil && result.Status != "" && result.Status != "succeeded" {
 			callErr = &ProviderError{Code: "provider_result_unknown", Retryable: true, Unknown: true}
+			possiblySubmitted = true
 		}
 		if callErr != nil {
 			c := "provider_failure"
@@ -165,8 +181,14 @@ func (w *Worker) finish(ctx context.Context, task Task, started time.Time, opera
 			s := "print provider request failed"
 			safe = &s
 			providerStatus = "failed"
+			if possiblySubmitted {
+				providerStatus = "unknown"
+			}
 			if retryable && attempt < 5 {
 				status = "retry_wait"
+				if possiblySubmitted {
+					status = "querying"
+				}
 				n := now.Add(backoff(attempt))
 				next = &n
 			} else {
@@ -174,27 +196,61 @@ func (w *Worker) finish(ctx context.Context, task Task, started time.Time, opera
 			}
 		}
 		providerID := result.ProviderRequestID
+		if providerID == "" && task.ProviderRequestID != nil {
+			providerID = *task.ProviderRequestID
+		}
 		if providerID == "" {
 			providerID = fmt.Sprintf("print-%s", task.TaskNo)
 		}
-		updates := map[string]any{"status": status, "attempts": attempt, "provider_request_id": providerID, "next_retry_at": next, "locked_by": nil, "locked_until": nil, "last_error_code": code, "last_error_safe": safe}
+		updates := map[string]any{"status": status, "attempts": attempt, "provider_request_id": providerID, "provider_status": providerStatus, "next_retry_at": next, "locked_by": nil, "locked_until": nil, "last_error_code": code, "last_error_safe": safe}
+		if possiblySubmitted {
+			if task.SubmittedAt != nil {
+				updates["submitted_at"] = task.SubmittedAt
+			} else {
+				updates["submitted_at"] = &started
+			}
+			deadline := now.Add(10 * time.Minute)
+			updates["callback_deadline_at"] = &deadline
+		}
 		if status == "succeeded" {
 			updates["succeeded_at"] = &now
+			updates["confirmed_at"] = &now
+			updates["callback_deadline_at"] = nil
+		} else if status == "dead" {
+			updates["confirmed_at"] = &now
 		}
-		if e := tx.Model(&Task{}).Where("id=? AND locked_by=?", task.ID, taskLeaseOwner(task, w.owner)).Updates(updates).Error; e != nil {
-			return e
+		updateResult := tx.Model(&Task{}).Where("id=? AND locked_by=?", task.ID, taskLeaseOwner(task, w.owner)).Updates(updates)
+		if updateResult.Error != nil {
+			return updateResult.Error
 		}
-		return tx.Create(&Attempt{ID: w.ids.Next(), PrintTaskID: task.ID, AttemptNo: attempt, Operation: operation, ProviderRequestID: &providerID, RequestHash: securevalue.Digest(string(task.RenderPayload)), Result: status, ProviderStatus: &providerStatus, ErrorCode: code, DurationMS: uint(time.Since(started).Milliseconds()), StartedAt: started, FinishedAt: now}).Error
+		if updateResult.RowsAffected != 1 {
+			return fmt.Errorf("print task lease lost before provider result was recorded")
+		}
+		if err := tx.Create(&Attempt{ID: w.ids.Next(), PrintTaskID: task.ID, AttemptNo: attempt, Operation: operation, ProviderRequestID: &providerID, RequestHash: securevalue.Digest(string(task.RenderPayload)), Result: status, ProviderStatus: &providerStatus, ErrorCode: code, DurationMS: uint(time.Since(started).Milliseconds()), StartedAt: started, FinishedAt: now}).Error; err != nil {
+			return err
+		}
+		auditResult := "success"
+		if status != "succeeded" {
+			auditResult = "failed"
+		}
+		return auditWithResult(ctx, tx, w.ids.Next(), "system", 0, workerAuditAction(status), "print_task", task.ID,
+			map[string]any{"status": task.Status},
+			map[string]any{
+				"shop_id": task.ShopID, "order_id": task.OrderID, "status": status,
+				"attempt": attempt, "operation": operation, "provider_status": providerStatus,
+				"error_code": code,
+			}, auditResult)
 	})
+	if err != nil {
+		w.log.Error("finish print task", slog.Uint64("task_id", task.ID), slog.Any("error", err))
+	}
 }
 
-// recordAttempt 处理记录尝试相关逻辑。
-func (w *Worker) recordAttempt(ctx context.Context, task Task, started time.Time, operation string, result PrintResult, callErr error) {
+// recordUnknownSubmission persists the provider request before any Query. If a
+// worker stops after this transaction, the lease-recovery path queries first
+// instead of submitting a second physical print.
+func (w *Worker) recordUnknownSubmission(ctx context.Context, task Task, started time.Time, providerID string, result PrintResult, callErr error) error {
 	now := time.Now()
-	providerID := result.ProviderRequestID
-	if providerID == "" {
-		providerID = fmt.Sprintf("print-%s", task.TaskNo)
-	}
 	providerStatus := result.Status
 	if providerStatus == "" {
 		providerStatus = "unknown"
@@ -208,7 +264,45 @@ func (w *Worker) recordAttempt(ctx context.Context, task Task, started time.Time
 		}
 		code = &value
 	}
-	_ = w.db.WithContext(ctx).Create(&Attempt{ID: w.ids.Next(), PrintTaskID: task.ID, AttemptNo: task.Attempts + 1, Operation: operation, ProviderRequestID: &providerID, RequestHash: securevalue.Digest(string(task.RenderPayload)), Result: "unknown", ProviderStatus: &providerStatus, ErrorCode: code, DurationMS: uint(time.Since(started).Milliseconds()), StartedAt: started, FinishedAt: now}).Error
+	return w.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		next := now.Add(backoff(task.Attempts + 1))
+		updates := map[string]any{
+			"status": "querying", "provider_request_id": providerID, "provider_status": providerStatus,
+			"submitted_at": started, "next_retry_at": next,
+		}
+		result := tx.Model(&Task{}).Where("id=? AND locked_by=?", task.ID, taskLeaseOwner(task, w.owner)).Updates(updates)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("print task lease lost before unknown submission was recorded")
+		}
+		if err := tx.Create(&Attempt{ID: w.ids.Next(), PrintTaskID: task.ID, AttemptNo: task.Attempts + 1, Operation: "submit", ProviderRequestID: &providerID, RequestHash: securevalue.Digest(string(task.RenderPayload)), Result: "unknown", ProviderStatus: &providerStatus, ErrorCode: code, DurationMS: uint(time.Since(started).Milliseconds()), StartedAt: started, FinishedAt: now}).Error; err != nil {
+			return err
+		}
+		return auditWithResult(ctx, tx, w.ids.Next(), "system", 0, "print_task.worker_unknown", "print_task", task.ID,
+			map[string]any{"status": task.Status},
+			map[string]any{
+				"shop_id": task.ShopID, "order_id": task.OrderID, "status": "querying",
+				"attempt": task.Attempts + 1, "operation": "submit", "provider_status": providerStatus,
+				"error_code": code,
+			}, "failed")
+	})
+}
+
+func workerAuditAction(status string) string {
+	switch status {
+	case "succeeded":
+		return "print_task.worker_succeeded"
+	case "retry_wait":
+		return "print_task.worker_retry"
+	case "querying":
+		return "print_task.worker_unknown"
+	case "dead":
+		return "print_task.worker_dead"
+	default:
+		return "print_task.worker_result"
+	}
 }
 
 // taskLeaseOwner 返回任务租约 Owner。

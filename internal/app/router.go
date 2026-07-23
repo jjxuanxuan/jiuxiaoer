@@ -38,6 +38,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/modules/servicearea"
 	"jiuxiaoer-admin/backend-go/internal/modules/shop"
 	"jiuxiaoer-admin/backend-go/internal/modules/store"
+	"jiuxiaoer-admin/backend-go/internal/pkg/auditlog"
 	"jiuxiaoer-admin/backend-go/internal/pkg/metrics"
 	"jiuxiaoer-admin/backend-go/internal/pkg/snowflake"
 )
@@ -47,8 +48,14 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	if deps.Config.App.Env == "prod" || deps.Config.App.Env == "production" {
 		gin.SetMode(gin.ReleaseMode)
 	}
+	if err := auditlog.Register(deps.DB); err != nil {
+		panic("register audit invariant: " + err.Error())
+	}
 
 	router := gin.New()
+	if err := router.SetTrustedProxies(deps.Config.HTTP.TrustedProxies); err != nil {
+		panic("configure trusted proxies: " + err.Error())
+	}
 	router.Use(requestIDMiddleware())
 	router.Use(accessLogMiddleware(deps.Log, deps.Metrics))
 	router.Use(recoveryMiddleware(deps.Log))
@@ -210,7 +217,8 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	routeplanning.RegisterRoutes(protected.Group("/delivery"), routeplanning.NewHandler(routeService))
 	dispatch.RegisterAdminRoutes(protected.Group("/admin/dispatch"), dispatchHandler)
 
-	printService := printjob.NewService(deps.Config.CP1, deps.DB, idGen)
+	printProvider := routerPrintProvider(deps)
+	printService := printjob.NewService(deps.Config.CP1, deps.DB, idGen).WithProvider(printProvider)
 	printHandler := printjob.NewHandler(printService)
 	printjob.RegisterStoreRoutes(protected.Group("/store"), printHandler)
 	printjob.RegisterAdminRoutes(protected.Group("/admin"), printHandler)
@@ -227,10 +235,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	deliveryverification.RegisterCustomerRoutes(protected.Group("/orders"), verificationHandler)
 	deliveryverification.RegisterAdminRoutes(protected.Group("/admin"), verificationHandler)
 
-	var identityProvider compliance.Provider = &compliance.UnavailableProvider{}
-	if deps.Config.CP1.IdentityProvider == "fake" {
-		identityProvider = compliance.NewFakeProvider(deps.Config.CP1.IdentityCallbackSecret)
-	}
+	identityProvider := routerComplianceProvider(deps)
 	complianceService := compliance.NewService(deps.Config.CP1, deps.DB, idGen, identityProvider)
 	complianceHandler := compliance.NewHandler(complianceService)
 	compliance.RegisterCallbackRoute(api, complianceHandler)

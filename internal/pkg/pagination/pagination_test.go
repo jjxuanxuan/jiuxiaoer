@@ -36,6 +36,31 @@ func TestFromGinRejectsUnknownOrderField(t *testing.T) {
 	assertProblemCode(t, err, "VALIDATION_INVALID_QUERY")
 }
 
+func TestPageTokenRejectsTamperingAndDifferentActorScope(t *testing.T) {
+	first := testContext("/items?page_size=2&filter=status:paid")
+	query, err := FromGin(first, "customer", "100")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := NextPageTokenWithCursor(query, "2026-07-22T12:00:00Z", "99")
+
+	replacement := byte('A')
+	if token[len(token)-1] == replacement {
+		replacement = 'B'
+	}
+	tampered := token[:len(token)-1] + string(replacement)
+	if _, err := FromGin(testContext("/items?page_size=2&filter=status:paid&page_token="+tampered), "customer", "100"); err == nil {
+		t.Fatal("tampered token must be rejected")
+	} else {
+		assertProblemCode(t, err, "PAGE_TOKEN_INVALID")
+	}
+	if _, err := FromGin(testContext("/items?page_size=2&filter=status:paid&page_token="+token), "customer", "101"); err == nil {
+		t.Fatal("token reused by another actor must be rejected")
+	} else {
+		assertProblemCode(t, err, "PAGE_TOKEN_INVALID")
+	}
+}
+
 // TestFromGinRejectsInvalidFilterSyntax 验证From Gin Rejects 无效筛选条件 Syntax的预期行为。
 func TestFromGinRejectsInvalidFilterSyntax(t *testing.T) {
 	c := testContext("/items?filter=status==(paid")
@@ -91,7 +116,7 @@ func TestPageTokenRejectsChangedQuery(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected changed query to reject page token")
 	}
-	assertProblemCode(t, err, "VALIDATION_INVALID_QUERY")
+	assertProblemCode(t, err, "PAGE_TOKEN_INVALID")
 }
 
 // testContext 返回test 上下文。

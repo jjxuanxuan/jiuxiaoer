@@ -342,7 +342,7 @@ func (s *Service) AddEvidence(ctx context.Context, claims *auth.Claims, method, 
 	}
 	var out DTO
 	e = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		started, e := s.idem.Start(ctx, tx, s.ids.Next(), claims.AccountType, actor, method, path, key, idempotency.RequestHash(req))
+		started, e := s.idem.Start(ctx, tx, s.ids.Next(), claims.AccountType, actor, method, path, key, idempotency.ResourceRequestHash("after_sale.add_evidence", id, req))
 		if e != nil {
 			return e
 		}
@@ -530,7 +530,7 @@ func (s *Service) review(ctx context.Context, claims *auth.Claims, actorType str
 	}
 	var out DTO
 	e = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		started, e := s.idem.Start(ctx, tx, s.ids.Next(), claims.AccountType, actorID, method, path, key, idempotency.RequestHash(req))
+		started, e := s.idem.Start(ctx, tx, s.ids.Next(), claims.AccountType, actorID, method, path, key, idempotency.ResourceRequestHash("after_sale.review", id, req))
 		if e != nil {
 			return e
 		}
@@ -790,7 +790,7 @@ func (s *Service) ReceiveReturn(ctx context.Context, claims *auth.Claims, method
 	}
 	var out ReturnReceiptDTO
 	err = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		started, err := s.idem.Start(ctx, tx, s.ids.Next(), claims.AccountType, actor.userID, method, path, key, idempotency.RequestHash(req))
+		started, err := s.idem.Start(ctx, tx, s.ids.Next(), claims.AccountType, actor.userID, method, path, key, idempotency.ResourceRequestHash("after_sale.receive_return", afterSaleID, req))
 		if err != nil {
 			return err
 		}
@@ -844,10 +844,16 @@ func (s *Service) ReceiveReturn(ctx context.Context, claims *auth.Claims, method
 					}
 					qty := quantities[shopProductID]
 					before := stock.AvailableQty
+					beforeTotal := stock.AvailableQty + stock.ReservedQty + stock.LockedQty
 					if err := s.repo.AddAvailableStock(ctx, tx, stock, qty); err != nil {
 						return err
 					}
-					if err := s.repo.CreateStockRecord(ctx, tx, StockRecord{ID: s.ids.Next(), ShopProductID: shopProductID, ShopID: row.ShopID, ProductID: products[shopProductID], ChangeType: "return", QuantityDelta: qty, BeforeAvailableQty: before, AfterAvailableQty: before + qty, SourceType: "after_sale_return", SourceID: &receiptID, IdempotencyKey: strPtr(key)}); err != nil {
+					if err := s.repo.CreateStockRecord(ctx, tx, StockRecord{
+						ID: s.ids.Next(), ShopProductID: shopProductID, ShopID: row.ShopID, ProductID: products[shopProductID],
+						ChangeType: "return", QuantityDelta: qty, BeforeAvailableQty: before, AfterAvailableQty: before + qty,
+						TotalQuantityDelta: qty, BeforeTotalQty: beforeTotal, AfterTotalQty: beforeTotal + qty,
+						SourceType: "after_sale_return", SourceID: &receiptID, IdempotencyKey: strPtr(key),
+					}); err != nil {
 						return err
 					}
 				}
@@ -893,7 +899,7 @@ func (s *Service) ReserveReplacement(ctx context.Context, claims *auth.Claims, m
 	}
 	var out ReplacementDTO
 	err = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		started, err := s.idem.Start(ctx, tx, s.ids.Next(), claims.AccountType, actor.userID, method, path, key, idempotency.RequestHash(req))
+		started, err := s.idem.Start(ctx, tx, s.ids.Next(), claims.AccountType, actor.userID, method, path, key, idempotency.ResourceRequestHash("after_sale.reserve_replacement", afterSaleID, req))
 		if err != nil {
 			return err
 		}
@@ -929,6 +935,7 @@ func (s *Service) ReserveReplacement(ctx context.Context, claims *auth.Claims, m
 					return err
 				}
 				before := stock.AvailableQty
+				beforeTotal := stock.AvailableQty + stock.ReservedQty + stock.LockedQty
 				ok, err := s.repo.ReserveReplacementStock(ctx, tx, stock, item.ApprovedQuantity)
 				if err != nil {
 					return err
@@ -936,7 +943,12 @@ func (s *Service) ReserveReplacement(ctx context.Context, claims *auth.Claims, m
 				if !ok {
 					return problem.Conflict("STOCK_INSUFFICIENT", "replacement stock is insufficient")
 				}
-				if err := s.repo.CreateStockRecord(ctx, tx, StockRecord{ID: s.ids.Next(), ShopProductID: item.ShopProductID, ShopID: row.ShopID, ProductID: item.ProductID, ChangeType: "reserve", QuantityDelta: -item.ApprovedQuantity, BeforeAvailableQty: before, AfterAvailableQty: before - item.ApprovedQuantity, SourceType: "replacement", SourceID: &replacement.ID, IdempotencyKey: strPtr(key)}); err != nil {
+				if err := s.repo.CreateStockRecord(ctx, tx, StockRecord{
+					ID: s.ids.Next(), ShopProductID: item.ShopProductID, ShopID: row.ShopID, ProductID: item.ProductID,
+					ChangeType: "reserve", QuantityDelta: -item.ApprovedQuantity, BeforeAvailableQty: before, AfterAvailableQty: before - item.ApprovedQuantity,
+					TotalQuantityDelta: 0, BeforeTotalQty: beforeTotal, AfterTotalQty: beforeTotal,
+					SourceType: "replacement", SourceID: &replacement.ID, IdempotencyKey: strPtr(key),
+				}); err != nil {
 					return err
 				}
 			}
@@ -1011,7 +1023,7 @@ func (s *Service) history(id uint64, actorType string, actorID uint64, action st
 
 // audit 返回审计。
 func (s *Service) audit(ctx context.Context, actorType string, actorID uint64, action string, id uint64, before, after any) AuditLog {
-	return AuditLog{ID: s.ids.Next(), ActorType: actorType, ActorID: actorID, Action: action, ResourceType: "after_sale", ResourceID: id, BeforeData: jsonData(before), AfterData: jsonData(after), Result: "success", RequestID: requestctx.RequestIDPtr(ctx), IP: requestctx.IPPtr(ctx), UserAgent: requestctx.UserAgentPtr(ctx)}
+	return AuditLog{ID: s.ids.Next(), ActorType: actorType, ActorID: actorID, Action: action, ResourceType: "after_sale", ResourceID: id, BeforeData: jsonData(before), AfterData: jsonData(after), Result: "success", RequestID: requestctx.RequestIDPtr(ctx), IPHash: requestctx.IPHashPtr(ctx), UserAgent: requestctx.UserAgentPtr(ctx)}
 }
 
 // outbox 返回发件箱事件。

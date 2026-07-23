@@ -21,9 +21,9 @@ func (r *Repository) DB() *gorm.DB { return r.db }
 func (r *Repository) LockOrder(ctx context.Context, tx *gorm.DB, orderID uint64) (OrderRow, error) {
 	var row OrderRow
 	err := tx.WithContext(ctx).
-	Table("orders").Clauses(clause.Locking{Strength: "UPDATE"}).
-	Where("id = ? AND deleted_at IS NULL", orderID).
-	Take(&row).Error
+		Table("orders").Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ? AND deleted_at IS NULL", orderID).
+		Take(&row).Error
 	return row, err
 }
 
@@ -31,14 +31,14 @@ func (r *Repository) LockOrder(ctx context.Context, tx *gorm.DB, orderID uint64)
 func (r *Repository) OrderItems(ctx context.Context, tx *gorm.DB, orderID uint64, ids []uint64) ([]OrderItemRow, error) {
 	var rows []OrderItemRow
 	err := tx.WithContext(ctx).Table("order_items").
-	Where("order_id = ? AND id IN ? AND deleted_at IS NULL", orderID, ids).
-	Order("id").Find(&rows).Error
+		Where("order_id = ? AND id IN ? AND deleted_at IS NULL", orderID, ids).
+		Order("id").Find(&rows).Error
 	return rows, err
 }
 
-//AllOrderItems 返回系统创建的不可变商品快照
-//发货-退货售后。将此查询保留在售后存储库中
-//避免在编排模块中重复退款分配规则。
+// AllOrderItems 返回系统创建的不可变商品快照
+// 发货-退货售后。将此查询保留在售后存储库中
+// 避免在编排模块中重复退款分配规则。
 func (r *Repository) AllOrderItems(ctx context.Context, tx *gorm.DB, orderID uint64) ([]OrderItemRow, error) {
 	var rows []OrderItemRow
 	err := tx.WithContext(ctx).Table("order_items").
@@ -50,13 +50,13 @@ func (r *Repository) AllOrderItems(ctx context.Context, tx *gorm.DB, orderID uin
 func (r *Repository) BySource(ctx context.Context, tx *gorm.DB, sourceType string, sourceID uint64) (AfterSale, error) {
 	var row AfterSale
 	err := tx.WithContext(ctx).
-	Where("source_type=? AND source_id=? AND deleted_at IS NULL", sourceType, sourceID).
-	Take(&row).Error
+		Where("source_type=? AND source_id=? AND deleted_at IS NULL", sourceType, sourceID).
+		Take(&row).Error
 	return row, err
 }
 
-//ActiveConflicts 锁定订单的有效售后。系统全额退款
-//不得与客户应用程序竞争或仅默默退还剩余部分。
+// ActiveConflicts 锁定订单的有效售后。系统全额退款
+// 不得与客户应用程序竞争或仅默默退还剩余部分。
 func (r *Repository) ActiveConflicts(ctx context.Context, tx *gorm.DB, orderID uint64) (bool, error) {
 	var rows []struct{ ID uint64 }
 	err := tx.WithContext(ctx).Table("after_sales").Select("id").

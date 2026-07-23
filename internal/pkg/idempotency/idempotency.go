@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"gorm.io/datatypes"
@@ -39,6 +40,11 @@ type Store struct {
 	db *gorm.DB
 }
 
+const (
+	errorCodeKeyReused  = "IDEMPOTENCY_KEY_REUSED"
+	errorCodeInProgress = "IDEMPOTENCY_IN_PROGRESS"
+)
+
 // NewStore 让幂等操作和业务事务保持在同一个事务边界内。
 // 调用方必须传入执行受保护写操作的同一个事务。
 func NewStore(db *gorm.DB) *Store {
@@ -51,6 +57,26 @@ func RequestHash(value any) string {
 	payload, _ := json.Marshal(value)
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])
+}
+
+// ResourceRequestHash binds an idempotent command to the concrete resource it
+// targets. Gin's FullPath returns a route template (for example
+// /orders/:id/cancel), so hashing only the request body would allow the same
+// actor/key/body tuple to replay a response produced for a different order.
+//
+// action is normalized because it is a protocol discriminator, not user data.
+// resourceID and body retain their JSON representation so callers can use a
+// numeric ID, a stable business number, or a composite resource reference.
+func ResourceRequestHash(action string, resourceID any, body any) string {
+	return RequestHash(struct {
+		Action     string `json:"action"`
+		ResourceID any    `json:"resource_id"`
+		Body       any    `json:"body"`
+	}{
+		Action:     strings.ToLower(strings.TrimSpace(action)),
+		ResourceID: resourceID,
+		Body:       body,
+	})
 }
 
 // KeyHash 避免直接存储客户端原始幂等键，同时保留查询能力。
@@ -105,17 +131,7 @@ func (s *Store) Start(ctx context.Context, tx *gorm.DB, id uint64, actorType str
 		First(&existing).Error; err != nil {
 		return false, err
 	}
-	if existing.RequestHash != requestHash {
-		return false, problem.Conflict("IDEMPOTENCY_CONFLICT", "same idempotency key used with different request")
-	}
-	if existing.Status == "succeeded" {
-		return false, nil
-	}
-	if existing.LockedUntil != nil && existing.LockedUntil.After(now) {
-		return false, problem.Conflict("IDEMPOTENCY_CONFLICT", "same idempotency key is processing")
-	}
-
-	return false, problem.Conflict("IDEMPOTENCY_CONFLICT", "same idempotency key was claimed by another request")
+	return existingClaimResult(existing, requestHash, now)
 }
 
 // Succeed 保存最终响应，便于重试请求返回同一结果。
@@ -161,15 +177,16 @@ func (s *Store) CachedResponse(ctx context.Context, tx *gorm.DB, actorType strin
 }
 
 // ReplayCompleted is a non-mutating fast path used before expensive external
-// precomputation. The transactional Start call remains the authority for new
-// and in-progress requests.
+// precomputation. It rejects a key bound to different request data and an
+// unexpired processing lease early. The transactional Start call remains the
+// authority for new requests and reclaiming expired or failed attempts.
 func (s *Store) ReplayCompleted(ctx context.Context, db *gorm.DB, actorType string, actorID uint64, path, key, requestHash string, out any) (bool, error) {
 	if key == "" || db == nil {
 		return false, nil
 	}
 	var record Record
 	err := db.WithContext(ctx).
-		Where("actor_type = ? AND actor_id = ? AND path = ? AND key_hash = ? AND status = 'succeeded'", actorType, actorID, path, KeyHash(key)).
+		Where("actor_type = ? AND actor_id = ? AND path = ? AND key_hash = ?", actorType, actorID, path, KeyHash(key)).
 		First(&record).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return false, nil
@@ -178,7 +195,13 @@ func (s *Store) ReplayCompleted(ctx context.Context, db *gorm.DB, actorType stri
 		return false, err
 	}
 	if record.RequestHash != requestHash {
-		return false, problem.Conflict("IDEMPOTENCY_CONFLICT", "same idempotency key used with different request")
+		return false, idempotencyKeyReused()
+	}
+	if record.Status != "succeeded" {
+		if record.Status == "processing" && record.LockedUntil != nil && record.LockedUntil.After(time.Now()) {
+			return false, idempotencyInProgress()
+		}
+		return false, nil
 	}
 	if len(record.ResponseBody) == 0 {
 		return false, nil
@@ -187,4 +210,27 @@ func (s *Store) ReplayCompleted(ctx context.Context, db *gorm.DB, actorType stri
 		return false, err
 	}
 	return true, nil
+}
+
+func existingClaimResult(existing Record, requestHash string, now time.Time) (bool, error) {
+	if existing.RequestHash != requestHash {
+		return false, idempotencyKeyReused()
+	}
+	if existing.Status == "succeeded" {
+		return false, nil
+	}
+	if existing.Status == "processing" && existing.LockedUntil != nil && existing.LockedUntil.After(now) {
+		return false, idempotencyInProgress()
+	}
+	// A no-op upsert for any other non-terminal state means another transaction
+	// won the claim before this transaction could inspect it.
+	return false, idempotencyInProgress()
+}
+
+func idempotencyKeyReused() *problem.Details {
+	return problem.Conflict(errorCodeKeyReused, "same idempotency key was used for a different request")
+}
+
+func idempotencyInProgress() *problem.Details {
+	return problem.Conflict(errorCodeInProgress, "request with the same idempotency key is still processing")
 }

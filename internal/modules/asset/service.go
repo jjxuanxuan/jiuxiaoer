@@ -499,7 +499,7 @@ func (s *Service) refreshMemberProfile(ctx context.Context, tx *gorm.DB, custome
 
 // audit 返回审计。
 func (s *Service) audit(ctx context.Context, actorType string, actorID uint64, action string, resourceID uint64, before, after any) *AuditLog {
-	return &AuditLog{ID: s.ids.Next(), ActorType: actorType, ActorID: actorID, Action: action, ResourceType: "asset_transaction", ResourceID: resourceID, BeforeData: jsonData(before), AfterData: jsonData(after), Result: "success", RequestID: requestctx.RequestIDPtr(ctx), IP: requestctx.IPPtr(ctx), UserAgent: requestctx.UserAgentPtr(ctx)}
+	return &AuditLog{ID: s.ids.Next(), ActorType: actorType, ActorID: actorID, Action: action, ResourceType: "asset_transaction", ResourceID: resourceID, BeforeData: jsonData(before), AfterData: jsonData(after), Result: "success", RequestID: requestctx.RequestIDPtr(ctx), IPHash: requestctx.IPHashPtr(ctx), UserAgent: requestctx.UserAgentPtr(ctx)}
 }
 
 // outbox 返回发件箱事件。

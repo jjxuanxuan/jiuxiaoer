@@ -30,6 +30,19 @@ type CustomerAddress struct {
 	Version          uint32
 }
 
+type OrderShop struct {
+	ID        uint64
+	Name      string
+	DeletedAt *time.Time
+}
+
+// TableName 返回订单查询所需的门店摘要表。
+func (OrderShop) TableName() string { return "shops" }
+
+type CustomerOrderListFilters struct {
+	Status string
+}
+
 // TableName 返回当前数据模型对应的数据库表名。
 func (CustomerAddress) TableName() string { return "customer_addresses" }
 
@@ -50,6 +63,7 @@ type ShopProductRow struct {
 	SealedPackageRequired bool
 	AgeRestricted         bool
 	ProductStatus         string
+	CategoryStatus        string
 	ShopProductStatus     string
 	ShopStatus            string
 	BusinessStatus        string
@@ -141,6 +155,9 @@ type StockRecord struct {
 	QuantityDelta      int
 	BeforeAvailableQty int
 	AfterAvailableQty  int
+	TotalQuantityDelta int
+	BeforeTotalQty     int
+	AfterTotalQty      int
 	SourceType         string
 	SourceID           uint64
 	IdempotencyKey     *string
@@ -199,16 +216,27 @@ func (PaymentCallback) TableName() string { return "payment_callbacks" }
 
 type AuditLog struct {
 	ID           uint64
+	EventID      *string
 	ActorType    string
 	ActorID      uint64
+	AccountID    *uint64
 	Action       string
 	ResourceType string
 	ResourceID   uint64
+	ShopID       *uint64
+	OrderID      *uint64
+	DeliveryID   *uint64
 	BeforeData   datatypes.JSON
 	AfterData    datatypes.JSON
 	Result       string
+	ErrorCode    *string
+	ReasonCode   *string
+	BeforeStatus *string
+	AfterStatus  *string
+	Version      *uint64
 	RequestID    *string
 	IP           *string
+	IPHash       *string
 	UserAgent    *string
 }
 

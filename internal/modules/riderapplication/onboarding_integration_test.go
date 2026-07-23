@@ -99,9 +99,7 @@ func TestMySQLRiderApplicationRejectEditResubmitApproveFlow(t *testing.T) {
 		_ = redisClient.Del(cleanupCtx, "sms:login:rider:"+phone).Err()
 	})
 
-	if err := authService.SendRiderCode(ctx, auth.SendCodeReq{Phone: phone}); err != nil {
-		t.Fatalf("send rider sms code: %v", err)
-	}
+	sendFreshRiderCode(t, ctx, redisClient, authService, phone)
 	submitIP := "integration-submit-" + idString(unique)
 	submitKey := "integration-submit-" + idString(unique)
 	submitReq := SubmitRequest{
@@ -129,16 +127,19 @@ func TestMySQLRiderApplicationRejectEditResubmitApproveFlow(t *testing.T) {
 	if err != nil || replayed.ID != submitted.ID || replayed.AccountID != submitted.AccountID {
 		t.Fatalf("same idempotency key and request must return the original application: replay=%+v err=%v", replayed, err)
 	}
+	sendFreshRiderCode(t, ctx, redisClient, authService, phone)
 	conflictingReq := submitReq
 	conflictingReq.Name = "同手机号重复申请"
 	if _, err := service.Submit(ctx, submitIP, "POST", "/api/v1/rider-applications", "integration-conflict-"+idString(unique), conflictingReq); err == nil || problem.FromError(err).ErrorCode != "RIDER_APPLICATION_EXISTS" {
 		t.Fatalf("same phone must reuse the original application, got %v", err)
 	}
 
+	sendFreshRiderCode(t, ctx, redisClient, authService, phone)
 	if _, err := authService.RiderSMSLogin(ctx, auth.SmsLoginReq{Phone: phone, Code: "123456"}); err == nil || problem.FromError(err).ErrorCode != "AUTH_ACCOUNT_DISABLED" {
 		t.Fatalf("formal rider login must be disabled before approval, got %v", err)
 	}
 	loginIP := "integration-login-" + idString(unique)
+	sendFreshRiderCode(t, ctx, redisClient, authService, phone)
 	applicationLogin, err := service.Login(ctx, loginIP, LoginRequest{Phone: phone, Code: "123456"})
 	if err != nil {
 		t.Fatalf("application login: %v", err)
@@ -190,6 +191,7 @@ func TestMySQLRiderApplicationRejectEditResubmitApproveFlow(t *testing.T) {
 	if _, err := service.VerifyApplicationToken(ctx, applicationLogin.ApplicationAccessToken); err != nil {
 		t.Fatalf("application token must remain valid after profile edit: %v", err)
 	}
+	sendFreshRiderCode(t, ctx, redisClient, authService, phone)
 	applicationLogin, err = service.Login(ctx, loginIP, LoginRequest{Phone: phone, Code: "123456"})
 	if err != nil {
 		t.Fatalf("application relogin: %v", err)
@@ -243,6 +245,7 @@ func TestMySQLRiderApplicationRejectEditResubmitApproveFlow(t *testing.T) {
 		t.Fatalf("approved rider graph is incomplete: runtime=%d shops=%d reviews=%d", runtimeCount, serviceShopCount, reviewCount)
 	}
 
+	sendFreshRiderCode(t, ctx, redisClient, authService, phone)
 	formal, err := authService.RiderSMSLogin(ctx, auth.SmsLoginReq{Phone: phone, Code: "123456"})
 	if err != nil {
 		t.Fatalf("formal rider login after approval: %v", err)
@@ -322,9 +325,7 @@ func TestMySQLConcurrentSubmitAndApproveCreateExactlyOneRider(t *testing.T) {
 			_ = redisClient.Del(cleanupCtx, "rate:rider_application:review_admin:"+service.hmacString(idString(adminID))).Err()
 		}
 	})
-	if err := authService.SendRiderCode(ctx, auth.SendCodeReq{Phone: phone}); err != nil {
-		t.Fatalf("send rider sms code: %v", err)
-	}
+	sendFreshRiderCode(t, ctx, redisClient, authService, phone)
 
 	type submitResult struct {
 		dto ApplicationDTO
@@ -355,7 +356,7 @@ func TestMySQLConcurrentSubmitAndApproveCreateExactlyOneRider(t *testing.T) {
 			continue
 		}
 		code := problem.FromError(result.err).ErrorCode
-		if code != "RIDER_APPLICATION_EXISTS" && code != "RATE_LIMITED" {
+		if code != "RIDER_APPLICATION_EXISTS" && code != "RATE_LIMITED" && code != "AUTH_INVALID_CODE" {
 			t.Fatalf("unexpected concurrent submit error: %s %v", code, result.err)
 		}
 	}
@@ -437,5 +438,18 @@ func deleteRedisPattern(ctx context.Context, client *goredis.Client, pattern str
 		if cursor == 0 {
 			return
 		}
+	}
+}
+
+// sendFreshRiderCode resets only the per-minute send cooldown so the integration
+// scenario can exercise independent one-time-code consumptions without sleeping.
+// The daily counter remains intact and continues to cover the production limit.
+func sendFreshRiderCode(t *testing.T, ctx context.Context, client *goredis.Client, service *auth.Service, phone string) {
+	t.Helper()
+	if err := client.Del(ctx, "rate:sms:login:rider:cooldown:"+phone).Err(); err != nil {
+		t.Fatalf("reset rider sms cooldown: %v", err)
+	}
+	if err := service.SendRiderCode(ctx, auth.SendCodeReq{Phone: phone}); err != nil {
+		t.Fatalf("send fresh rider sms code: %v", err)
 	}
 }

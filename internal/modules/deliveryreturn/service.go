@@ -248,7 +248,7 @@ func (s *Service) writeFacts(ctx context.Context, tx *gorm.DB, row Return, actor
 		ID: s.ids.Next(), ActorType: actorType, ActorID: actor, Action: "delivery_return." + action,
 		ResourceType: "delivery_return", ResourceID: row.ID, BeforeData: jsonData(map[string]any{"status": from}),
 		AfterData: jsonData(map[string]any{"status": to, "reason_code": row.ReasonCode, "delivery_order_id": idString(row.DeliveryOrderID)}),
-		Result:    "success", RequestID: requestctx.RequestIDPtr(ctx), IP: requestctx.IPPtr(ctx), UserAgent: requestctx.UserAgentPtr(ctx),
+		Result:    "success", RequestID: requestctx.RequestIDPtr(ctx), IPHash: requestctx.IPHashPtr(ctx), UserAgent: requestctx.UserAgentPtr(ctx),
 	}); err != nil {
 		return err
 	}
@@ -565,6 +565,6 @@ func (s *Service) auditFailure(ctx context.Context, claims *auth.Claims, route, 
 	_ = s.repo.CreateAudit(ctx, s.repo.DB(), AuditLog{
 		ID: s.ids.Next(), ActorType: actorType, ActorID: actorID, Action: action, ResourceType: resourceType,
 		ResourceID: resourceID, AfterData: jsonData(map[string]any{"route": strings.TrimSpace(route), "error_code": details.ErrorCode, "reason": details.Detail}),
-		Result: result, RequestID: requestctx.RequestIDPtr(ctx), IP: requestctx.IPPtr(ctx), UserAgent: requestctx.UserAgentPtr(ctx),
+		Result: result, RequestID: requestctx.RequestIDPtr(ctx), IPHash: requestctx.IPHashPtr(ctx), UserAgent: requestctx.UserAgentPtr(ctx),
 	})
 }

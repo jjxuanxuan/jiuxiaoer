@@ -102,15 +102,22 @@ func (s *Service) Submit(ctx context.Context, ip, method, path, key string, inpu
 	if len(key) < 8 || len(key) > 128 {
 		return ApplicationDTO{}, problem.InvalidArgument("IDEMPOTENCY_KEY_INVALID", "Idempotency-Key must be between 8 and 128 characters")
 	}
-	if s.sms == nil {
-		return ApplicationDTO{}, problem.New(503, "SMS_VERIFIER_UNAVAILABLE", "Service Unavailable", "rider sms verification is unavailable")
-	}
-	if err := s.sms.VerifyRiderSMSCode(ctx, req.Phone, req.Code); err != nil {
-		return ApplicationDTO{}, err
-	}
 	requestHash := s.hmacJSON(req)
 	actorID := s.publicActorID(req.Phone)
 	var out ApplicationDTO
+	replayed, err := s.idem.ReplayCompleted(ctx, s.db, publicActorType, actorID, path, key, requestHash, &out)
+	if err != nil {
+		mapped := s.mapSubmitError(ctx, err, req.Phone)
+		s.metric.incSubmission(metricResult(mapped))
+		return ApplicationDTO{}, mapped
+	}
+	if replayed {
+		s.metric.incSubmission("success")
+		return out, nil
+	}
+	if s.sms == nil {
+		return ApplicationDTO{}, problem.New(503, "SMS_VERIFIER_UNAVAILABLE", "Service Unavailable", "rider sms verification is unavailable")
+	}
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		started, err := s.idem.Start(ctx, tx, s.ids.Next(), publicActorType, actorID, method, path, key, requestHash)
 		if err != nil {
@@ -118,6 +125,12 @@ func (s *Service) Submit(ctx context.Context, ip, method, path, key string, inpu
 		}
 		if !started {
 			return cachedResponse(ctx, s.idem, tx, publicActorType, actorID, path, key, &out)
+		}
+		// Claim the idempotency key before consuming the one-time SMS code. This
+		// lets an exact retry return the original response without requiring a
+		// second code, while every new idempotency key still consumes a fresh OTP.
+		if err := s.sms.VerifyRiderSMSCode(ctx, req.Phone, req.Code); err != nil {
+			return err
 		}
 		if err := s.ensureIdentityAvailable(ctx, tx, req.Phone); err != nil {
 			return err
@@ -470,11 +483,15 @@ func (s *Service) hmacJSON(value any) string {
 // writeAudit 写入审计。
 func (s *Service) writeAudit(ctx context.Context, tx *gorm.DB, actorType string, actorID uint64, action string, applicationID uint64, after any) error {
 	raw, _ := json.Marshal(after)
-	return tx.WithContext(ctx).Table("audit_logs").Create(map[string]any{
+	row := map[string]any{
 		"id": s.ids.Next(), "actor_type": actorType, "actor_id": actorID, "action": action,
 		"resource_type": "rider_application", "resource_id": applicationID,
 		"after_data": datatypes.JSON(raw), "result": "success", "request_id": requestctx.RequestIDPtr(ctx),
-	}).Error
+	}
+	if actorType == applicantActorType {
+		row["account_id"] = actorID
+	}
+	return tx.WithContext(ctx).Table("audit_logs").Create(row).Error
 }
 
 // writeOutbox 写入发件箱事件。

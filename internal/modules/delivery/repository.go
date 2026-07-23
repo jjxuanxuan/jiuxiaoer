@@ -76,17 +76,63 @@ func (r *Repository) List(ctx context.Context, riderID uint64, status string, qu
 	if status != "" {
 		db = db.Where("delivery_orders.status = ?", status)
 	}
-	db, err := pagination.ApplyFilter(db, query.Filter, deliveryFilterColumns)
-	if err != nil {
-		return nil, err
-	}
-	db, err = pagination.ApplyOrder(db, query.OrderBy, deliveryOrderColumns, "created_at DESC,id DESC")
+	db, err := pagination.ApplyTimeIDCursor(db, query, "delivery_orders.created_at", "delivery_orders.id", "desc")
 	if err != nil {
 		return nil, err
 	}
 	var rows []DeliveryOrder
-	err = db.Offset(query.Offset).Limit(query.PageSize + 1).Find(&rows).Error
+	err = pagination.OffsetDB(db, query).Order("delivery_orders.created_at DESC, delivery_orders.id DESC").Limit(query.PageSize + 1).Find(&rows).Error
 	return rows, err
+}
+
+// Detail reads an assigned delivery and all of its immutable fulfillment
+// context in one transaction. The correlated active-assignment predicate is
+// the disclosure boundary: a candidate, a superseded rider, and an unrelated
+// rider are indistinguishable from a missing delivery.
+func (r *Repository) Detail(ctx context.Context, riderID uint64, deliveryID uint64) (DeliveryOrder, Order, Shop, []OrderItem, error) {
+	var deliveryRow DeliveryOrder
+	var orderRow Order
+	var shopRow Shop
+	items := make([]OrderItem, 0)
+
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&DeliveryOrder{}).
+			Where("delivery_orders.id = ? AND delivery_orders.rider_id = ? AND delivery_orders.deleted_at IS NULL", deliveryID, riderID).
+			Where(`EXISTS (
+				SELECT 1 FROM delivery_assignments current_assignment
+				WHERE current_assignment.delivery_order_id = delivery_orders.id
+					AND current_assignment.to_rider_id = ?
+					AND current_assignment.status = 'active'
+			)`, riderID).
+			First(&deliveryRow).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("id = ? AND deleted_at IS NULL", deliveryRow.OrderID).First(&orderRow).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("id = ? AND deleted_at IS NULL", deliveryRow.ShopID).First(&shopRow).Error; err != nil {
+			return err
+		}
+		return tx.Where("order_id = ? AND deleted_at IS NULL", deliveryRow.OrderID).
+			Order("id ASC").Find(&items).Error
+	})
+	return deliveryRow, orderRow, shopRow, items, err
+}
+
+// AssignedSummary reloads the post-assignment row so an accept response carries
+// the same typed fulfillment snapshots as an assigned list item.
+func (r *Repository) AssignedSummary(ctx context.Context, riderID, deliveryID uint64) (DeliveryOrder, error) {
+	var row DeliveryOrder
+	err := r.db.WithContext(ctx).
+		Where("id=? AND rider_id=? AND deleted_at IS NULL", deliveryID, riderID).
+		Where(`EXISTS (
+			SELECT 1 FROM delivery_assignments current_assignment
+			WHERE current_assignment.delivery_order_id=delivery_orders.id
+				AND current_assignment.to_rider_id=?
+				AND current_assignment.status='active'
+		)`, riderID).
+		First(&row).Error
+	return row, err
 }
 
 // LockDelivery 串行化骑手接单和配送状态流转。

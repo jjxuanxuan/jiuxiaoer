@@ -172,13 +172,13 @@ func (r *Repository) PolicyShopReferences(ctx context.Context, tx *gorm.DB, code
 	return count, err
 }
 
-func (r *Repository) Audit(ctx context.Context, tx *gorm.DB, id, actorID uint64, action, resourceType string, resourceID uint64, before, after any, requestID, ip, userAgent *string) error {
+func (r *Repository) Audit(ctx context.Context, tx *gorm.DB, id, actorID uint64, action, resourceType string, resourceID uint64, before, after any, requestID, ipHash, userAgent *string) error {
 	beforePayload, _ := json.Marshal(before)
 	afterPayload, _ := json.Marshal(after)
 	return tx.WithContext(ctx).Table("audit_logs").Create(map[string]any{
 		"id": id, "actor_type": "admin", "actor_id": actorID, "action": action, "resource_type": resourceType,
 		"resource_id": resourceID, "before_data": datatypes.JSON(beforePayload), "after_data": datatypes.JSON(afterPayload), "result": "success",
-		"request_id": requestID, "ip": ip, "user_agent": userAgent, "created_at": time.Now().UTC(),
+		"request_id": requestID, "ip_hash": ipHash, "user_agent": userAgent, "created_at": time.Now().UTC(),
 	}).Error
 }
 

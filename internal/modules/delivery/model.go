@@ -39,19 +39,69 @@ type DeliveryOrder struct {
 func (DeliveryOrder) TableName() string { return "delivery_orders" }
 
 type Order struct {
-	ID             uint64
-	OrderNo        string
-	CustomerID     uint64
-	MerchantID     uint64
-	ShopID         uint64
-	Status         string
-	PayStatus      string
-	DeliveryStatus string
-	CompletedAt    *time.Time
+	ID                uint64
+	OrderNo           string
+	CustomerID        uint64
+	MerchantID        uint64
+	ShopID            uint64
+	Status            string
+	PayStatus         string
+	DeliveryStatus    string
+	GoodsAmount       int64
+	DiscountAmount    int64
+	DeliveryFeeAmount int64
+	PayableAmount     int64
+	PaidAmount        int64
+	Remark            *string
+	AddressSnapshot   datatypes.JSON
+	Version           int
+	PaidAt            *time.Time
+	CancelledAt       *time.Time
+	CompletedAt       *time.Time
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 // TableName 返回当前数据模型对应的数据库表名。
 func (Order) TableName() string { return "orders" }
+
+// OrderItem is a historical order line. ProductSnapshot is deliberately used
+// by delivery detail so later catalog edits do not rewrite what the rider saw.
+type OrderItem struct {
+	ID              uint64
+	OrderID         uint64
+	ShopProductID   uint64
+	ProductID       uint64
+	ProductSnapshot datatypes.JSON
+	Quantity        int
+	SalePriceAmount int64
+	TotalAmount     int64
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+// TableName 返回当前数据模型对应的数据库表名。
+func (OrderItem) TableName() string { return "order_items" }
+
+// Shop contains only the store fields needed by an assigned rider. Contact and
+// address history still comes from DeliveryOrder.PickupSnapshot.
+type Shop struct {
+	ID               uint64
+	Name             string
+	Phone            *string
+	Province         *string
+	City             string
+	District         string
+	Address          string
+	Latitude         *float64
+	Longitude        *float64
+	CoordinateSystem string
+	Status           string
+	BusinessStatus   string
+}
+
+// TableName 返回当前数据模型对应的数据库表名。
+func (Shop) TableName() string { return "shops" }
 
 type OrderLog struct {
 	ID         uint64
@@ -70,16 +120,27 @@ func (OrderLog) TableName() string { return "order_logs" }
 
 type AuditLog struct {
 	ID           uint64
+	EventID      *string
 	ActorType    string
 	ActorID      uint64
+	AccountID    *uint64
 	Action       string
 	ResourceType string
 	ResourceID   uint64
+	ShopID       *uint64
+	OrderID      *uint64
+	DeliveryID   *uint64
 	BeforeData   datatypes.JSON
 	AfterData    datatypes.JSON
 	Result       string
+	ErrorCode    *string
+	ReasonCode   *string
+	BeforeStatus *string
+	AfterStatus  *string
+	Version      *uint64
 	RequestID    *string
 	IP           *string
+	IPHash       *string
 	UserAgent    *string
 }
 

@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -91,6 +92,84 @@ func TestPaymentConfirmationAcceptance(t *testing.T) {
 			t.Fatalf("repeat=%+v calls=%d err=%v", repeat, provider.queryCalls.Load(), err)
 		}
 		assertPaymentAcceptanceLedger(t, db, fx, "paid", "succeeded", 0)
+	})
+
+	t.Run("ACC-PAY-001A-confirm-command-replays-cached-response-without-provider", func(t *testing.T) {
+		fx := insertPaymentAcceptanceFixture(t, db, ids, "pending", time.Now().Add(10*time.Minute))
+		defer cleanupRaceFixture(db, fx.orderID, fx.paymentID, fx.shopProductID, fx.stockID)
+		defer cleanupPaymentConfirmIdempotency(db, fx.customerID)
+		state := paymentSuccessState(fx)
+		state.Status = "NOTPAY"
+		state.PaidAt = nil
+		provider := &paymentAcceptanceProvider{state: state}
+		service := order.NewService(cfg, db, ids).WithPaymentProvider(provider, metrics.New("confirm-idempotent-replay", ""))
+		claims := paymentCustomer(fx.customerID)
+		key := "confirm-replay-" + strconv.FormatUint(fx.paymentID, 10)
+		path := "/api/v1/orders/:id/payment/confirm"
+
+		first, err := service.ConfirmPaymentIdempotent(context.Background(), &claims, http.MethodPost, path, key, strconv.FormatUint(fx.orderID, 10))
+		if err != nil || first.Status != "pending" || first.ProviderStatus != "NOTPAY" {
+			t.Fatalf("first=%+v err=%v", first, err)
+		}
+		provider.state = paymentSuccessState(fx)
+		replay, err := service.ConfirmPaymentIdempotent(context.Background(), &claims, http.MethodPost, path, key, strconv.FormatUint(fx.orderID, 10))
+		if err != nil || replay.Status != first.Status || replay.ProviderStatus != first.ProviderStatus {
+			t.Fatalf("replay=%+v first=%+v err=%v", replay, first, err)
+		}
+		if provider.queryCalls.Load() != 1 {
+			t.Fatalf("provider query calls=%d", provider.queryCalls.Load())
+		}
+	})
+
+	t.Run("ACC-PAY-001B-provider-failure-releases-command-for-immediate-retry", func(t *testing.T) {
+		fx := insertPaymentAcceptanceFixture(t, db, ids, "pending", time.Now().Add(10*time.Minute))
+		defer cleanupRaceFixture(db, fx.orderID, fx.paymentID, fx.shopProductID, fx.stockID)
+		defer cleanupPaymentConfirmIdempotency(db, fx.customerID)
+		provider := &paymentAcceptanceProvider{queryErr: &paygateway.ProviderError{Operation: "payment.query", HTTPStatus: http.StatusInternalServerError, Code: "SYSTEM_ERROR", Retryable: true}}
+		service := order.NewService(cfg, db, ids).WithPaymentProvider(provider, metrics.New("confirm-idempotent-retry", ""))
+		claims := paymentCustomer(fx.customerID)
+		key := "confirm-retry-" + strconv.FormatUint(fx.paymentID, 10)
+		path := "/api/v1/orders/:id/payment/confirm"
+
+		_, err := service.ConfirmPaymentIdempotent(context.Background(), &claims, http.MethodPost, path, key, strconv.FormatUint(fx.orderID, 10))
+		if problem.FromError(err).ErrorCode != "PAYMENT_CONFIRM_RETRYABLE" || provider.queryCalls.Load() != 1 {
+			t.Fatalf("first err=%v query_calls=%d", err, provider.queryCalls.Load())
+		}
+		provider.queryErr = nil
+		provider.state = order.ProviderPaymentState{PaymentNo: fx.paymentNo, Status: "NOTPAY"}
+		result, err := service.ConfirmPaymentIdempotent(context.Background(), &claims, http.MethodPost, path, key, strconv.FormatUint(fx.orderID, 10))
+		if err != nil || result.Status != "pending" || provider.queryCalls.Load() != 2 {
+			t.Fatalf("retry result=%+v calls=%d err=%v", result, provider.queryCalls.Load(), err)
+		}
+		_, err = service.ConfirmPaymentIdempotent(context.Background(), &claims, http.MethodPost, path, key, strconv.FormatUint(fx.orderID, 10))
+		if err != nil || provider.queryCalls.Load() != 2 {
+			t.Fatalf("cached retry calls=%d err=%v", provider.queryCalls.Load(), err)
+		}
+	})
+
+	t.Run("ACC-PAY-001C-confirm-command-requires-valid-idempotency-key", func(t *testing.T) {
+		fx := insertPaymentAcceptanceFixture(t, db, ids, "pending", time.Now().Add(10*time.Minute))
+		defer cleanupRaceFixture(db, fx.orderID, fx.paymentID, fx.shopProductID, fx.stockID)
+		provider := &paymentAcceptanceProvider{state: paymentSuccessState(fx)}
+		service := order.NewService(cfg, db, ids).WithPaymentProvider(provider, metrics.New("confirm-idempotent-key", ""))
+		claims := paymentCustomer(fx.customerID)
+		path := "/api/v1/orders/:id/payment/confirm"
+
+		router := gin.New()
+		router.POST(path, func(c *gin.Context) {
+			c.Set("auth_claims", &claims)
+			order.NewHandler(service).ConfirmPayment(c)
+		})
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/orders/"+strconv.FormatUint(fx.orderID, 10)+"/payment/confirm", nil)
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "IDEMPOTENCY_KEY_REQUIRED") {
+			t.Fatalf("missing key status=%d body=%s", response.Code, response.Body.String())
+		}
+		_, err := service.ConfirmPaymentIdempotent(context.Background(), &claims, http.MethodPost, path, "short", strconv.FormatUint(fx.orderID, 10))
+		if problem.FromError(err).ErrorCode != "IDEMPOTENCY_KEY_INVALID" || provider.queryCalls.Load() != 0 {
+			t.Fatalf("invalid key err=%v query_calls=%d", err, provider.queryCalls.Load())
+		}
 	})
 
 	for _, tc := range []struct {
@@ -458,7 +537,11 @@ func paymentSuccessState(fx paymentAcceptanceFixture) order.ProviderPaymentState
 }
 
 func paymentCustomer(customerID uint64) auth.Claims {
-	return auth.Claims{AccountType: "customer", CustomerID: strconv.FormatUint(customerID, 10)}
+	return auth.Claims{AccountType: "customer", CustomerID: strconv.FormatUint(customerID, 10), Permissions: []string{"payment:view"}}
+}
+
+func cleanupPaymentConfirmIdempotency(db *gorm.DB, customerID uint64) {
+	db.Exec("DELETE FROM idempotency_keys WHERE actor_type = 'customer' AND actor_id = ? AND path = ?", customerID, "/api/v1/orders/:id/payment/confirm")
 }
 
 func assertPaymentAcceptanceLedger(t *testing.T, db *gorm.DB, fx paymentAcceptanceFixture, orderStatus, paymentStatus string, reserved int) {
@@ -477,5 +560,15 @@ func assertPaymentAcceptanceLedger(t *testing.T, db *gorm.DB, fx paymentAcceptan
 	}
 	if orderRow.Status != orderStatus || payment.Status != paymentStatus || stock.ReservedQty != reserved {
 		t.Fatalf("ledger order=%s/%s payment=%s/%s reserved=%d/%d", orderRow.Status, orderStatus, payment.Status, paymentStatus, stock.ReservedQty, reserved)
+	}
+	if reserved == 0 {
+		var record order.StockRecord
+		if err := db.Where("source_type='payment' AND source_id=? AND change_type='deduct'", fx.paymentID).First(&record).Error; err != nil {
+			t.Fatal(err)
+		}
+		if record.QuantityDelta != 0 || record.BeforeAvailableQty != 9 || record.AfterAvailableQty != 9 ||
+			record.TotalQuantityDelta != -1 || record.BeforeTotalQty != 10 || record.AfterTotalQty != 9 {
+			t.Fatalf("payment stock ledger mixed available and total semantics: %+v", record)
+		}
 	}
 }

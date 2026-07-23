@@ -109,11 +109,10 @@ func TestRiderLoginAcceptAndAmapNavigationE2E(t *testing.T) {
 
 	merchantLogin := performOK(t, router, http.MethodPost, "/api/v1/auth/merchant/login", "", "", map[string]any{"username": "merchant_demo", "password": "merchant123"})
 	merchantToken := stringValue(t, object(t, merchantLogin["data"])["access_token"])
-	performOK(t, router, http.MethodPost, "/api/v1/store/orders/"+orderID+"/accept", merchantToken, "amap-e2e-store-accept-"+runID, nil)
-	performOK(t, router, http.MethodPost, "/api/v1/store/orders/"+orderID+"/start-preparing", merchantToken, "amap-e2e-store-start-"+runID, nil)
-	performOK(t, router, http.MethodPost, "/api/v1/store/orders/"+orderID+"/prepare", merchantToken, "amap-e2e-store-ready-"+runID, nil)
+	performStoreOrderAction(t, router, tx, orderID, "accept", merchantToken, "amap-e2e-store-accept-"+runID)
+	performStoreOrderAction(t, router, tx, orderID, "start-preparing", merchantToken, "amap-e2e-store-start-"+runID)
+	performStoreOrderAction(t, router, tx, orderID, "prepare", merchantToken, "amap-e2e-store-ready-"+runID)
 	performOK(t, router, http.MethodPost, "/api/v1/delivery/orders/"+deliveryID+"/pickup", riderToken, "amap-e2e-pickup-"+runID, nil)
-	performOK(t, router, http.MethodPost, "/api/v1/delivery/orders/"+deliveryID+"/start", riderToken, "amap-e2e-start-"+runID, nil)
 	assertAmapRoute(t, router, riderToken, deliveryID, "delivery", 22.552000, 113.942000)
 
 	performOK(t, router, http.MethodPost, "/api/v1/delivery/orders/"+deliveryID+"/complete", riderToken, "amap-e2e-complete-"+runID, nil)

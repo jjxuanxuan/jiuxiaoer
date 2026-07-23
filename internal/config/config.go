@@ -48,6 +48,7 @@ type AppConfig struct {
 
 type HTTPConfig struct {
 	Addr              string
+	TrustedProxies    []string
 	ShutdownTimeout   time.Duration
 	ReadHeaderTimeout time.Duration
 	ReadTimeout       time.Duration
@@ -375,26 +376,34 @@ type MetricsConfig struct {
 // Modes are off, observe, or enforce. External side effects stay disabled by
 // default until the corresponding provider and rollout gate are approved.
 type CP1Config struct {
-	PrintEnabled             bool
-	NotificationEnabled      bool
-	ProvisioningEnabled      bool
-	ForceActionEnabled       bool
-	PickupVerificationMode   string
-	DeliveryVerificationMode string
-	ComplianceMode           string
-	PrintProvider            string
-	NotificationProvider     string
-	IdentityProvider         string
-	WorkerEnabled            bool
-	WorkerInterval           time.Duration
-	WorkerBatchSize          int
-	VerificationTTL          time.Duration
-	VerificationMaxAttempts  int
-	VerificationLockDuration time.Duration
-	VerificationPepper       string
-	IdentityCallbackSecret   string
-	DataEncryptionKey        string
+	ReleaseProfile             string
+	PrintEnabled               bool
+	NotificationEnabled        bool
+	ProvisioningEnabled        bool
+	ForceActionEnabled         bool
+	PickupVerificationMode     string
+	DeliveryVerificationMode   string
+	ComplianceMode             string
+	PrintProvider              string
+	NotificationProvider       string
+	IdentityProvider           string
+	WorkerEnabled              bool
+	WorkerInterval             time.Duration
+	WorkerBatchSize            int
+	VerificationTTL            time.Duration
+	DeliveryVerificationTTL    time.Duration
+	DeliveryVerificationMaxTTL time.Duration
+	VerificationMaxAttempts    int
+	VerificationLockDuration   time.Duration
+	VerificationPepper         string
+	IdentityCallbackSecret     string
+	DataEncryptionKey          string
 }
+
+const (
+	CP1ReleaseProfileOff      = "off"
+	CP1ReleaseProfilePhaseOne = "phase_one"
+)
 
 // Load 读取环境变量并提供本地开发默认值。
 // 依赖是否必需由 infra 包负责校验，不放在配置解析阶段处理。
@@ -410,6 +419,7 @@ func Load() Config {
 		},
 		HTTP: HTTPConfig{
 			Addr:              env("JXE_HTTP_ADDR", ":8080"),
+			TrustedProxies:    csvEnv("JXE_HTTP_TRUSTED_PROXIES"),
 			ShutdownTimeout:   durationEnv("JXE_HTTP_SHUTDOWN_TIMEOUT", 10*time.Second),
 			ReadHeaderTimeout: durationEnv("JXE_HTTP_READ_HEADER_TIMEOUT", 5*time.Second),
 			ReadTimeout:       durationEnv("JXE_HTTP_READ_TIMEOUT", 15*time.Second),
@@ -688,25 +698,28 @@ func Load() Config {
 			Token:   env("JXE_METRICS_TOKEN", ""),
 		},
 		CP1: CP1Config{
-			PrintEnabled:             boolEnv("JXE_CP1_PRINT_ENABLED", false),
-			NotificationEnabled:      boolEnv("JXE_CP1_NOTIFICATION_ENABLED", false),
-			ProvisioningEnabled:      boolEnv("JXE_CP1_PROVISIONING_ENABLED", true),
-			ForceActionEnabled:       boolEnv("JXE_CP1_FORCE_ACTION_ENABLED", false),
-			PickupVerificationMode:   env("JXE_CP1_PICKUP_VERIFICATION_MODE", "observe"),
-			DeliveryVerificationMode: env("JXE_CP1_DELIVERY_VERIFICATION_MODE", "observe"),
-			ComplianceMode:           env("JXE_CP1_COMPLIANCE_MODE", "observe"),
-			PrintProvider:            env("JXE_CP1_PRINT_PROVIDER", "fake"),
-			NotificationProvider:     env("JXE_CP1_NOTIFICATION_PROVIDER", "fake"),
-			IdentityProvider:         env("JXE_CP1_IDENTITY_PROVIDER", "fake"),
-			WorkerEnabled:            boolEnv("JXE_CP1_WORKER_ENABLED", true),
-			WorkerInterval:           durationEnv("JXE_CP1_WORKER_INTERVAL", 2*time.Second),
-			WorkerBatchSize:          intEnv("JXE_CP1_WORKER_BATCH_SIZE", 50),
-			VerificationTTL:          durationEnv("JXE_CP1_VERIFICATION_TTL", 30*time.Minute),
-			VerificationMaxAttempts:  intEnv("JXE_CP1_VERIFICATION_MAX_ATTEMPTS", 5),
-			VerificationLockDuration: durationEnv("JXE_CP1_VERIFICATION_LOCK_DURATION", 15*time.Minute),
-			VerificationPepper:       env("JXE_CP1_VERIFICATION_PEPPER", "local_verification_pepper_change_me"),
-			IdentityCallbackSecret:   env("JXE_CP1_IDENTITY_CALLBACK_SECRET", "local_identity_callback_secret_change_me"),
-			DataEncryptionKey:        env("JXE_CP1_DATA_ENCRYPTION_KEY", "local_data_encryption_key_change_me"),
+			ReleaseProfile:             env("JXE_CP1_RELEASE_PROFILE", CP1ReleaseProfileOff),
+			PrintEnabled:               boolEnv("JXE_CP1_PRINT_ENABLED", false),
+			NotificationEnabled:        boolEnv("JXE_CP1_NOTIFICATION_ENABLED", false),
+			ProvisioningEnabled:        boolEnv("JXE_CP1_PROVISIONING_ENABLED", true),
+			ForceActionEnabled:         boolEnv("JXE_CP1_FORCE_ACTION_ENABLED", false),
+			PickupVerificationMode:     env("JXE_CP1_PICKUP_VERIFICATION_MODE", "observe"),
+			DeliveryVerificationMode:   env("JXE_CP1_DELIVERY_VERIFICATION_MODE", "observe"),
+			ComplianceMode:             env("JXE_CP1_COMPLIANCE_MODE", "observe"),
+			PrintProvider:              env("JXE_CP1_PRINT_PROVIDER", "fake"),
+			NotificationProvider:       env("JXE_CP1_NOTIFICATION_PROVIDER", "fake"),
+			IdentityProvider:           env("JXE_CP1_IDENTITY_PROVIDER", "fake"),
+			WorkerEnabled:              boolEnv("JXE_CP1_WORKER_ENABLED", true),
+			WorkerInterval:             durationEnv("JXE_CP1_WORKER_INTERVAL", 2*time.Second),
+			WorkerBatchSize:            intEnv("JXE_CP1_WORKER_BATCH_SIZE", 50),
+			VerificationTTL:            durationEnv("JXE_CP1_VERIFICATION_TTL", 30*time.Minute),
+			DeliveryVerificationTTL:    durationEnv("JXE_CP1_DELIVERY_VERIFICATION_TTL", 2*time.Hour),
+			DeliveryVerificationMaxTTL: durationEnv("JXE_CP1_DELIVERY_VERIFICATION_MAX_TTL", 6*time.Hour),
+			VerificationMaxAttempts:    intEnv("JXE_CP1_VERIFICATION_MAX_ATTEMPTS", 5),
+			VerificationLockDuration:   durationEnv("JXE_CP1_VERIFICATION_LOCK_DURATION", 15*time.Minute),
+			VerificationPepper:         env("JXE_CP1_VERIFICATION_PEPPER", "local_verification_pepper_change_me"),
+			IdentityCallbackSecret:     env("JXE_CP1_IDENTITY_CALLBACK_SECRET", "local_identity_callback_secret_change_me"),
+			DataEncryptionKey:          env("JXE_CP1_DATA_ENCRYPTION_KEY", "local_data_encryption_key_change_me"),
 		},
 	}
 }
@@ -1040,8 +1053,18 @@ func (c Config) Validate() error {
 			problems = append(problems, name+" must be off, observe, or enforce")
 		}
 	}
-	if c.CP1.WorkerInterval <= 0 || c.CP1.WorkerBatchSize <= 0 || c.CP1.WorkerBatchSize > 200 || c.CP1.VerificationTTL <= 0 || c.CP1.VerificationMaxAttempts < 1 || c.CP1.VerificationMaxAttempts > 20 || c.CP1.VerificationLockDuration <= 0 {
+	if c.CP1.ReleaseProfile != CP1ReleaseProfileOff && c.CP1.ReleaseProfile != CP1ReleaseProfilePhaseOne {
+		problems = append(problems, "JXE_CP1_RELEASE_PROFILE must be off or phase_one")
+	}
+	problems = append(problems, c.CP1ReleaseProfileProblems()...)
+	if c.CP1.WorkerInterval <= 0 || c.CP1.WorkerBatchSize <= 0 || c.CP1.WorkerBatchSize > 200 || c.CP1.VerificationTTL <= 0 || c.CP1.DeliveryVerificationTTL < 2*time.Hour || c.CP1.DeliveryVerificationMaxTTL < c.CP1.DeliveryVerificationTTL || c.CP1.VerificationMaxAttempts < 1 || c.CP1.VerificationMaxAttempts > 20 || c.CP1.VerificationLockDuration <= 0 {
 		problems = append(problems, "invalid CP1 worker or verification configuration")
+	}
+	if (c.CP1.PrintEnabled || c.MQ.ConsumerPrintEnabled) && strings.TrimSpace(c.CP1.PrintProvider) == "" {
+		problems = append(problems, "enabled printing requires JXE_CP1_PRINT_PROVIDER")
+	}
+	if c.MQ.ConsumerPrintEnabled && !c.CP1.PrintEnabled {
+		problems = append(problems, "JXE_MQ_CONSUMER_PRINT_ENABLED requires JXE_CP1_PRINT_ENABLED=true")
 	}
 	if len(c.CP1.VerificationPepper) < 32 || len(c.CP1.IdentityCallbackSecret) < 32 || len(c.CP1.DataEncryptionKey) < 32 {
 		problems = append(problems, "CP1 verification pepper, identity callback secret, and data encryption key must be at least 32 characters")
@@ -1109,11 +1132,14 @@ func (c Config) Validate() error {
 		if c.Metrics.Enabled && len(c.Metrics.Token) < 16 {
 			problems = append(problems, "production metrics endpoint requires JXE_METRICS_TOKEN with at least 16 characters")
 		}
-		if c.CP1.PrintProvider == "fake" || c.CP1.NotificationProvider == "fake" || c.CP1.IdentityProvider == "fake" {
-			problems = append(problems, "production must not use fake CP1 providers")
+		if (c.CP1.PrintEnabled || c.MQ.ConsumerPrintEnabled) && strings.EqualFold(strings.TrimSpace(c.CP1.PrintProvider), "fake") {
+			problems = append(problems, "production enabled printing must not use the fake CP1 provider")
 		}
-		if c.CP1.ComplianceMode != "enforce" {
-			problems = append(problems, "production requires JXE_CP1_COMPLIANCE_MODE=enforce")
+		if c.CP1.NotificationEnabled && strings.EqualFold(strings.TrimSpace(c.CP1.NotificationProvider), "fake") {
+			problems = append(problems, "production enabled notifications must not use the fake CP1 provider")
+		}
+		if c.CP1.ComplianceMode != "off" && strings.EqualFold(strings.TrimSpace(c.CP1.IdentityProvider), "fake") {
+			problems = append(problems, "production enabled compliance must not use the fake CP1 provider")
 		}
 		if c.Realtime.Enabled && len(c.Realtime.AllowedOrigins) == 0 {
 			problems = append(problems, "production realtime requires JXE_REALTIME_ALLOWED_ORIGINS")
@@ -1155,6 +1181,45 @@ func (c Config) Validate() error {
 		return fmt.Errorf("invalid configuration: %s", strings.Join(problems, "; "))
 	}
 	return nil
+}
+
+// CP1ReleaseProfileProblems returns the fail-closed capability gaps for a
+// phase-one release candidate. Ordinary production instances keep this profile
+// off so an approved incident response can still disable optional side effects.
+func (c Config) CP1ReleaseProfileProblems() []string {
+	if c.CP1.ReleaseProfile != CP1ReleaseProfilePhaseOne {
+		return nil
+	}
+	var problems []string
+	require := func(ok bool, message string) {
+		if !ok {
+			problems = append(problems, "JXE_CP1_RELEASE_PROFILE=phase_one requires "+message)
+		}
+	}
+	require(isProduction(c.App.Env), "JXE_APP_ENV=production")
+	require(c.CP1.PrintEnabled, "JXE_CP1_PRINT_ENABLED=true")
+	printProvider := strings.TrimSpace(c.CP1.PrintProvider)
+	require(printProvider != "" && !strings.EqualFold(printProvider, "fake"), "a configured non-fake JXE_CP1_PRINT_PROVIDER")
+	require(c.CP1.WorkerEnabled, "JXE_CP1_WORKER_ENABLED=true")
+	require(c.CP1.ComplianceMode == "enforce", "JXE_CP1_COMPLIANCE_MODE=enforce")
+	require(c.CP1.PickupVerificationMode == "enforce", "JXE_CP1_PICKUP_VERIFICATION_MODE=enforce")
+	require(c.CP1.DeliveryVerificationMode == "enforce", "JXE_CP1_DELIVERY_VERIFICATION_MODE=enforce")
+	require(c.Feature.OrderIdempotencyEnabled, "JXE_ORDER_IDEMPOTENCY_ENABLED=true")
+	require(c.Feature.StockReserveEnabled, "JXE_STOCK_RESERVE_ENABLED=true")
+	require(c.Realtime.Enabled, "JXE_REALTIME_ENABLED=true")
+	require(c.Realtime.RelayEnabled, "JXE_REALTIME_RELAY_ENABLED=true")
+	require(c.Feature.MQPublisherEnabled, "JXE_MQ_PUBLISH_ENABLED=true")
+	require(c.MQ.ConsumerNotificationEnabled, "JXE_MQ_CONSUMER_NOTIFICATION_ENABLED=true")
+	require(c.MQ.ConsumerPrintEnabled, "JXE_MQ_CONSUMER_PRINT_ENABLED=true")
+	require(c.MQ.ConsumerCacheEnabled, "JXE_MQ_CONSUMER_CACHE_ENABLED=true")
+	require(c.MQ.ConsumerSecurityEnabled, "JXE_MQ_CONSUMER_SECURITY_ENABLED=true")
+	require(c.MQ.ConsumerDispatchEnabled, "JXE_MQ_CONSUMER_DISPATCH_ENABLED=true")
+	require(c.MQ.ConsumerRealtimeEnabled, "JXE_MQ_CONSUMER_REALTIME_ENABLED=true")
+	require(c.MQ.DBFallbackEnabled, "JXE_MQ_DB_FALLBACK_ENABLED=true")
+	require(c.MQ.FailOnTopologyDrift, "JXE_MQ_FAIL_ON_TOPOLOGY_DRIFT=true")
+	require(c.Dispatch.Enabled && c.Dispatch.WorkerEnabled, "JXE_DISPATCH_ENABLED=true and JXE_DISPATCH_WORKER_ENABLED=true")
+	require(c.RabbitMQ.URL != "" && c.RabbitMQ.Required, "RabbitMQ URL and JXE_RABBITMQ_REQUIRED=true")
+	return problems
 }
 
 func containsDeliveryIncidentFullRollout(values []string) bool {

@@ -7,26 +7,33 @@ import (
 )
 
 type Order struct {
-	ID                uint64
-	OrderNo           string
-	CustomerID        uint64
-	MerchantID        uint64
-	ShopID            uint64
-	Status            string
-	PayStatus         string
-	DeliveryStatus    string
-	GoodsAmount       int64
-	DiscountAmount    int64
-	DeliveryFeeAmount int64
-	PayableAmount     int64
-	PaidAmount        int64
-	Remark            *string
-	AddressSnapshot   datatypes.JSON
-	PaidAt            *time.Time
-	CancelledAt       *time.Time
-	CompletedAt       *time.Time
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	ID                      uint64
+	OrderNo                 string
+	CustomerID              uint64
+	MerchantID              uint64
+	ShopID                  uint64
+	Status                  string
+	PayStatus               string
+	DeliveryStatus          string
+	GoodsAmount             int64
+	DiscountAmount          int64
+	DeliveryFeeAmount       int64
+	PayableAmount           int64
+	PaidAmount              int64
+	Remark                  *string
+	AddressSnapshot         datatypes.JSON
+	DeliveryPromiseSnapshot datatypes.JSON
+	ComplianceSnapshot      datatypes.JSON
+	ExpiresAt               *time.Time
+	CancelSource            *string
+	CancelReasonCode        *string
+	Version                 int
+	PaidAt                  *time.Time
+	CancelledAt             *time.Time
+	CompletedAt             *time.Time
+	CreatedAt               time.Time
+	UpdatedAt               time.Time
+	DeletedAt               *time.Time
 }
 
 // TableName 返回当前数据模型对应的数据库表名。
@@ -41,6 +48,7 @@ type OrderItem struct {
 	Quantity        int
 	SalePriceAmount int64
 	TotalAmount     int64
+	DeletedAt       *time.Time
 }
 
 // TableName 返回当前数据模型对应的数据库表名。
@@ -56,6 +64,8 @@ type OrderLog struct {
 	ToStatus   *string
 	Remark     *string
 	RequestID  *string
+	CreatedAt  time.Time
+	DeletedAt  *time.Time
 }
 
 // TableName 返回当前数据模型对应的数据库表名。
@@ -67,11 +77,13 @@ type DeliveryOrder struct {
 	ShopID            uint64
 	RiderID           *uint64
 	Status            string
+	AssignmentVersion uint
 	DispatchStatus    string
 	PickupReadyStatus string
 	PickupReadyAt     *time.Time
 	PickupSnapshot    datatypes.JSON
 	RecipientSnapshot datatypes.JSON
+	DeletedAt         *time.Time
 }
 
 // TableName 返回当前数据模型对应的数据库表名。
@@ -92,6 +104,7 @@ type Shop struct {
 	CoordinateSystem string
 	Status           string
 	BusinessStatus   string
+	DeletedAt        *time.Time
 }
 
 // TableName 返回当前数据模型对应的数据库表名。
@@ -142,24 +155,64 @@ type ProductStock struct {
 // TableName 返回当前数据模型对应的数据库表名。
 func (ProductStock) TableName() string { return "product_stocks" }
 
+type Payment struct {
+	ID             uint64
+	PaymentNo      string
+	OrderID        uint64
+	Channel        string
+	Provider       string
+	Status         string
+	Amount         int64
+	Currency       string
+	RefundedAmount int64
+	ExpiresAt      *time.Time
+	PaidAt         *time.Time
+	CreatedAt      time.Time
+	DeletedAt      *time.Time
+}
+
+// TableName 返回当前数据模型对应的数据表名。
+func (Payment) TableName() string { return "payments" }
+
 type ShopProductRow struct {
-	ID                  uint64
-	MerchantID          uint64
-	ShopID              uint64
-	ProductID           uint64
-	CategoryID          uint64
-	Name                string
-	BrandName           *string
-	Spec                *string
-	ImageURL            *string
-	SalePriceAmount     int64
-	OriginalPriceAmount int64
-	Status              string
-	SortOrder           int
-	AvailableQty        int
-	ReservedQty         int
-	LockedQty           int
-	AgeRestricted       bool
+	ID                   uint64
+	MerchantID           uint64
+	ShopID               uint64
+	ProductID            uint64
+	CategoryID           uint64
+	Name                 string
+	BrandName            *string
+	Spec                 *string
+	ImageURL             *string
+	SalePriceAmount      int64
+	OriginalPriceAmount  int64
+	Status               string
+	SortOrder            int
+	AvailableQty         int
+	ReservedQty          int
+	LockedQty            int
+	LowStockThreshold    int
+	Version              int
+	UpdatedAt            time.Time  `gorm:"-"`
+	StockUpdatedAt       *time.Time `gorm:"column:stock_updated_at"`
+	ShopProductUpdatedAt time.Time  `gorm:"column:shop_product_updated_at"`
+	AgeRestricted        bool
+}
+
+type StoreOrderListFilters struct {
+	ShopID   uint64
+	Status   string
+	Keyword  string
+	OrderNo  string
+	PaidFrom *time.Time
+	PaidTo   *time.Time
+}
+
+type StoreInventoryFilters struct {
+	ShopID       uint64
+	Status       string
+	Keyword      string
+	LowStockOnly bool
 }
 
 type StockRecord struct {
@@ -171,6 +224,9 @@ type StockRecord struct {
 	QuantityDelta      int
 	BeforeAvailableQty int
 	AfterAvailableQty  int
+	TotalQuantityDelta int
+	BeforeTotalQty     int
+	AfterTotalQty      int
 	SourceType         string
 	SourceID           uint64
 	IdempotencyKey     *string
@@ -181,16 +237,27 @@ func (StockRecord) TableName() string { return "stock_records" }
 
 type AuditLog struct {
 	ID           uint64
+	EventID      *string
 	ActorType    string
 	ActorID      uint64
+	AccountID    *uint64
 	Action       string
 	ResourceType string
 	ResourceID   uint64
+	ShopID       *uint64
+	OrderID      *uint64
+	DeliveryID   *uint64
 	BeforeData   datatypes.JSON
 	AfterData    datatypes.JSON
 	Result       string
+	ErrorCode    *string
+	ReasonCode   *string
+	BeforeStatus *string
+	AfterStatus  *string
+	Version      *uint64
 	RequestID    *string
 	IP           *string
+	IPHash       *string
 	UserAgent    *string
 }
 

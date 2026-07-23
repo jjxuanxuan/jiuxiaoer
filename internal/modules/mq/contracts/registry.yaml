@@ -1,7 +1,7 @@
 version: v1
 events:
   - {event_type: payment.succeeded, version: 1, owner: payment, status: active, classification: internal, aggregate_type: payment, consumers: [notification], payload_schema: schemas/events.v1.json, required_fields: [order_id, payment_id], max_bytes: 65536}
-  - {event_type: order.paid, version: 1, owner: order, status: deprecated, classification: internal, aggregate_type: order, consumers: [notification], payload_schema: schemas/events.v1.json, required_fields: [order_id, payment_id], max_bytes: 65536}
+  - {event_type: order.paid, version: 1, owner: order, status: deprecated, classification: internal, aggregate_type: order, consumers: [notification, realtime], payload_schema: schemas/events.v1.json, required_fields: [order_id, payment_id], max_bytes: 65536}
   - {event_type: dispatch.job.ready, version: 1, owner: dispatch, status: internal_task, classification: internal, aggregate_type: dispatch_job, consumers: [dispatch], payload_schema: schemas/events.v1.json, required_fields: [dispatch_job_id, delivery_order_id], max_bytes: 65536}
   - {event_type: dispatch.job.retry_requested, version: 1, owner: dispatch, status: internal_task, classification: restricted, aggregate_type: dispatch_job, consumers: [dispatch], payload_schema: schemas/events.v1.json, required_fields: [dispatch_job_id, delivery_order_id, reason_code], max_bytes: 65536}
   - {event_type: dispatch.offer.created, version: 1, owner: dispatch, status: active, classification: restricted, aggregate_type: dispatch_offer, consumers: [notification, realtime], payload_schema: schemas/events.v1.json, required_fields: [offer_id, delivery_order_id, rider_id, expires_at, sound_key], max_bytes: 65536}

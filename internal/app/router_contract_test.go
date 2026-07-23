@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -13,12 +14,33 @@ import (
 
 	"jiuxiaoer-admin/backend-go/internal/config"
 	"jiuxiaoer-admin/backend-go/internal/modules/auth"
+	"jiuxiaoer-admin/backend-go/internal/modules/compliance"
 )
 
 type routerSMSProvider struct{}
 
 func (routerSMSProvider) SendVerificationCode(context.Context, string, string, time.Duration) error {
 	return nil
+}
+
+type wiringComplianceProvider struct {
+	code          string
+	callbackCalls int
+}
+
+func (p *wiringComplianceProvider) Code() string { return p.code }
+
+func (*wiringComplianceProvider) CreateSession(context.Context, compliance.ProviderSessionRequest) (compliance.ProviderSession, error) {
+	return compliance.ProviderSession{}, nil
+}
+
+func (p *wiringComplianceProvider) ParseCallback(context.Context, http.Header, []byte) (compliance.ProviderCallback, error) {
+	p.callbackCalls++
+	return compliance.ProviderCallback{}, context.Canceled
+}
+
+func (*wiringComplianceProvider) Query(context.Context, string) (compliance.ProviderResult, error) {
+	return compliance.ProviderResult{}, nil
 }
 
 // TestOpenAPICoversRegisteredBusinessRoutes 验证打开 API Covers Registered Business Routes的预期行为。
@@ -67,11 +89,60 @@ func TestProductionRouterDoesNotRegisterMockRoutes(t *testing.T) {
 	cfg.Feature.PaymentMockEnabled = false
 	cfg.WeChat.AuthMockEnabled = false
 	cfg.WeChat.PayMockEnabled = false
+	cfg.CP1.ComplianceMode = "off"
 	router := NewRouter(Dependencies{Config: cfg, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	for _, route := range router.Routes() {
 		if route.Path == "/api/v1/auth/customer/send-code" || route.Path == "/api/v1/auth/customer/sms-login" || route.Path == "/api/v1/auth/rider/send-code" || route.Path == "/api/v1/auth/rider/sms-login" || route.Path == "/api/v1/orders/:id/pay/mock" {
 			t.Fatalf("production router registered mock route %s", route.Path)
 		}
+	}
+}
+
+func TestRouterWiresMatchingInjectedComplianceProvider(t *testing.T) {
+	cfg := config.Load()
+	cfg.CP1.ComplianceMode = "enforce"
+	cfg.CP1.IdentityProvider = "contract-provider"
+	provider := &wiringComplianceProvider{code: "contract-provider"}
+	router := NewRouter(Dependencies{
+		Config:             cfg,
+		Log:                slog.New(slog.NewTextHandler(io.Discard, nil)),
+		ComplianceProvider: provider,
+	})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/identity-verifications/contract-provider/callbacks", strings.NewReader(`{}`))
+	router.ServeHTTP(recorder, request)
+	if provider.callbackCalls != 1 {
+		t.Fatalf("callback adapter calls=%d want=1", provider.callbackCalls)
+	}
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("callback status=%d want=%d", recorder.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestRouterRejectsMismatchedInjectedComplianceProvider(t *testing.T) {
+	cfg := config.Load()
+	cfg.CP1.ComplianceMode = "enforce"
+	cfg.CP1.IdentityProvider = "configured-provider"
+	defer func() {
+		if recovered := recover(); recovered == nil {
+			t.Fatal("router must reject an adapter whose code differs from configuration")
+		}
+	}()
+	_ = routerComplianceProvider(Dependencies{
+		Config:             cfg,
+		ComplianceProvider: &wiringComplianceProvider{code: "different-provider"},
+	})
+}
+
+func TestNewServerRejectsUnregisteredComplianceProviderBeforeInfrastructureStartup(t *testing.T) {
+	cfg := config.Load()
+	cfg.App.Env = "test"
+	cfg.CP1.ComplianceMode = "enforce"
+	cfg.CP1.IdentityProvider = "unregistered-contract-provider"
+	_, err := NewServer(context.Background(), cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if !errors.Is(err, compliance.ErrProviderNotRegistered) {
+		t.Fatalf("startup error=%v want ErrProviderNotRegistered", err)
 	}
 }
 

@@ -800,7 +800,7 @@ func (s *Service) writeHistoryAuditEvent(ctx context.Context, tx *gorm.DB, row *
 	if err := s.repo.CreateAudit(ctx, tx, AuditLog{ID: s.ids.Next(), ActorType: actorType, ActorID: auditActorID,
 		Action: "incident." + auditAction(action, actorType), ResourceType: "delivery_incident", ResourceID: row.ID,
 		BeforeData: jsonData(map[string]any{"status": fromStatus}), AfterData: jsonData(after), Result: "success",
-		RequestID: requestctx.RequestIDPtr(ctx), IP: requestctx.IPPtr(ctx), UserAgent: requestctx.UserAgentPtr(ctx)}); err != nil {
+		RequestID: requestctx.RequestIDPtr(ctx), IPHash: requestctx.IPHashPtr(ctx), UserAgent: requestctx.UserAgentPtr(ctx)}); err != nil {
 		return err
 	}
 	payload := map[string]any{
@@ -815,7 +815,7 @@ func (s *Service) writeHistoryAuditEvent(ctx context.Context, tx *gorm.DB, row *
 func (s *Service) writeAccessAudit(ctx context.Context, actorType string, actorID uint64, action, resourceType string, resourceID uint64, result string, data map[string]any) error {
 	return s.repo.CreateAudit(ctx, s.repo.DB(), AuditLog{ID: s.ids.Next(), ActorType: actorType, ActorID: actorID,
 		Action: action, ResourceType: resourceType, ResourceID: resourceID, AfterData: jsonData(data), Result: result,
-		RequestID: requestctx.RequestIDPtr(ctx), IP: requestctx.IPPtr(ctx), UserAgent: requestctx.UserAgentPtr(ctx)})
+		RequestID: requestctx.RequestIDPtr(ctx), IPHash: requestctx.IPHashPtr(ctx), UserAgent: requestctx.UserAgentPtr(ctx)})
 }
 
 func (s *Service) AuditInvalidRequest(ctx context.Context, claims *auth.Claims, method, route, action, resourceType, resourceIDRaw string) {

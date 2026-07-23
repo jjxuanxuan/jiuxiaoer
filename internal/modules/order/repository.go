@@ -54,14 +54,16 @@ func (r *Repository) GetShopProductForOrder(ctx context.Context, tx *gorm.DB, sh
 			p.return_policy_code,
 			p.return_policy_version,
 			p.sealed_package_required,
-			p.age_restricted,
+			CASE WHEN p.age_restricted = 1 OR c.age_restricted = 1 THEN 1 ELSE 0 END AS age_restricted,
 			sp.sale_price_amount,
 			p.status AS product_status,
+			c.status AS category_status,
 			sp.status AS shop_product_status,
 			s.status AS shop_status,
 			s.business_status
 		`).
 		Joins("JOIN products p ON p.id = sp.product_id AND p.deleted_at IS NULL").
+		Joins("JOIN categories c ON c.id = p.category_id AND c.deleted_at IS NULL").
 		Joins("JOIN shops s ON s.id = sp.shop_id AND s.deleted_at IS NULL").
 		Where("sp.id = ? AND sp.shop_id = ? AND sp.deleted_at IS NULL", shopProductID, shopID).
 		Scan(&row).Error
@@ -160,19 +162,62 @@ func (r *Repository) CreateOutbox(ctx context.Context, tx *gorm.DB, row OutboxEv
 }
 
 // ListCustomerOrders 查询用户订单列表。
-func (r *Repository) ListCustomerOrders(ctx context.Context, customerID uint64, query pagination.Query) ([]Order, error) {
+func (r *Repository) ListCustomerOrders(ctx context.Context, customerID uint64, filters CustomerOrderListFilters, query pagination.Query) ([]Order, error) {
 	db := r.db.WithContext(ctx).Where("customer_id = ? AND deleted_at IS NULL", customerID)
-	db, err := pagination.ApplyFilter(db, query.Filter, customerOrderFilterColumns)
+	if filters.Status != "" {
+		db = db.Where("status = ?", filters.Status)
+	}
+	db, err := pagination.ApplyTimeIDCursor(db, query, "created_at", "id", "desc")
 	if err != nil {
 		return nil, err
 	}
-	db, err = pagination.ApplyOrder(db, query.OrderBy, customerOrderOrderColumns, "id DESC")
+	db, err = pagination.ApplyOrder(db, query.OrderBy, customerOrderOrderColumns, "created_at DESC, id DESC")
 	if err != nil {
 		return nil, err
 	}
 	var rows []Order
-	err = db.Offset(query.Offset).Limit(query.PageSize + 1).Find(&rows).Error
+	err = pagination.OffsetDB(db, query).Limit(query.PageSize + 1).Find(&rows).Error
 	return rows, err
+}
+
+// CustomerOrderItems 批量读取订单历史商品快照，避免列表摘要覆盖为当前商品资料。
+func (r *Repository) CustomerOrderItems(ctx context.Context, orderIDs []uint64) ([]OrderItem, error) {
+	if len(orderIDs) == 0 {
+		return []OrderItem{}, nil
+	}
+	var rows []OrderItem
+	err := r.db.WithContext(ctx).
+		Where("order_id IN ? AND deleted_at IS NULL", orderIDs).
+		Order("order_id ASC, id ASC").
+		Find(&rows).Error
+	return rows, err
+}
+
+// OrderShops 批量读取订单引用的门店名称；历史软删除门店仍保留摘要。
+func (r *Repository) OrderShops(ctx context.Context, shopIDs []uint64) ([]OrderShop, error) {
+	if len(shopIDs) == 0 {
+		return []OrderShop{}, nil
+	}
+	var rows []OrderShop
+	err := r.db.WithContext(ctx).Where("id IN ?", shopIDs).Find(&rows).Error
+	return rows, err
+}
+
+// OrderShopByID 返回单个订单的门店历史摘要。
+func (r *Repository) OrderShopByID(ctx context.Context, shopID uint64) (OrderShop, error) {
+	var row OrderShop
+	err := r.db.WithContext(ctx).Where("id = ?", shopID).First(&row).Error
+	return row, err
+}
+
+// LatestPaymentByOrder 返回订单最新支付事实，不返回 Provider 原始载荷。
+func (r *Repository) LatestPaymentByOrder(ctx context.Context, orderID uint64) (Payment, error) {
+	var row Payment
+	err := r.db.WithContext(ctx).
+		Where("order_id = ? AND deleted_at IS NULL", orderID).
+		Order("created_at DESC, id DESC").
+		First(&row).Error
+	return row, err
 }
 
 // GetCustomerOrder 获取用户订单。

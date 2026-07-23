@@ -41,6 +41,8 @@ if count == 1 then redis.call('PEXPIRE', KEYS[1], ARGV[1]) end
 return count
 `)
 
+var errMerchantPaidOrderInvalid = errors.New("order is not a paid merchant order")
+
 type Service struct {
 	cfg     config.Config
 	db      *gorm.DB
@@ -68,17 +70,18 @@ func (s *Service) IssueTicket(ctx context.Context, claims *auth.Claims, req Tick
 	if err := req.Validate(); err != nil {
 		return TicketResponse{}, problem.InvalidArgument("REALTIME_TICKET_REQUEST_INVALID", err.Error())
 	}
-	if claims == nil || claims.AccountType != "rider" || claims.RiderID == "" || claims.TokenType != "access" {
-		return TicketResponse{}, problem.Forbidden("REALTIME_RIDER_REQUIRED", "a rider access token is required")
-	}
-	riderID, err := strconv.ParseUint(claims.RiderID, 10, 64)
-	if err != nil || riderID == 0 || claims.ExpiresAt == nil || claims.ExpiresAt.Time.Before(time.Now()) {
+	if claims == nil || claims.TokenType != "access" || claims.ExpiresAt == nil || claims.ExpiresAt.Time.Before(time.Now()) {
 		return TicketResponse{}, problem.Unauthorized("AUTH_TOKEN_INVALID", "access token is invalid")
 	}
-	if !s.canaryAllowed(claims.RiderID) {
-		return TicketResponse{}, problem.Forbidden("REALTIME_RIDER_NOT_ENABLED", "rider is not enabled for realtime")
+	accountID, err := strconv.ParseUint(claims.AccountID, 10, 64)
+	if err != nil || accountID == 0 {
+		return TicketResponse{}, problem.Unauthorized("AUTH_TOKEN_INVALID", "access token is invalid")
 	}
-	if err := s.checkRate(ctx, "ticket:rider:"+claims.RiderID, int64(s.cfg.Realtime.TicketRiderRatePerMinute)); err != nil {
+	recipientType, recipientID, riderID, err := s.ticketRecipient(ctx, claims, accountID)
+	if err != nil {
+		return TicketResponse{}, err
+	}
+	if err := s.checkRate(ctx, "ticket:"+recipientType+":"+strconv.FormatUint(recipientID, 10), int64(s.cfg.Realtime.TicketRiderRatePerMinute)); err != nil {
 		return TicketResponse{}, err
 	}
 	if clientIP != "" {
@@ -97,7 +100,8 @@ func (s *Service) IssueTicket(ctx context.Context, claims *auth.Claims, req Tick
 		expiresAt = claims.ExpiresAt.Time.UTC()
 	}
 	info := TicketInfo{
-		RiderID: riderID, AccountType: claims.AccountType, AccountID: claims.AccountID,
+		RecipientType: recipientType, RecipientID: recipientID, RiderID: riderID,
+		AccountType: claims.AccountType, AccountID: claims.AccountID,
 		SessionID: claims.SessionID, AccessJTI: claims.ID, AccessExpiresAt: claims.ExpiresAt.Time.UTC(),
 		DeviceHash: hashString(req.DeviceID), Platform: req.Platform, ClientVersion: req.ClientVersion,
 		ProtocolVersion: req.ProtocolVersion,
@@ -151,7 +155,12 @@ func (s *Service) ConsumeTicket(ctx context.Context, raw string) (TicketInfo, er
 		return TicketInfo{}, realtimeUnavailable("realtime Redis is unavailable")
 	}
 	var info TicketInfo
-	if json.Unmarshal([]byte(value), &info) != nil || info.RiderID == 0 || info.ProtocolVersion != ProtocolVersion || info.AccessExpiresAt.Before(time.Now()) {
+	if json.Unmarshal([]byte(value), &info) != nil {
+		s.metrics.inc(s.metrics.tickets, "invalid")
+		return TicketInfo{}, invalid
+	}
+	recipientType, recipientID := info.recipient()
+	if recipientID == 0 || (recipientType != recipientRider && recipientType != recipientMerchant) || info.ProtocolVersion != ProtocolVersion || info.AccessExpiresAt.Before(time.Now()) {
 		s.metrics.inc(s.metrics.tickets, "invalid")
 		return TicketInfo{}, invalid
 	}
@@ -162,6 +171,16 @@ func (s *Service) ConsumeTicket(ctx context.Context, raw string) (TicketInfo, er
 	if !valid {
 		s.metrics.inc(s.metrics.tickets, "revoked")
 		return TicketInfo{}, problem.Unauthorized("REALTIME_SESSION_REVOKED", "session revoked")
+	}
+	if recipientType == recipientMerchant {
+		allowed, err := s.merchantAccountHasAuthorizedShop(ctx, recipientID)
+		if err != nil {
+			return TicketInfo{}, realtimeUnavailable("realtime database is unavailable")
+		}
+		if !allowed {
+			s.metrics.inc(s.metrics.tickets, "revoked")
+			return TicketInfo{}, problem.Forbidden("REALTIME_MERCHANT_FORBIDDEN", "merchant account has no authorized shop")
+		}
 	}
 	s.metrics.inc(s.metrics.tickets, "consumed")
 	return info, nil
@@ -186,8 +205,80 @@ func (s *Service) SessionValid(ctx context.Context, info TicketInfo) (bool, erro
 	return stored == info.AccessJTI, nil
 }
 
+func (s *Service) ticketRecipient(ctx context.Context, claims *auth.Claims, accountID uint64) (string, uint64, uint64, error) {
+	switch claims.AccountType {
+	case recipientRider:
+		riderID, err := strconv.ParseUint(claims.RiderID, 10, 64)
+		if err != nil || riderID == 0 {
+			return "", 0, 0, problem.Forbidden("REALTIME_RIDER_REQUIRED", "a rider access token is required")
+		}
+		if !s.canaryAllowed(claims.RiderID) {
+			return "", 0, 0, problem.Forbidden("REALTIME_RIDER_NOT_ENABLED", "rider is not enabled for realtime")
+		}
+		return recipientRider, riderID, riderID, nil
+	case recipientMerchant:
+		if !containsPermission(claims.Permissions, "store_order:list") {
+			return "", 0, 0, problem.Forbidden("PERM_FORBIDDEN", "missing store order list permission")
+		}
+		allowed, err := s.merchantAccountHasAuthorizedShop(ctx, accountID)
+		if err != nil {
+			return "", 0, 0, realtimeUnavailable("realtime database is unavailable")
+		}
+		if !allowed {
+			return "", 0, 0, problem.Forbidden("REALTIME_MERCHANT_FORBIDDEN", "merchant account has no authorized shop")
+		}
+		return recipientMerchant, accountID, 0, nil
+	default:
+		return "", 0, 0, problem.Forbidden("REALTIME_ACCOUNT_TYPE_FORBIDDEN", "account type is not eligible for realtime")
+	}
+}
+
+func containsPermission(permissions []string, required string) bool {
+	for _, permission := range permissions {
+		if permission == required {
+			return true
+		}
+	}
+	return false
+}
+
+// merchantAccountHasAuthorizedShop reads the current DB authorization rather
+// than trusting the shop list embedded in a previously issued access token.
+func (s *Service) merchantAccountHasAuthorizedShop(ctx context.Context, accountID uint64) (bool, error) {
+	if s.db == nil || accountID == 0 {
+		return false, fmt.Errorf("realtime database is unavailable")
+	}
+	var count int64
+	err := s.db.WithContext(ctx).Table("merchant_users mu").
+		Joins("JOIN accounts a ON a.id=mu.account_id AND a.account_type=? AND a.status='active' AND a.deleted_at IS NULL", recipientMerchant).
+		Joins("JOIN merchant_user_shops mus ON mus.merchant_user_id=mu.id AND mus.merchant_id=mu.merchant_id AND mus.deleted_at IS NULL").
+		Where("mu.account_id=? AND mu.status='active' AND mu.deleted_at IS NULL", accountID).
+		Limit(1).Count(&count).Error
+	return count > 0, err
+}
+
+// MerchantAccountAuthorized revalidates the exact account/shop relation at
+// delivery time so a revoked shop grant cannot keep receiving new orders from
+// a still-open WebSocket session.
+func (s *Service) MerchantAccountAuthorized(ctx context.Context, accountID, shopID uint64) (bool, error) {
+	if s.db == nil || accountID == 0 || shopID == 0 {
+		return false, fmt.Errorf("realtime database is unavailable")
+	}
+	var count int64
+	err := s.db.WithContext(ctx).Table("merchant_users mu").
+		Joins("JOIN accounts a ON a.id=mu.account_id AND a.account_type=? AND a.status='active' AND a.deleted_at IS NULL", recipientMerchant).
+		Joins("JOIN merchant_user_shops mus ON mus.merchant_user_id=mu.id AND mus.merchant_id=mu.merchant_id AND mus.deleted_at IS NULL").
+		Where("mu.account_id=? AND mu.status='active' AND mu.deleted_at IS NULL AND mus.shop_id=?", accountID, shopID).
+		Limit(1).Count(&count).Error
+	return count > 0, err
+}
+
 // Resume 返回Resume。
 func (s *Service) Resume(ctx context.Context, info TicketInfo, afterID uint64) ([]Delivery, bool, error) {
+	recipientType, _ := info.recipient()
+	if recipientType != recipientRider || info.RiderID == 0 {
+		return nil, false, problem.Forbidden("REALTIME_RESUME_USE_ORDER_LIST", "merchant realtime recovery uses the store order list")
+	}
 	if s.db == nil {
 		return nil, false, realtimeUnavailable("realtime database is unavailable")
 	}
@@ -219,6 +310,10 @@ func (s *Service) LoadDelivery(ctx context.Context, riderID, deliveryID uint64) 
 
 // Acknowledge 返回Acknowledge。
 func (s *Service) Acknowledge(ctx context.Context, info TicketInfo, frame ClientFrame) error {
+	recipientType, _ := info.recipient()
+	if recipientType != recipientRider || info.RiderID == 0 {
+		return problem.Forbidden("REALTIME_ACK_FORBIDDEN", "merchant order wakeups do not support acknowledgements")
+	}
 	if !allowedAckTypes[frame.Outcome] {
 		return problem.InvalidArgument("REALTIME_ACK_OUTCOME_INVALID", "ack outcome is unsupported")
 	}
@@ -298,6 +393,80 @@ func (s *Service) PublishWakeups(ctx context.Context, rows []Delivery) error {
 		}
 	}
 	s.metrics.add(s.metrics.relays, "published", uint64(len(rows)))
+	return nil
+}
+
+// MerchantPaidOrderEvent builds a safe event from the committed order fact
+// and returns only accounts that currently hold the exact shop grant.
+func (s *Service) MerchantPaidOrderEvent(ctx context.Context, eventID string, orderID uint64, occurredAt time.Time) (StoreOrderPaidEvent, []uint64, error) {
+	shopID, accounts, err := merchantPaidOrderRecipients(ctx, s.db, orderID)
+	if err != nil {
+		return StoreOrderPaidEvent{}, nil, err
+	}
+	return StoreOrderPaidEvent{
+		EventID: eventID, OrderID: strconv.FormatUint(orderID, 10), ShopID: strconv.FormatUint(shopID, 10),
+		SoundKey: "new_paid_order", OccurredAt: occurredAt.UTC(),
+	}, accounts, nil
+}
+
+func merchantPaidOrderRecipients(ctx context.Context, db *gorm.DB, orderID uint64) (uint64, []uint64, error) {
+	if db == nil || orderID == 0 {
+		return 0, nil, fmt.Errorf("realtime database is unavailable")
+	}
+	type paidOrder struct {
+		ShopID     uint64
+		MerchantID uint64
+		PayStatus  string
+	}
+	var order paidOrder
+	if err := db.WithContext(ctx).Table("orders").Select("shop_id,merchant_id,pay_status").
+		Where("id=? AND deleted_at IS NULL", orderID).Take(&order).Error; err != nil {
+		return 0, nil, err
+	}
+	if order.ShopID == 0 || order.MerchantID == 0 || order.PayStatus != "succeeded" {
+		return 0, nil, errMerchantPaidOrderInvalid
+	}
+	var accountIDs []uint64
+	err := db.WithContext(ctx).Table("merchant_users mu").Distinct("mu.account_id").
+		Joins("JOIN accounts a ON a.id=mu.account_id AND a.account_type=? AND a.status='active' AND a.deleted_at IS NULL", recipientMerchant).
+		Joins("JOIN merchant_user_shops mus ON mus.merchant_user_id=mu.id AND mus.merchant_id=mu.merchant_id AND mus.deleted_at IS NULL").
+		Where("mu.merchant_id=? AND mu.status='active' AND mu.deleted_at IS NULL AND mus.shop_id=? AND mus.merchant_id=?", order.MerchantID, order.ShopID, order.MerchantID).
+		Order("mu.account_id").Pluck("mu.account_id", &accountIDs).Error
+	return order.ShopID, accountIDs, err
+}
+
+// PublishMerchantPaidOrder fans out only routing metadata plus the fixed safe
+// event. A Redis failure never changes the paid order fact; clients recover by
+// polling GET /store/orders.
+func (s *Service) PublishMerchantPaidOrder(ctx context.Context, event StoreOrderPaidEvent, accountIDs []uint64) error {
+	if len(accountIDs) == 0 {
+		return nil
+	}
+	if s.redis == nil {
+		return realtimeUnavailable("realtime Redis is unavailable")
+	}
+	payloads := make([][]byte, 0, len(accountIDs))
+	for _, accountID := range accountIDs {
+		if accountID == 0 {
+			continue
+		}
+		payload, err := json.Marshal(MerchantWakeup{AccountID: accountID, Event: event})
+		if err != nil {
+			return err
+		}
+		payloads = append(payloads, payload)
+	}
+	_, err := s.redis.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+		for _, payload := range payloads {
+			pipe.Publish(ctx, wakeupChannel, payload)
+		}
+		return nil
+	})
+	if err != nil {
+		s.metrics.inc(s.metrics.relays, "error")
+		return err
+	}
+	s.metrics.add(s.metrics.relays, "published", uint64(len(payloads)))
 	return nil
 }
 

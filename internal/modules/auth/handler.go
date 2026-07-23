@@ -6,6 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"jiuxiaoer-admin/backend-go/internal/pkg/problem"
+	"jiuxiaoer-admin/backend-go/internal/pkg/requestctx"
 	"jiuxiaoer-admin/backend-go/internal/pkg/response"
 )
 
@@ -200,14 +201,15 @@ func (h *Handler) AuthRequired() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+		c.Request = c.Request.WithContext(requestctx.WithAccountID(c.Request.Context(), claims.AccountID))
 		c.Set("auth_claims", claims)
 		c.Next()
 	}
 }
 
-// OptionalAuth attaches verified customer claims when a bearer token is
-// present, while still allowing anonymous location-context requests. A bad
-// token is never silently downgraded to anonymous.
+//当不记名令牌存在时，OptionalAuth 会附加经过验证的客户声明
+//存在，同时仍然允许匿名位置上下文请求。
+//一个坏令牌永远不会默默地降级为匿名。
 func (h *Handler) OptionalAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		header := strings.TrimSpace(c.GetHeader("Authorization"))
@@ -227,6 +229,7 @@ func (h *Handler) OptionalAuth() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+		c.Request = c.Request.WithContext(requestctx.WithAccountID(c.Request.Context(), claims.AccountID))
 		c.Set("auth_claims", claims)
 		c.Next()
 	}
@@ -248,6 +251,7 @@ func (h *Handler) LogoutAuth() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+		c.Request = c.Request.WithContext(requestctx.WithAccountID(c.Request.Context(), claims.AccountID))
 		c.Set("auth_claims", claims)
 		c.Next()
 	}

@@ -191,12 +191,12 @@ func (r *Repository) ListAuditLogs(ctx context.Context, query pagination.Query) 
 	if err != nil {
 		return nil, err
 	}
-	db, err = pagination.ApplyOrder(db, query.OrderBy, adminAuditOrderColumns, "id DESC")
+	db, err = pagination.ApplyTimeIDCursor(db, query, "created_at", "id", "desc")
 	if err != nil {
 		return nil, err
 	}
 	var rows []AuditLog
-	err = db.Offset(query.Offset).Limit(query.PageSize + 1).Find(&rows).Error
+	err = db.Order("created_at DESC, id DESC").Limit(query.PageSize + 1).Find(&rows).Error
 	return rows, err
 }
 
@@ -269,19 +269,25 @@ var adminMerchantFilterColumns = map[string]string{
 	"review_status": "review_status",
 }
 
-var adminAuditOrderColumns = map[string]string{
-	"id":         "id",
-	"created_at": "created_at",
-	"updated_at": "updated_at",
-}
-
 var adminAuditFilterColumns = map[string]string{
 	"id":            "id",
+	"event_id":      "event_id",
 	"actor_type":    "actor_type",
 	"actor_id":      "actor_id",
+	"account_id":    "account_id",
 	"action":        "action",
 	"resource_type": "resource_type",
 	"resource_id":   "resource_id",
+	"shop_id":       "shop_id",
+	"order_id":      "order_id",
+	"delivery_id":   "delivery_id",
 	"result":        "result",
+	"error_code":    "error_code",
+	"reason_code":   "reason_code",
+	"before_status": "before_status",
+	"after_status":  "after_status",
+	"version":       "version",
+	"request_id":    "request_id",
+	"ip_hash":       "ip_hash",
 	"created_at":    "created_at",
 }

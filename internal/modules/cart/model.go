@@ -22,17 +22,20 @@ type CartItem struct {
 func (CartItem) TableName() string { return "cart_items" }
 
 type ShopProductRow struct {
-	ShopProductID   uint64
-	ShopID          uint64
-	ProductID       uint64
-	Name            string
-	BrandName       *string
-	Spec            *string
-	ImageURL        *string
-	SalePriceAmount int64
-	Status          string
-	ShopStatus      string
-	BusinessStatus  string
+	ShopProductID     uint64
+	ShopID            uint64
+	ProductID         uint64
+	Name              string
+	BrandName         *string
+	Spec              *string
+	ImageURL          *string
+	SalePriceAmount   int64
+	ProductStatus     string
+	CategoryStatus    string
+	ShopProductStatus string
+	ShopStatus        string
+	BusinessStatus    string
+	AvailableQty      int
 }
 
 type CartItemRow struct {
@@ -48,6 +51,7 @@ type CartItemRow struct {
 	SalePriceAmount   int64
 	Selected          bool
 	ProductStatus     string
+	CategoryStatus    string
 	ShopProductStatus string
 	ShopStatus        string
 	BusinessStatus    string

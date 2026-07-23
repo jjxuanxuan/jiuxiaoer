@@ -17,6 +17,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"jiuxiaoer-admin/backend-go/internal/config"
+	"jiuxiaoer-admin/backend-go/internal/modules/auth"
 	"jiuxiaoer-admin/backend-go/internal/pkg/idempotency"
 	"jiuxiaoer-admin/backend-go/internal/pkg/metrics"
 	"jiuxiaoer-admin/backend-go/internal/pkg/requestctx"
@@ -228,8 +229,78 @@ func (s *Service) createAudit(ctx context.Context, tx *gorm.DB, actorType string
 		"id": s.ids.Next(), "actor_type": actorType, "actor_id": actorID, "action": action,
 		"resource_type": resourceType, "resource_id": resourceID, "before_data": jsonData(before),
 		"after_data": jsonData(after), "result": "success", "request_id": requestctx.RequestIDPtr(ctx),
-		"ip": requestctx.IPPtr(ctx), "user_agent": requestctx.UserAgentPtr(ctx),
+		"ip_hash": requestctx.IPHashPtr(ctx), "user_agent": requestctx.UserAgentPtr(ctx),
 	}).Error
+}
+
+// createHeartbeatFailureAudit records a rejected heartbeat on the service's
+// base database handle. It must not use the business transaction: validation,
+// rate-limit and eligibility failures still need an audit fact after that
+// transaction rolls back. Only controlled dimensions are accepted here; the
+// heartbeat payload (coordinates and device identifier) is never persisted.
+func (s *Service) createHeartbeatFailureAudit(ctx context.Context, claims *auth.Claims, spec heartbeatAuditSpec) {
+	if s == nil || s.db == nil || s.ids == nil {
+		return
+	}
+	actorType, actorID := heartbeatAuditActor(claims)
+	var resourceID any
+	if actorID != 0 {
+		resourceID = actorID
+	}
+	var accountID any
+	if id := requestctx.AccountID(ctx); id != 0 {
+		accountID = id
+	}
+	after := map[string]any{
+		"error_code":    spec.ErrorCode,
+		"reason_code":   spec.ReasonCode,
+		"request_stage": spec.RequestStage,
+	}
+	if spec.RateLimitDimension != "" {
+		after["rate_limit_dimension"] = spec.RateLimitDimension
+	}
+
+	auditCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	err := s.db.Session(&gorm.Session{NewDB: true}).WithContext(auditCtx).Table("audit_logs").Create(map[string]any{
+		"id":            s.ids.Next(),
+		"event_id":      uuid.NewString(),
+		"actor_type":    actorType,
+		"actor_id":      actorID,
+		"account_id":    accountID,
+		"action":        spec.Action,
+		"resource_type": "rider",
+		"resource_id":   resourceID,
+		"after_data":    jsonData(after),
+		"result":        "failed",
+		"error_code":    spec.ErrorCode,
+		"reason_code":   spec.ReasonCode,
+		"request_id":    requestctx.RequestIDPtr(auditCtx),
+		"ip_hash":       requestctx.IPHashPtr(auditCtx),
+		"created_at":    time.Now(),
+	}).Error
+	if err != nil && s.log != nil {
+		// Do not log err: a driver error can echo SQL values. The stable audit
+		// dimensions are sufficient for the operational signal.
+		s.log.Warn("heartbeat failure audit write failed", "action", spec.Action, "error_code", spec.ErrorCode, "reason_code", spec.ReasonCode)
+	}
+}
+
+func heartbeatAuditActor(claims *auth.Claims) (string, uint64) {
+	if claims == nil {
+		return "unknown", 0
+	}
+	actorType := claims.AccountType
+	switch actorType {
+	case "admin", "applicant", "customer", "merchant", "rider":
+	default:
+		actorType = "unknown"
+	}
+	if actorType != "rider" {
+		return actorType, 0
+	}
+	actorID, _ := parseID(claims.RiderID)
+	return actorType, actorID
 }
 
 // activeJobStatuses 返回启用状态任务 Statuses。

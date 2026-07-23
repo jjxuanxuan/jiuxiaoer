@@ -62,10 +62,11 @@ func (r *Repository) FindOrCreateCustomerByPhone(ctx context.Context, phone stri
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			phoneCopy := phone
 			account = Account{
-				ID:          nextID(),
-				AccountType: "customer",
-				Phone:       &phoneCopy,
-				Status:      "active",
+				ID:                nextID(),
+				AccountType:       "customer",
+				Phone:             &phoneCopy,
+				Status:            "active",
+				CredentialVersion: 1,
 			}
 			if err := tx.Create(&account).Error; err != nil {
 				return err
@@ -113,7 +114,7 @@ func (r *Repository) FindOrCreateCustomerByIdentity(ctx context.Context, result 
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return err
 		}
-		account = Account{ID: nextID(), AccountType: "customer", Status: "active"}
+		account = Account{ID: nextID(), AccountType: "customer", Status: "active", CredentialVersion: 1}
 		if err := tx.WithContext(ctx).Create(&account).Error; err != nil {
 			return err
 		}
@@ -236,21 +237,38 @@ func (r *Repository) PermissionCodesByRole(ctx context.Context, roleID uint64) (
 	return codes, err
 }
 
-// MerchantProfile 返回商户资料。
-func (r *Repository) MerchantProfile(ctx context.Context, accountID uint64) (MerchantUser, []uint64, error) {
+// MerchantProfile 返回商户资料、当前数据库角色及其权限。商家权限与门店
+// 范围都必须在每次登录/刷新时从数据库重建，不能按 account_type 推导。
+func (r *Repository) MerchantProfile(ctx context.Context, accountID uint64) (MerchantUser, string, []uint64, []string, error) {
 	var merchantUser MerchantUser
 	if err := r.db.WithContext(ctx).Where("account_id = ? AND deleted_at IS NULL", accountID).First(&merchantUser).Error; err != nil {
-		return MerchantUser{}, nil, err
+		return MerchantUser{}, "", nil, nil, err
+	}
+
+	var roleCode string
+	if err := r.db.WithContext(ctx).
+		Table("roles").
+		Select("code").
+		Where("id = ? AND scope = 'merchant' AND status = 'active' AND deleted_at IS NULL", merchantUser.RoleID).
+		Scan(&roleCode).Error; err != nil {
+		return MerchantUser{}, "", nil, nil, err
+	}
+	if roleCode == "" {
+		return MerchantUser{}, "", nil, nil, gorm.ErrRecordNotFound
+	}
+	permissions, err := r.PermissionCodesByRole(ctx, merchantUser.RoleID)
+	if err != nil {
+		return MerchantUser{}, "", nil, nil, err
 	}
 
 	var shopIDs []uint64
-	err := r.db.WithContext(ctx).
+	err = r.db.WithContext(ctx).
 		Table("merchant_user_shops").
 		Select("shop_id").
 		Where("merchant_user_id = ? AND deleted_at IS NULL", merchantUser.ID).
 		Order("shop_id").
 		Scan(&shopIDs).Error
-	return merchantUser, shopIDs, err
+	return merchantUser, roleCode, shopIDs, permissions, err
 }
 
 // RiderProfile 返回骑手资料。

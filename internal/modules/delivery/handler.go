@@ -1,9 +1,9 @@
 package delivery
 
 import (
-	"context"
 	"errors"
 	"io"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -27,10 +27,26 @@ func NewHandler(service *Service) *Handler {
 // RegisterRoutes 注册Routes。
 func RegisterRoutes(router *gin.RouterGroup, handler *Handler) {
 	router.GET("/orders", handler.List)
+	router.GET("/orders/:id", handler.Detail)
 	router.POST("/orders/:id/accept", handler.Accept)
 	router.POST("/orders/:id/pickup", handler.Pickup)
-	router.POST("/orders/:id/start", handler.Start)
 	router.POST("/orders/:id/complete", handler.Complete)
+}
+
+// Detail returns fulfillment details only for the rider holding the current
+// active assignment.
+func (h *Handler) Detail(c *gin.Context) {
+	claims, ok := auth.ClaimsFromContext(c)
+	if !ok {
+		response.Error(c, problem.Unauthorized("AUTH_UNAUTHORIZED", "unauthorized"))
+		return
+	}
+	item, err := h.service.Detail(c.Request.Context(), claims, c.Param("id"))
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.OK(c, item)
 }
 
 // List 查询配送列表。
@@ -40,17 +56,36 @@ func (h *Handler) List(c *gin.Context) {
 		response.Error(c, problem.Unauthorized("AUTH_UNAUTHORIZED", "unauthorized"))
 		return
 	}
-	query, err := pagination.FromGin(c)
+	status, err := deliveryListStatusFromGin(c)
 	if err != nil {
 		response.Error(c, err)
 		return
 	}
-	items, nextPageToken, err := h.service.List(c.Request.Context(), claims, query, c.Query("status"))
+	query, err := pagination.FromGin(c, "rider", claims.RiderID)
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	items, nextPageToken, err := h.service.List(c.Request.Context(), claims, query, status)
 	if err != nil {
 		response.Error(c, err)
 		return
 	}
 	response.Page(c, items, nextPageToken)
+}
+
+func deliveryListStatusFromGin(c *gin.Context) (string, error) {
+	allowed := map[string]struct{}{"page_size": {}, "page_token": {}, "status": {}}
+	for key := range c.Request.URL.Query() {
+		if _, ok := allowed[key]; !ok {
+			return "", problem.InvalidArgument("VALIDATION_INVALID_QUERY", "unknown query parameter: "+key)
+		}
+	}
+	status := strings.TrimSpace(c.Query("status"))
+	if len(status) > 32 {
+		return "", problem.InvalidArgument("VALIDATION_INVALID_QUERY", "status is too long")
+	}
+	return status, nil
 }
 
 // Accept 接受并处理配送。
@@ -62,12 +97,12 @@ func (h *Handler) Accept(c *gin.Context) {
 	}
 	var req dispatch.GrabReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, problem.InvalidArgument("VALIDATION_FAILED", err.Error()))
+		h.actionError(c, claims, "delivery_accept", problem.InvalidArgument("VALIDATION_FAILED", err.Error()))
 		return
 	}
 	item, err := h.service.AcceptWithVersion(c.Request.Context(), claims, c.Request.Method, c.FullPath(), c.GetHeader("Idempotency-Key"), c.Param("id"), req.ExpectedAssignmentVersion)
 	if err != nil {
-		response.Error(c, err)
+		h.actionError(c, claims, "delivery_accept", err)
 		return
 	}
 	response.OK(c, item)
@@ -82,20 +117,15 @@ func (h *Handler) Pickup(c *gin.Context) {
 	}
 	var req deliveryverification.CodeReq
 	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
-		response.Error(c, problem.InvalidArgument("VALIDATION_FAILED", err.Error()))
+		h.actionError(c, claims, "delivery_pickup", problem.InvalidArgument("VALIDATION_FAILED", err.Error()))
 		return
 	}
 	item, err := h.service.PickupWithCode(c.Request.Context(), claims, c.Request.Method, c.FullPath(), c.GetHeader("Idempotency-Key"), c.Param("id"), req.PickupCode)
 	if err != nil {
-		response.Error(c, err)
+		h.actionError(c, claims, "delivery_pickup", err)
 		return
 	}
 	response.OK(c, item)
-}
-
-// Start 启动当前实例的后台处理流程。
-func (h *Handler) Start(c *gin.Context) {
-	h.transition(c, h.service.Start)
 }
 
 // Complete 处理Complete相关逻辑。
@@ -107,28 +137,21 @@ func (h *Handler) Complete(c *gin.Context) {
 	}
 	var req deliveryverification.CodeReq
 	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
-		response.Error(c, problem.InvalidArgument("VALIDATION_FAILED", err.Error()))
+		h.actionError(c, claims, "delivery_complete", problem.InvalidArgument("VALIDATION_FAILED", err.Error()))
 		return
 	}
 	item, err := h.service.CompleteWithCode(c.Request.Context(), claims, c.Request.Method, c.FullPath(), c.GetHeader("Idempotency-Key"), c.Param("id"), req.DeliveryCode)
 	if err != nil {
-		response.Error(c, err)
+		h.actionError(c, claims, "delivery_complete", err)
 		return
 	}
 	response.OK(c, item)
 }
 
-// transition 处理状态流转相关逻辑。
-func (h *Handler) transition(c *gin.Context, fn func(ctx context.Context, claims *auth.Claims, method string, path string, key string, deliveryID string) (DeliveryOrderDTO, error)) {
-	claims, ok := auth.ClaimsFromContext(c)
-	if !ok {
-		response.Error(c, problem.Unauthorized("AUTH_UNAUTHORIZED", "unauthorized"))
-		return
-	}
-	item, err := fn(c.Request.Context(), claims, c.Request.Method, c.FullPath(), c.GetHeader("Idempotency-Key"), c.Param("id"))
-	if err != nil {
+func (h *Handler) actionError(c *gin.Context, claims *auth.Claims, action string, cause error) {
+	if err := h.service.AuditFailure(c.Request.Context(), claims, action, c.Param("id"), cause); err != nil {
 		response.Error(c, err)
 		return
 	}
-	response.OK(c, item)
+	response.Error(c, cause)
 }

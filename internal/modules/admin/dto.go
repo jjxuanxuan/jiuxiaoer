@@ -132,16 +132,26 @@ type MerchantReviewReq struct {
 // 审计数据
 type AuditLogDTO struct {
 	ID           string          `json:"id"`
+	EventID      string          `json:"event_id"`
 	ActorType    string          `json:"actor_type"`
 	ActorID      string          `json:"actor_id"`
+	AccountID    string          `json:"account_id,omitempty"`
 	Action       string          `json:"action"`
 	ResourceType string          `json:"resource_type"`
 	ResourceID   string          `json:"resource_id,omitempty"`
+	ShopID       string          `json:"shop_id,omitempty"`
+	OrderID      string          `json:"order_id,omitempty"`
+	DeliveryID   string          `json:"delivery_id,omitempty"`
 	BeforeData   json.RawMessage `json:"before_data,omitempty"`
 	AfterData    json.RawMessage `json:"after_data,omitempty"`
 	Result       string          `json:"result"`
+	ErrorCode    string          `json:"error_code,omitempty"`
+	ReasonCode   string          `json:"reason_code,omitempty"`
+	BeforeStatus string          `json:"before_status,omitempty"`
+	AfterStatus  string          `json:"after_status,omitempty"`
+	Version      uint64          `json:"version,omitempty"`
 	RequestID    string          `json:"request_id,omitempty"`
-	IP           string          `json:"ip,omitempty"`
+	IPHash       string          `json:"ip_hash,omitempty"`
 	UserAgent    string          `json:"user_agent,omitempty"`
 	CreatedAt    string          `json:"created_at"`
 }

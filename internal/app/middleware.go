@@ -15,6 +15,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/pkg/problem"
 	"jiuxiaoer-admin/backend-go/internal/pkg/requestctx"
 	"jiuxiaoer-admin/backend-go/internal/pkg/response"
+	"jiuxiaoer-admin/backend-go/internal/pkg/securevalue"
 )
 
 // requestIDMiddleware 返回请求ID中间件。
@@ -49,6 +50,10 @@ func accessLogMiddleware(log *slog.Logger, registry *metrics.Registry) gin.Handl
 			route = "unmatched"
 		}
 		registry.ObserveHTTP(c.Request.Method, route, c.Writer.Status(), response.ErrorCode(c), latency)
+		ipHash := ""
+		if ip := strings.TrimSpace(c.ClientIP()); ip != "" {
+			ipHash = securevalue.Digest(ip)
+		}
 		log.Info("http request",
 			slog.String("request_id", response.RequestID(c)),
 			slog.String("method", c.Request.Method),
@@ -57,7 +62,7 @@ func accessLogMiddleware(log *slog.Logger, registry *metrics.Registry) gin.Handl
 			slog.Int64("latency_ms", latency.Milliseconds()),
 			slog.String("account_id", accountID(c)),
 			slog.String("account_type", accountType(c)),
-			slog.String("ip", c.ClientIP()),
+			slog.String("ip_hash", ipHash),
 			slog.String("user_agent", c.Request.UserAgent()),
 			slog.String("error_code", response.ErrorCode(c)),
 		)

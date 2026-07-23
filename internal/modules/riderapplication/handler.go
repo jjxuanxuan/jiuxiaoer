@@ -10,6 +10,7 @@ import (
 
 	"jiuxiaoer-admin/backend-go/internal/modules/auth"
 	"jiuxiaoer-admin/backend-go/internal/pkg/problem"
+	"jiuxiaoer-admin/backend-go/internal/pkg/requestctx"
 	"jiuxiaoer-admin/backend-go/internal/pkg/response"
 )
 
@@ -167,6 +168,7 @@ func (h *Handler) ApplicationAuthRequired() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+		c.Request = c.Request.WithContext(requestctx.WithAccountID(c.Request.Context(), claims.AccountID))
 		c.Set("auth_claims", claims)
 		c.Next()
 	}

@@ -163,7 +163,7 @@ func (r *Repository) loadAggregate(ctx context.Context, db *gorm.DB, out *Aggreg
 		return nil
 	}
 	var refundStatus string
-	if err := db.WithContext(ctx).Table("refunds").Select("status").Where("after_sale_id=? AND deleted_at IS NULL", *out.Return.AfterSaleID).Order("id").Limit(1).Scan(&refundStatus).Error; err != nil {
+	if err := db.WithContext(ctx).Table("refunds").Select("status").Where("after_sale_id=? AND deleted_at IS NULL", *out.Return.AfterSaleID).Order("id DESC").Limit(1).Scan(&refundStatus).Error; err != nil {
 		return err
 	}
 	out.RefundStatus = refundStatus
@@ -297,7 +297,7 @@ func (r *Repository) CreateStockRecord(ctx context.Context, tx *gorm.DB, row Sto
 
 func (r *Repository) RefundStatus(ctx context.Context, tx *gorm.DB, afterSaleID uint64) (string, error) {
 	var status string
-	err := tx.WithContext(ctx).Table("refunds").Select("status").Where("after_sale_id=? AND deleted_at IS NULL", afterSaleID).Order("id").Take(&status).Error
+	err := tx.WithContext(ctx).Table("refunds").Select("status").Where("after_sale_id=? AND deleted_at IS NULL", afterSaleID).Order("id DESC").Take(&status).Error
 	return status, err
 }
 

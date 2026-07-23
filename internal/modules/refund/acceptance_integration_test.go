@@ -232,6 +232,47 @@ func TestL3RefundAcceptance(t *testing.T) {
 		if replacement.Status != "creating" || replacement.RefundNo == fx.refundNo || replacement.ReplacesRefundID == nil || *replacement.ReplacesRefundID != fx.refundID {
 			t.Fatalf("ACC-024 replacement row=%+v", replacement)
 		}
+		var originalBeforeLateCallbacks Row
+		if err := db.First(&originalBeforeLateCallbacks, fx.refundID).Error; err != nil {
+			t.Fatal(err)
+		}
+		processing := successState(fx)
+		processing.Status = "PROCESSING"
+		processing.SucceededAt = nil
+		provider.callbackState = processing
+		request, _ := http.NewRequest(http.MethodPost, "/callback", nil)
+		request.Header.Set("X-Event-ID", "late-processing-"+fx.refundNo)
+		if err := service.ProcessCallback(context.Background(), "wechat", request, []byte(`{"event":"late-processing"}`)); refundErrorCode(err) != "REFUND_STATUS_REGRESSION" {
+			t.Fatalf("late PROCESSING must not reactivate CLOSED refund: %v", err)
+		}
+		provider.callbackState = successState(fx)
+		request, _ = http.NewRequest(http.MethodPost, "/callback", nil)
+		request.Header.Set("X-Event-ID", "late-success-"+fx.refundNo)
+		if err := service.ProcessCallback(context.Background(), "wechat", request, []byte(`{"event":"late-success"}`)); refundErrorCode(err) != "REFUND_STATUS_REGRESSION" {
+			t.Fatalf("late SUCCESS must not settle replaced CLOSED refund: %v", err)
+		}
+		provider.callbackState = closed
+		request, _ = http.NewRequest(http.MethodPost, "/callback", nil)
+		request.Header.Set("X-Event-ID", "duplicate-closed-"+fx.refundNo)
+		if err := service.ProcessCallback(context.Background(), "wechat", request, []byte(`{"event":"duplicate-closed"}`)); err != nil {
+			t.Fatalf("duplicate CLOSED must remain idempotent: %v", err)
+		}
+		mismatchedClosed := closed
+		mismatchedClosed.Amount++
+		provider.callbackState = mismatchedClosed
+		request, _ = http.NewRequest(http.MethodPost, "/callback", nil)
+		request.Header.Set("X-Event-ID", "mismatched-closed-"+fx.refundNo)
+		if err := service.ProcessCallback(context.Background(), "wechat", request, []byte(`{"event":"mismatched-closed"}`)); refundErrorCode(err) != "REFUND_AMOUNT_MISMATCH" {
+			t.Fatalf("mismatched duplicate CLOSED must be rejected without changing terminal state: %v", err)
+		}
+		var originalAfterLateCallbacks Row
+		if err := db.First(&originalAfterLateCallbacks, fx.refundID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if originalAfterLateCallbacks.Status != "failed" || originalAfterLateCallbacks.Version != originalBeforeLateCallbacks.Version {
+			t.Fatalf("CLOSED ancestor mutated by late callback: before=%+v after=%+v", originalBeforeLateCallbacks, originalAfterLateCallbacks)
+		}
+		assertRefundLedger(t, db, fx, "failed", 0)
 		var copiedItems int64
 		db.Table("refund_items").Where("refund_id=?", replacement.ID).Count(&copiedItems)
 		if copiedItems != 1 {
@@ -434,6 +475,53 @@ func TestL3RefundAcceptance(t *testing.T) {
 		close(release)
 		<-workerDone
 		assertRefundLedger(t, db, fx, "succeeded", 400)
+	})
+
+	t.Run("ACC-L3-029B-closed-callback-fences-stale-worker-error", func(t *testing.T) {
+		fx := insertRefundAcceptanceFixture(t, db, ids, "pending", 400, 1000)
+		defer cleanupRefundAcceptance(t, db, fx)
+		closed := successState(fx)
+		closed.Status = "CLOSED"
+		closed.SucceededAt = nil
+		started := make(chan struct{})
+		release := make(chan struct{})
+		provider := &acceptanceProvider{
+			callbackState: closed,
+			queryErr: &paygateway.ProviderError{
+				Operation:  "refund.query",
+				HTTPStatus: http.StatusNotFound,
+				Code:       "RESOURCE_NOT_EXISTS",
+				Retryable:  false,
+			},
+			queryStarted: started,
+			queryRelease: release,
+		}
+		service := NewService(cfg, db, ids, provider)
+		workerDone := make(chan struct{})
+		go func() {
+			NewWorker(cfg, service, provider, slog.New(slog.NewTextHandler(io.Discard, nil))).runBatch(context.Background())
+			close(workerDone)
+		}()
+		<-started
+		request, _ := http.NewRequest(http.MethodPost, "/callback", nil)
+		request.Header.Set("X-Event-ID", "closed-worker-race-"+fx.refundNo)
+		if err := service.ProcessCallback(context.Background(), "wechat", request, []byte(`{"event":"closed-worker-race"}`)); err != nil {
+			t.Fatal(err)
+		}
+		var afterCallback Row
+		if err := db.First(&afterCallback, fx.refundID).Error; err != nil {
+			t.Fatal(err)
+		}
+		close(release)
+		<-workerDone
+		var final Row
+		if err := db.First(&final, fx.refundID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if final.Status != "failed" || refundProviderStatus(final) != "CLOSED" || final.Version != afterCallback.Version {
+			t.Fatalf("stale worker error overwrote CLOSED: callback=%+v final=%+v", afterCallback, final)
+		}
+		assertRefundLedger(t, db, fx, "failed", 0)
 	})
 
 	t.Run("ACC-L3-030-db-result-survives-no-redis-or-mq", func(t *testing.T) {
@@ -690,21 +778,22 @@ func assertRefundLedger(t *testing.T, db *gorm.DB, fx refundAcceptanceFixture, s
 // cleanupRefundAcceptance 清理退款验收。
 func cleanupRefundAcceptance(t *testing.T, db *gorm.DB, fx refundAcceptanceFixture) {
 	t.Helper()
-	queries := []string{"DELETE FROM refund_callbacks WHERE refund_id=?", "DELETE FROM refund_items WHERE refund_id=?", "DELETE FROM refunds WHERE id=?", "DELETE FROM outbox_events WHERE (aggregate_type='refund' AND aggregate_id=?) OR (aggregate_type='after_sale' AND aggregate_id=?)", "DELETE FROM audit_logs WHERE (resource_type='refund' AND resource_id=?) OR (resource_type='after_sale' AND resource_id=?)", "DELETE FROM after_sale_items WHERE after_sale_id=?", "DELETE FROM after_sales WHERE id=?", "DELETE FROM payments WHERE id=?", "DELETE FROM orders WHERE id=?"}
-	for _, query := range queries {
-		args := []any{fx.refundID}
-		if query == queries[3] || query == queries[4] {
-			args = []any{fx.refundID, fx.afterSaleID}
-		} else if query == queries[5] {
-			args = []any{fx.afterSaleID}
-		} else if query == queries[6] {
-			args = []any{fx.afterSaleID}
-		} else if query == queries[7] {
-			args = []any{fx.paymentID}
-		} else if query == queries[8] {
-			args = []any{fx.orderID}
-		}
-		if err := db.Exec(query, args...).Error; err != nil {
+	queries := []struct {
+		query string
+		args  []any
+	}{
+		{"DELETE FROM refund_callbacks WHERE refund_id IN (SELECT id FROM refunds WHERE after_sale_id=?)", []any{fx.afterSaleID}},
+		{"DELETE FROM refund_items WHERE refund_id IN (SELECT id FROM refunds WHERE after_sale_id=?)", []any{fx.afterSaleID}},
+		{"DELETE FROM outbox_events WHERE (aggregate_type='refund' AND aggregate_id IN (SELECT id FROM refunds WHERE after_sale_id=?)) OR (aggregate_type='after_sale' AND aggregate_id=?)", []any{fx.afterSaleID, fx.afterSaleID}},
+		{"DELETE FROM audit_logs WHERE (resource_type='refund' AND resource_id IN (SELECT id FROM refunds WHERE after_sale_id=?)) OR (resource_type='after_sale' AND resource_id=?)", []any{fx.afterSaleID, fx.afterSaleID}},
+		{"DELETE FROM refunds WHERE after_sale_id=?", []any{fx.afterSaleID}},
+		{"DELETE FROM after_sale_items WHERE after_sale_id=?", []any{fx.afterSaleID}},
+		{"DELETE FROM after_sales WHERE id=?", []any{fx.afterSaleID}},
+		{"DELETE FROM payments WHERE id=?", []any{fx.paymentID}},
+		{"DELETE FROM orders WHERE id=?", []any{fx.orderID}},
+	}
+	for _, statement := range queries {
+		if err := db.Exec(statement.query, statement.args...).Error; err != nil {
 			t.Logf("cleanup: %v", err)
 		}
 	}

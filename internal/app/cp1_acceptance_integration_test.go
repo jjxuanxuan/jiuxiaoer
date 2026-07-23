@@ -271,9 +271,9 @@ func TestCP1ClosureAcceptanceIntegration(t *testing.T) {
 
 	merchantLogin := performOK(t, router, http.MethodPost, "/api/v1/auth/merchant/login", "", "", map[string]any{"username": "merchant_demo", "password": "merchant123"})
 	merchantToken := stringValue(t, object(t, merchantLogin["data"])["access_token"])
-	performOK(t, router, http.MethodPost, "/api/v1/store/orders/"+orderID+"/accept", merchantToken, "cp1-store-accept", nil)
-	performOK(t, router, http.MethodPost, "/api/v1/store/orders/"+orderID+"/start-preparing", merchantToken, "cp1-store-start", nil)
-	performOK(t, router, http.MethodPost, "/api/v1/store/orders/"+orderID+"/prepare", merchantToken, "cp1-store-prepare", nil)
+	performStoreOrderAction(t, router, tx, orderID, "accept", merchantToken, "cp1-store-accept")
+	performStoreOrderAction(t, router, tx, orderID, "start-preparing", merchantToken, "cp1-store-start")
+	performStoreOrderAction(t, router, tx, orderID, "prepare", merchantToken, "cp1-store-prepare")
 	var firstPrints int64
 	tx.Table("print_tasks").Where("order_id=? AND event_type='order_accepted' AND reprint_seq=0", orderID).Count(&firstPrints)
 	if firstPrints != 1 {
@@ -341,6 +341,13 @@ func TestCP1ClosureAcceptanceIntegration(t *testing.T) {
 	performOK(t, router, http.MethodPost, "/api/v1/admin/riders/"+adminCreatedRiderID+"/review", adminToken, "cp1-admin-rider-review-"+runID, map[string]any{
 		"decision": "approved", "reason": "一期后台创建验收",
 	})
+	// The failed pre-review login consumed its OTP. A post-review login must use
+	// a newly issued code instead of replaying the previous credential. Expire
+	// the test cooldown to model the normal 60-second resend interval.
+	if err := redisClient.Del(ctx, "rate:sms:login:rider:cooldown:"+adminCreatedPhone).Err(); err != nil {
+		t.Fatal(err)
+	}
+	performOK(t, router, http.MethodPost, "/api/v1/auth/rider/send-code", "", "", map[string]any{"phone": adminCreatedPhone})
 	adminCreatedRiderLogin := performOK(t, router, http.MethodPost, "/api/v1/auth/rider/sms-login", "", "", map[string]any{"phone": adminCreatedPhone, "code": "123456"})
 	adminCreatedRiderToken := stringValue(t, object(t, adminCreatedRiderLogin["data"])["access_token"])
 
@@ -359,6 +366,12 @@ func TestCP1ClosureAcceptanceIntegration(t *testing.T) {
 	})
 	rider2ID := stringValue(t, object(t, riderReviewed["data"])["rider_id"])
 
+	// Application submission also consumes the OTP atomically, so formal rider
+	// login requires a fresh one-time code after approval.
+	if err := redisClient.Del(ctx, "rate:sms:login:rider:cooldown:"+riderApplicationPhone).Err(); err != nil {
+		t.Fatal(err)
+	}
+	performOK(t, router, http.MethodPost, "/api/v1/auth/rider/send-code", "", "", map[string]any{"phone": riderApplicationPhone})
 	riderLogin := performOK(t, router, http.MethodPost, "/api/v1/auth/rider/sms-login", "", "", map[string]any{"phone": riderApplicationPhone, "code": "123456"})
 	riderToken := stringValue(t, object(t, riderLogin["data"])["access_token"])
 	performOK(t, router, http.MethodPost, "/api/v1/delivery/riders/me/heartbeat", riderToken, "", map[string]any{
@@ -387,31 +400,37 @@ func TestCP1ClosureAcceptanceIntegration(t *testing.T) {
 	deliveryCode := stringValue(t, object(t, performOK(t, router, http.MethodGet, "/api/v1/orders/"+orderID+"/verification", customerToken, "", nil)["data"])["code"])
 	performOK(t, router, http.MethodPost, "/api/v1/delivery/orders/"+deliveryID+"/complete", adminCreatedRiderToken, "cp1-correct-delivery", map[string]any{"delivery_code": deliveryCode})
 
-	// A separate delivery proves force-complete is a real two-principal flow:
-	// the maker can request but cannot execute the named checker's approval.
-	checkerIDs := snowflake.New(995)
-	checkerAccountID, checkerAdminID := checkerIDs.Next(), checkerIDs.Next()
-	checkerPassword := "cp1-checker-strong-password"
-	checkerHash, err := bcrypt.GenerateFromPassword([]byte(checkerPassword), bcrypt.DefaultCost)
+	// A separate delivery proves the full force-complete authorization split:
+	// operation can only request, admin_manager can only approve, both permissions
+	// are rechecked from the database even when an old token still contains them,
+	// and an unrelated approver cannot execute the named checker's approval.
+	forceAdminIDs := snowflake.New(995)
+	makerAccountID, makerAdminID := forceAdminIDs.Next(), forceAdminIDs.Next()
+	checkerAccountID, checkerAdminID := forceAdminIDs.Next(), forceAdminIDs.Next()
+	forcePassword := "cp1-force-admin-strong-password"
+	forceHash, err := bcrypt.GenerateFromPassword([]byte(forcePassword), bcrypt.DefaultCost)
 	if err != nil {
 		t.Fatal(err)
 	}
+	makerUsername := "cp1_operation_" + runID
 	checkerUsername := "cp1_checker_" + runID
-	if err := tx.Exec("INSERT INTO accounts (id,account_type,username,password_hash,status) VALUES (?,'admin',?,?,'active')", checkerAccountID, checkerUsername, string(checkerHash)).Error; err != nil {
+	if err := tx.Exec("INSERT INTO accounts (id,account_type,username,password_hash,status) VALUES (?,'admin',?,?,'active'),(?,'admin',?,?,'active')", makerAccountID, makerUsername, string(forceHash), checkerAccountID, checkerUsername, string(forceHash)).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := tx.Exec("INSERT INTO admin_users (id,account_id,role_id,admin_sub_role,name,status) VALUES (?,?,1001,'super_admin','一期复核人','active')", checkerAdminID, checkerAccountID).Error; err != nil {
+	if err := tx.Exec("INSERT INTO admin_users (id,account_id,role_id,admin_sub_role,name,status) VALUES (?,?,1003,'operations','一期发起人','active'),(?,?,1002,'admin_manager','一期复核人','active')", makerAdminID, makerAccountID, checkerAdminID, checkerAccountID).Error; err != nil {
 		t.Fatal(err)
 	}
-	checkerLogin := performOK(t, router, http.MethodPost, "/api/v1/auth/admin/login", "", "", map[string]any{"username": checkerUsername, "password": checkerPassword})
+	makerLogin := performOK(t, router, http.MethodPost, "/api/v1/auth/admin/login", "", "", map[string]any{"username": makerUsername, "password": forcePassword})
+	makerToken := stringValue(t, object(t, makerLogin["data"])["access_token"])
+	checkerLogin := performOK(t, router, http.MethodPost, "/api/v1/auth/admin/login", "", "", map[string]any{"username": checkerUsername, "password": forcePassword})
 	checkerToken := stringValue(t, object(t, checkerLogin["data"])["access_token"])
 	secondBody := map[string]any{"shop_id": "4201", "address_id": addressID, "items": []map[string]any{{"shop_product_id": "8005", "quantity": 1}}}
 	secondCreated := performOK(t, router, http.MethodPost, "/api/v1/orders", customerToken, "cp1-force-order", secondBody)
 	secondOrderID := stringValue(t, object(t, secondCreated["data"])["order_id"])
 	performOK(t, router, http.MethodPost, "/api/v1/orders/"+secondOrderID+"/pay/mock", customerToken, "cp1-force-payment", map[string]any{"channel": "mock"})
-	performOK(t, router, http.MethodPost, "/api/v1/store/orders/"+secondOrderID+"/accept", merchantToken, "cp1-force-accept", nil)
-	performOK(t, router, http.MethodPost, "/api/v1/store/orders/"+secondOrderID+"/start-preparing", merchantToken, "cp1-force-start", nil)
-	performOK(t, router, http.MethodPost, "/api/v1/store/orders/"+secondOrderID+"/prepare", merchantToken, "cp1-force-prepare", nil)
+	performStoreOrderAction(t, router, tx, secondOrderID, "accept", merchantToken, "cp1-force-accept")
+	performStoreOrderAction(t, router, tx, secondOrderID, "start-preparing", merchantToken, "cp1-force-start")
+	performStoreOrderAction(t, router, tx, secondOrderID, "prepare", merchantToken, "cp1-force-prepare")
 	openOrderGrab(t, cfg, tx, redisClient, log, secondOrderID)
 	secondDeliveries := performOK(t, router, http.MethodGet, "/api/v1/delivery/orders?page_size=100", riderToken, "", nil)
 	secondDeliveryID := findDeliveryID(t, array(t, object(t, secondDeliveries["data"])["items"]), secondOrderID)
@@ -419,12 +438,38 @@ func TestCP1ClosureAcceptanceIntegration(t *testing.T) {
 	forceVersion := uint(object(t, acceptedSecond["data"])["assignment_version"].(float64))
 	secondPickup := stringValue(t, object(t, performOK(t, router, http.MethodGet, "/api/v1/store/orders/"+secondOrderID+"/verification", merchantToken, "", nil)["data"])["code"])
 	performOK(t, router, http.MethodPost, "/api/v1/delivery/orders/"+secondDeliveryID+"/pickup", riderToken, "cp1-force-pickup", map[string]any{"pickup_code": secondPickup})
-	approvalResponse := performOK(t, router, http.MethodPost, "/api/v1/admin/deliveries/"+secondDeliveryID+"/force-complete-requests", adminToken, "cp1-force-request", map[string]any{"checker_admin_id": fmt.Sprintf("%d", checkerAdminID), "reason_code": "CUSTOMER_CONFIRMED", "reason": "顾客确认收货且骑手设备故障", "expected_version": forceVersion})
-	approvalID := stringValue(t, object(t, approvalResponse["data"])["id"])
-	if status, _ := perform(t, router, http.MethodPost, "/api/v1/admin/deliveries/"+secondDeliveryID+"/force-complete", adminToken, "cp1-force-maker-cannot-approve", map[string]any{"approval_id": approvalID, "expected_version": forceVersion}); status != http.StatusForbidden {
-		t.Fatalf("maker executed checker approval: status=%d", status)
+	forceRequestBody := map[string]any{"checker_admin_id": fmt.Sprintf("%d", checkerAdminID), "reason_code": "CUSTOMER_CONFIRMED", "reason": "顾客确认收货且骑手设备故障", "expected_version": forceVersion}
+	if status, _ := perform(t, router, http.MethodPost, "/api/v1/admin/deliveries/"+secondDeliveryID+"/force-complete-requests", checkerToken, "cp1-manager-cannot-request", forceRequestBody); status != http.StatusForbidden {
+		t.Fatalf("admin_manager requested force completion: status=%d", status)
 	}
-	performOK(t, router, http.MethodPost, "/api/v1/admin/deliveries/"+secondDeliveryID+"/force-complete", checkerToken, "cp1-force-checker-approve", map[string]any{"approval_id": approvalID, "expected_version": forceVersion})
+	if err := tx.Table("role_permissions").Where("role_id=1003 AND permission_id=2143").Update("deleted_at", time.Now()).Error; err != nil {
+		t.Fatal(err)
+	}
+	if status, body := perform(t, router, http.MethodPost, "/api/v1/admin/deliveries/"+secondDeliveryID+"/force-complete-requests", makerToken, "cp1-revoked-maker-request", forceRequestBody); status != http.StatusForbidden || body["error_code"] != "PERM_FORBIDDEN" {
+		t.Fatalf("revoked operation token requested force completion: status=%d body=%#v", status, body)
+	}
+	if err := tx.Table("role_permissions").Where("role_id=1003 AND permission_id=2143").Update("deleted_at", nil).Error; err != nil {
+		t.Fatal(err)
+	}
+	approvalResponse := performOK(t, router, http.MethodPost, "/api/v1/admin/deliveries/"+secondDeliveryID+"/force-complete-requests", makerToken, "cp1-force-request", forceRequestBody)
+	approvalID := stringValue(t, object(t, approvalResponse["data"])["id"])
+	forceApproveBody := map[string]any{"approval_id": approvalID, "expected_version": forceVersion}
+	if status, _ := perform(t, router, http.MethodPost, "/api/v1/admin/deliveries/"+secondDeliveryID+"/force-complete", makerToken, "cp1-operation-cannot-approve", forceApproveBody); status != http.StatusForbidden {
+		t.Fatalf("operation approved force completion: status=%d", status)
+	}
+	if status, _ := perform(t, router, http.MethodPost, "/api/v1/admin/deliveries/"+secondDeliveryID+"/force-complete", adminToken, "cp1-unnamed-checker-cannot-approve", forceApproveBody); status != http.StatusForbidden {
+		t.Fatalf("unnamed checker executed approval: status=%d", status)
+	}
+	if err := tx.Table("role_permissions").Where("role_id=1002 AND permission_id=2144").Update("deleted_at", time.Now()).Error; err != nil {
+		t.Fatal(err)
+	}
+	if status, body := perform(t, router, http.MethodPost, "/api/v1/admin/deliveries/"+secondDeliveryID+"/force-complete", checkerToken, "cp1-revoked-checker-approve", forceApproveBody); status != http.StatusForbidden || body["error_code"] != "PERM_FORBIDDEN" {
+		t.Fatalf("revoked admin_manager token approved force completion: status=%d body=%#v", status, body)
+	}
+	if err := tx.Table("role_permissions").Where("role_id=1002 AND permission_id=2144").Update("deleted_at", nil).Error; err != nil {
+		t.Fatal(err)
+	}
+	performOK(t, router, http.MethodPost, "/api/v1/admin/deliveries/"+secondDeliveryID+"/force-complete", checkerToken, "cp1-force-checker-approve", forceApproveBody)
 	var approvedOverrides int64
 	tx.Table("admin_override_approvals").Where("id=? AND maker_admin_id<>checker_admin_id AND status='approved'", approvalID).Count(&approvedOverrides)
 	if approvedOverrides != 1 {

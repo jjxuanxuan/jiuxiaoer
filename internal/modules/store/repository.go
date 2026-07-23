@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"gorm.io/datatypes"
@@ -26,23 +27,112 @@ func (r *Repository) DB() *gorm.DB {
 }
 
 // ListOrders 查询订单列表。
-func (r *Repository) ListOrders(ctx context.Context, merchantID uint64, shopIDs []uint64, status string, query pagination.Query) ([]Order, error) {
+func (r *Repository) ListOrders(ctx context.Context, merchantID uint64, shopIDs []uint64, filters StoreOrderListFilters, query pagination.Query) ([]Order, error) {
 	// 必须同时校验 merchant_id 和授权 shop_id；只校验 merchant_id 对员工账号来说范围过大。
 	db := r.db.WithContext(ctx).
 		Where("merchant_id = ? AND shop_id IN ? AND deleted_at IS NULL", merchantID, shopIDs)
-	if status != "" {
-		db = db.Where("status = ?", status)
+	if filters.ShopID != 0 {
+		db = db.Where("shop_id = ?", filters.ShopID)
 	}
-	db, err := pagination.ApplyFilter(db, query.Filter, storeOrderFilterColumns)
+	if filters.Status != "" {
+		db = db.Where("status = ?", filters.Status)
+	}
+	if filters.OrderNo != "" {
+		db = db.Where("order_no = ?", filters.OrderNo)
+	}
+	if filters.Keyword != "" {
+		db = db.Where("order_no LIKE ?", escapeLike(filters.Keyword)+"%")
+	}
+	if filters.PaidFrom != nil {
+		db = db.Where("paid_at >= ?", *filters.PaidFrom)
+	}
+	if filters.PaidTo != nil {
+		db = db.Where("paid_at <= ?", *filters.PaidTo)
+	}
+	db, err := pagination.ApplyOrder(db, query.OrderBy, storeOrderOrderColumns, "created_at DESC, id DESC")
 	if err != nil {
 		return nil, err
 	}
-	db, err = pagination.ApplyOrder(db, query.OrderBy, storeOrderOrderColumns, "id DESC")
-	if err != nil {
-		return nil, err
+	if storeOrderUsesKeyset(query.OrderBy) {
+		db, err = pagination.ApplyTimeIDCursor(db, query, "created_at", "id", "desc")
+		if err != nil {
+			return nil, err
+		}
 	}
 	var rows []Order
-	err = db.Offset(query.Offset).Limit(query.PageSize + 1).Find(&rows).Error
+	err = pagination.OffsetDB(db, query).Limit(query.PageSize + 1).Find(&rows).Error
+	return rows, err
+}
+
+// OrderItemsForOrders 批量读取列表摘要所需的历史商品快照，避免按订单 N+1 查询。
+func (r *Repository) OrderItemsForOrders(ctx context.Context, orderIDs []uint64) ([]OrderItem, error) {
+	if len(orderIDs) == 0 {
+		return []OrderItem{}, nil
+	}
+	var rows []OrderItem
+	err := r.db.WithContext(ctx).
+		Where("order_id IN ? AND deleted_at IS NULL", orderIDs).
+		Order("order_id ASC, id ASC").
+		Find(&rows).Error
+	return rows, err
+}
+
+// AuthorizedShops 批量读取订单列表中的门店摘要，并保持商户对象边界。
+func (r *Repository) AuthorizedShops(ctx context.Context, merchantID uint64, shopIDs []uint64) ([]Shop, error) {
+	if len(shopIDs) == 0 {
+		return []Shop{}, nil
+	}
+	var rows []Shop
+	err := r.db.WithContext(ctx).
+		Where("merchant_id = ? AND id IN ? AND deleted_at IS NULL", merchantID, shopIDs).
+		Find(&rows).Error
+	return rows, err
+}
+
+// AuthorizedOrder 按商户和授权门店范围读取订单。范围外订单与不存在订单
+// 使用同一查询结果，避免详情接口泄露对象是否存在。
+func (r *Repository) AuthorizedOrder(ctx context.Context, db *gorm.DB, merchantID uint64, shopIDs []uint64, orderID uint64) (Order, error) {
+	var row Order
+	err := db.WithContext(ctx).
+		Where("id = ? AND merchant_id = ? AND shop_id IN ? AND deleted_at IS NULL", orderID, merchantID, shopIDs).
+		First(&row).Error
+	return row, err
+}
+
+// OrderShop 返回订单关联的门店摘要。
+func (r *Repository) OrderShop(ctx context.Context, db *gorm.DB, merchantID, shopID uint64) (Shop, error) {
+	var row Shop
+	err := db.WithContext(ctx).Where("id = ? AND merchant_id = ?", shopID, merchantID).First(&row).Error
+	return row, err
+}
+
+// PaymentByOrder 返回订单最近一条有效支付事实。
+func (r *Repository) PaymentByOrder(ctx context.Context, db *gorm.DB, orderID uint64) (Payment, error) {
+	var row Payment
+	err := db.WithContext(ctx).
+		Where("order_id = ? AND deleted_at IS NULL", orderID).
+		Order("created_at DESC, id DESC").
+		First(&row).Error
+	return row, err
+}
+
+// DeliveryByOrder 返回订单当前配送事实。
+func (r *Repository) DeliveryByOrder(ctx context.Context, db *gorm.DB, orderID uint64) (DeliveryOrder, error) {
+	var row DeliveryOrder
+	err := db.WithContext(ctx).
+		Where("order_id = ? AND deleted_at IS NULL", orderID).
+		First(&row).Error
+	return row, err
+}
+
+// RecentOrderLogs 返回商家可见详情所需的最近状态日志。Service 只投影安全字段。
+func (r *Repository) RecentOrderLogs(ctx context.Context, db *gorm.DB, orderID uint64, limit int) ([]OrderLog, error) {
+	var rows []OrderLog
+	err := db.WithContext(ctx).
+		Where("order_id = ? AND deleted_at IS NULL", orderID).
+		Order("created_at DESC, id DESC").
+		Limit(limit).
+		Find(&rows).Error
 	return rows, err
 }
 
@@ -63,9 +153,20 @@ func (r *Repository) OrderItems(ctx context.Context, db *gorm.DB, orderID uint64
 	return rows, err
 }
 
-// UpdateOrder 更新订单。
-func (r *Repository) UpdateOrder(ctx context.Context, tx *gorm.DB, orderID uint64, values map[string]any) error {
-	return tx.WithContext(ctx).Model(&Order{}).Where("id = ?", orderID).Updates(values).Error
+// TransitionOrder atomically advances an order only from the status/version
+// that was locked and observed by the caller. The conditional update is kept
+// even with SELECT FOR UPDATE so optimistic concurrency remains an explicit
+// database invariant rather than a service-only check.
+func (r *Repository) TransitionOrder(ctx context.Context, tx *gorm.DB, orderID uint64, expectedStatus string, expectedVersion int, values map[string]any) (bool, error) {
+	updates := make(map[string]any, len(values)+1)
+	for key, value := range values {
+		updates[key] = value
+	}
+	updates["version"] = gorm.Expr("version + 1")
+	result := tx.WithContext(ctx).Model(&Order{}).
+		Where("id = ? AND status = ? AND version = ? AND deleted_at IS NULL", orderID, expectedStatus, expectedVersion).
+		Updates(updates)
+	return result.RowsAffected == 1, result.Error
 }
 
 // CreateOrderLog 创建订单日志。
@@ -129,7 +230,7 @@ func (r *Repository) ProductIDsByShop(ctx context.Context, db *gorm.DB, shopID u
 }
 
 // ListShopProducts 查询门店商品列表。
-func (r *Repository) ListShopProducts(ctx context.Context, merchantID uint64, shopIDs []uint64, shopID uint64, query pagination.Query) ([]ShopProductRow, error) {
+func (r *Repository) ListShopProducts(ctx context.Context, merchantID uint64, shopIDs []uint64, filters StoreInventoryFilters, query pagination.Query) ([]ShopProductRow, error) {
 	db := r.db.WithContext(ctx).
 		Table("shop_products sp").
 		Select(`
@@ -149,25 +250,61 @@ func (r *Repository) ListShopProducts(ctx context.Context, merchantID uint64, sh
 			sp.sort_order,
 			COALESCE(ps.available_qty, 0) AS available_qty,
 			COALESCE(ps.reserved_qty, 0) AS reserved_qty,
-			COALESCE(ps.locked_qty, 0) AS locked_qty
+			COALESCE(ps.locked_qty, 0) AS locked_qty,
+			COALESCE(ps.low_stock_threshold, 0) AS low_stock_threshold,
+			COALESCE(ps.version, 0) AS version,
+			ps.updated_at AS stock_updated_at,
+			sp.updated_at AS shop_product_updated_at
 		`).
 		Joins("JOIN products p ON p.id = sp.product_id AND p.deleted_at IS NULL").
 		Joins("LEFT JOIN product_stocks ps ON ps.shop_product_id = sp.id AND ps.deleted_at IS NULL").
 		Where("sp.merchant_id = ? AND sp.shop_id IN ? AND sp.deleted_at IS NULL", merchantID, shopIDs)
-	if shopID != 0 {
-		db = db.Where("sp.shop_id = ?", shopID)
+	if filters.ShopID != 0 {
+		db = db.Where("sp.shop_id = ?", filters.ShopID)
 	}
-	db, err := pagination.ApplyFilter(db, query.Filter, storeShopProductFilterColumns)
+	if filters.Status != "" {
+		db = db.Where("sp.status = ?", filters.Status)
+	}
+	if filters.Keyword != "" {
+		keyword := "%" + escapeLike(filters.Keyword) + "%"
+		db = db.Where("(p.name LIKE ? OR p.brand_name LIKE ? OR p.spec LIKE ?)", keyword, keyword, keyword)
+	}
+	if filters.LowStockOnly {
+		db = db.Where("COALESCE(ps.available_qty, 0) <= COALESCE(ps.low_stock_threshold, 0)")
+	}
+	db, err := pagination.ApplyOrder(db, query.OrderBy, storeShopProductOrderColumns, "COALESCE(ps.updated_at, sp.updated_at) DESC, sp.id DESC")
 	if err != nil {
 		return nil, err
 	}
-	db, err = pagination.ApplyOrder(db, query.OrderBy, storeShopProductOrderColumns, "sp.sort_order ASC, sp.id ASC")
-	if err != nil {
-		return nil, err
+	if storeInventoryUsesKeyset(query.OrderBy) {
+		db, err = pagination.ApplyTimeIDCursor(db, query, "COALESCE(ps.updated_at, sp.updated_at)", "sp.id", "desc")
+		if err != nil {
+			return nil, err
+		}
 	}
 	var rows []ShopProductRow
-	err = db.Offset(query.Offset).Limit(query.PageSize + 1).Scan(&rows).Error
+	err = pagination.OffsetDB(db, query).Limit(query.PageSize + 1).Scan(&rows).Error
+	for i := range rows {
+		rows[i].UpdatedAt = rows[i].ShopProductUpdatedAt
+		if rows[i].StockUpdatedAt != nil {
+			rows[i].UpdatedAt = *rows[i].StockUpdatedAt
+		}
+	}
 	return rows, err
+}
+
+func escapeLike(value string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(value)
+}
+
+func storeOrderUsesKeyset(orderBy string) bool {
+	orderBy = strings.ToLower(strings.TrimSpace(orderBy))
+	return orderBy == "" || orderBy == "created_at desc,id desc"
+}
+
+func storeInventoryUsesKeyset(orderBy string) bool {
+	orderBy = strings.ToLower(strings.TrimSpace(orderBy))
+	return orderBy == "" || orderBy == "updated_at desc,id desc"
 }
 
 // Product 返回商品。

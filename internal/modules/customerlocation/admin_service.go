@@ -99,7 +99,7 @@ func (s *Service) UpdateAdminCity(ctx context.Context, claims *auth.Claims, meth
 	}
 	var out ServiceCityAdminDTO
 	err = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		started, claimErr := s.idStore.Start(ctx, tx, s.idGen.Next(), claims.AccountType, adminID, method, path, key, idempotency.RequestHash(req))
+		started, claimErr := s.idStore.Start(ctx, tx, s.idGen.Next(), claims.AccountType, adminID, method, path, key, idempotency.ResourceRequestHash("service_city.update", id, req))
 		if claimErr != nil {
 			return claimErr
 		}
@@ -159,7 +159,7 @@ func (s *Service) SetAdminCityStatus(ctx context.Context, claims *auth.Claims, m
 	}
 	var out ServiceCityAdminDTO
 	err = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		started, claimErr := s.idStore.Start(ctx, tx, s.idGen.Next(), claims.AccountType, adminID, method, path, key, idempotency.RequestHash(req))
+		started, claimErr := s.idStore.Start(ctx, tx, s.idGen.Next(), claims.AccountType, adminID, method, path, key, idempotency.ResourceRequestHash("service_city.status", id, req))
 		if claimErr != nil {
 			return claimErr
 		}
@@ -278,7 +278,7 @@ func (s *Service) UpdateAdminPolicy(ctx context.Context, claims *auth.Claims, me
 	}
 	var out PromisePolicyAdminDTO
 	err = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		started, claimErr := s.idStore.Start(ctx, tx, s.idGen.Next(), claims.AccountType, adminID, method, path, key, idempotency.RequestHash(req))
+		started, claimErr := s.idStore.Start(ctx, tx, s.idGen.Next(), claims.AccountType, adminID, method, path, key, idempotency.ResourceRequestHash("promise_policy.update", id, req))
 		if claimErr != nil {
 			return claimErr
 		}
@@ -331,7 +331,7 @@ func (s *Service) SetAdminPolicyStatus(ctx context.Context, claims *auth.Claims,
 	}
 	var out PromisePolicyAdminDTO
 	err = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		started, claimErr := s.idStore.Start(ctx, tx, s.idGen.Next(), claims.AccountType, adminID, method, path, key, idempotency.RequestHash(req))
+		started, claimErr := s.idStore.Start(ctx, tx, s.idGen.Next(), claims.AccountType, adminID, method, path, key, idempotency.ResourceRequestHash("promise_policy.status", id, req))
 		if claimErr != nil {
 			return claimErr
 		}

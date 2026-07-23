@@ -81,7 +81,7 @@ func TestMySQLSearchEventIdempotencyAggregationAndPrivacy(t *testing.T) {
 	if err != nil || replayed.HistoryItem.ID != created.HistoryItem.ID || replayed.CountedForHot != created.CountedForHot {
 		t.Fatalf("idempotent replay changed response: created=%#v replay=%#v err=%v", created, replayed, err)
 	}
-	if _, err := service.RecordEvent(ctx, claims, "POST", eventPath, key, "", "", EventRequest{Keyword: "另一个词", Source: SourceManual}); err == nil || problem.FromError(err).ErrorCode != "IDEMPOTENCY_CONFLICT" {
+	if _, err := service.RecordEvent(ctx, claims, "POST", eventPath, key, "", "", EventRequest{Keyword: "另一个词", Source: SourceManual}); err == nil || problem.FromError(err).ErrorCode != "IDEMPOTENCY_KEY_REUSED" {
 		t.Fatalf("same key with different body must conflict, got %v", err)
 	}
 	if _, err := service.RecordEvent(ctx, claims, "POST", eventPath, key+"-history", "", "", EventRequest{Keyword: "French Wine", Source: SourceHistory}); err != nil {
@@ -172,11 +172,12 @@ func TestMySQLSearchConcurrentHistoryInvariant(t *testing.T) {
 		t.Fatal(err)
 	}
 	uniqueWord := "并发同词" + alphaID(customerID)
+	idempotentWord := "并发同键" + alphaID(customerID)
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cleanupCancel()
 		_ = db.WithContext(cleanupCtx).Where("customer_id = ?", customerID).Delete(&History{}).Error
-		_ = db.WithContext(cleanupCtx).Where("normalized_keyword = ?", uniqueWord).Delete(&DailyStat{}).Error
+		_ = db.WithContext(cleanupCtx).Where("normalized_keyword IN ?", []string{uniqueWord, idempotentWord}).Delete(&DailyStat{}).Error
 		_ = db.WithContext(cleanupCtx).Table("idempotency_keys").Where("actor_type = 'customer' AND actor_id = ? AND path IN ?", customerID, []string{eventPath, historyPath}).Delete(nil).Error
 		_ = db.WithContext(cleanupCtx).Table("customers").Where("id = ?", customerID).Delete(nil).Error
 		_ = db.WithContext(cleanupCtx).Table("accounts").Where("id = ?", accountID).Delete(nil).Error
@@ -186,9 +187,49 @@ func TestMySQLSearchConcurrentHistoryInvariant(t *testing.T) {
 
 	service := NewService(config.SearchConfig{
 		HistoryMax: 20, HistoryRetention: 180 * 24 * time.Hour, HotWindowDays: 7,
-		StatsRetentionDays: 30, HotCacheTTL: 5 * time.Minute, EventRatePerMinute: 100,
+		StatsRetentionDays: 30, HotCacheTTL: 5 * time.Minute, EventRatePerMinute: 200,
 	}, db, redisClient, ids, nil, discardSearchTestLogger())
 	claims := &auth.Claims{AccountType: "customer", CustomerID: idString(customerID)}
+
+	const sameKeyCalls = 20
+	sameKey := "search-concurrent-idempotent-" + idString(ids.Next())
+	type idempotentResult struct {
+		response EventResponse
+		err      error
+	}
+	idempotentResults := make(chan idempotentResult, sameKeyCalls)
+	var idempotentWaitGroup sync.WaitGroup
+	for index := 0; index < sameKeyCalls; index++ {
+		idempotentWaitGroup.Add(1)
+		go func() {
+			defer idempotentWaitGroup.Done()
+			response, callErr := service.RecordEvent(ctx, claims, "POST", eventPath, sameKey, "", "", EventRequest{Keyword: idempotentWord, Source: SourceManual})
+			idempotentResults <- idempotentResult{response: response, err: callErr}
+		}()
+	}
+	idempotentWaitGroup.Wait()
+	close(idempotentResults)
+	var firstResponse EventResponse
+	for result := range idempotentResults {
+		if result.err != nil {
+			t.Fatalf("same-key concurrent replay returned an error: %v", result.err)
+		}
+		if firstResponse.HistoryItem.ID == "" {
+			firstResponse = result.response
+			continue
+		}
+		if result.response.HistoryItem.ID != firstResponse.HistoryItem.ID || result.response.HistoryItem.Keyword != firstResponse.HistoryItem.Keyword || result.response.CountedForHot != firstResponse.CountedForHot {
+			t.Fatalf("same-key concurrent response changed: first=%#v replay=%#v", firstResponse, result.response)
+		}
+	}
+	var idempotentHistory History
+	if err := db.Where("customer_id = ? AND normalized_keyword = ?", customerID, idempotentWord).Take(&idempotentHistory).Error; err != nil {
+		t.Fatal(err)
+	}
+	if idempotentHistory.SearchCount != 1 {
+		t.Fatalf("same-key concurrent replay repeated the write: count=%d", idempotentHistory.SearchCount)
+	}
+
 	runConcurrent := func(count int, request func(int) EventRequest, keyPrefix string) {
 		t.Helper()
 		errorsChannel := make(chan error, count)

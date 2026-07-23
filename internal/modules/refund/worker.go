@@ -53,17 +53,18 @@ func (w *Worker) runBatch(ctx context.Context) {
 			w.log.Error("claim refund task", slog.String("error", err.Error()))
 			return
 		}
+		claimedVersion := row.Version + 1
 		callCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-		state, apply, err := w.process(callCtx, row)
+		state, apply, err := w.process(callCtx, row, claimedVersion)
 		cancel()
 		if err != nil {
 			decision := "scheduled"
 			var markErr error
 			if paygateway.Retryable(err) {
-				markErr = w.service.MarkAttemptError(ctx, row.ID, err)
+				markErr = w.service.MarkAttemptError(ctx, row.ID, claimedVersion, err)
 			} else {
 				decision = "exception"
-				markErr = w.service.MarkPermanentError(ctx, row.ID, paygateway.Code(err, "PROVIDER_REJECTED"), err)
+				markErr = w.service.MarkPermanentError(ctx, row.ID, claimedVersion, paygateway.Code(err, "PROVIDER_REJECTED"), err)
 			}
 			if markErr != nil {
 				w.log.Error("mark refund provider failure", slog.String("refund_no", row.RefundNo), slog.String("error", markErr.Error()))
@@ -75,15 +76,15 @@ func (w *Worker) runBatch(ctx context.Context) {
 			continue
 		}
 		w.logProviderSuccess(row, state)
-		if err := w.service.ApplyClaimedProviderState(ctx, row.ID, row.Version+1, state); err != nil {
-			if markErr := w.service.MarkAttemptError(ctx, row.ID, err); markErr != nil {
+		if err := w.service.ApplyClaimedProviderState(ctx, row.ID, claimedVersion, state); err != nil {
+			if markErr := w.service.MarkAttemptError(ctx, row.ID, claimedVersion, err); markErr != nil {
 				w.log.Error("mark refund state failure", slog.String("refund_no", row.RefundNo), slog.String("error", markErr.Error()))
 			}
 		}
 	}
 }
 
-func (w *Worker) process(ctx context.Context, row Row) (State, bool, error) {
+func (w *Worker) process(ctx context.Context, row Row, claimedVersion uint32) (State, bool, error) {
 	switch row.Status {
 	case "creating":
 		state, err := w.submit(ctx, row)
@@ -101,7 +102,7 @@ func (w *Worker) process(ctx context.Context, row Row) (State, bool, error) {
 			originalCode = *row.FailureCode
 		}
 		if !submissionRetryAllowed(originalCode) {
-			if markErr := w.service.MarkPermanentError(ctx, row.ID, originalCode, err); markErr != nil {
+			if markErr := w.service.MarkPermanentError(ctx, row.ID, claimedVersion, originalCode, err); markErr != nil {
 				return State{}, false, markErr
 			}
 			w.logProviderFailure(row, err, "exception")
@@ -112,7 +113,7 @@ func (w *Worker) process(ctx context.Context, row Row) (State, bool, error) {
 	case "pending":
 		state, err := w.provider.QueryRefund(ctx, row.RefundNo)
 		if paygateway.IsCode(err, "RESOURCE_NOT_EXISTS") {
-			if markErr := w.service.MarkPermanentError(ctx, row.ID, "REFUND_PROVIDER_RECORD_MISSING", err); markErr != nil {
+			if markErr := w.service.MarkPermanentError(ctx, row.ID, claimedVersion, "REFUND_PROVIDER_RECORD_MISSING", err); markErr != nil {
 				return State{}, false, markErr
 			}
 			w.logProviderFailure(row, err, "exception")

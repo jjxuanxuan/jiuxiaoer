@@ -29,6 +29,162 @@ func TestProductionConfigAcceptsExplicitSafeValues(t *testing.T) {
 	}
 }
 
+func TestCP1ReleaseProfileRequiresEnforcedDeliveryVerification(t *testing.T) {
+	for _, mode := range []string{"off", "observe"} {
+		t.Run("pickup-"+mode, func(t *testing.T) {
+			cfg := validCP1ReleaseConfig()
+			cfg.CP1.PickupVerificationMode = mode
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), "JXE_CP1_PICKUP_VERIFICATION_MODE=enforce") {
+				t.Fatalf("expected unsafe pickup verification mode to fail, got %v", err)
+			}
+		})
+		t.Run("delivery-"+mode, func(t *testing.T) {
+			cfg := validCP1ReleaseConfig()
+			cfg.CP1.DeliveryVerificationMode = mode
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), "JXE_CP1_DELIVERY_VERIFICATION_MODE=enforce") {
+				t.Fatalf("expected unsafe delivery verification mode to fail, got %v", err)
+			}
+		})
+	}
+}
+
+func TestProductionWithoutCP1ReleaseProfileAllowsApprovedDegradation(t *testing.T) {
+	cfg := validProductionConfig()
+	cfg.CP1.ReleaseProfile = CP1ReleaseProfileOff
+	cfg.CP1.PrintEnabled = false
+	cfg.CP1.PrintProvider = "fake"
+	cfg.CP1.NotificationEnabled = false
+	cfg.CP1.NotificationProvider = "fake"
+	cfg.CP1.ComplianceMode = "off"
+	cfg.CP1.IdentityProvider = "fake"
+	cfg.CP1.PickupVerificationMode = "observe"
+	cfg.CP1.DeliveryVerificationMode = "observe"
+	cfg.Realtime.Enabled = false
+	cfg.Realtime.RelayEnabled = false
+	cfg.Feature.MQPublisherEnabled = false
+	cfg.MQ.ConsumerNotificationEnabled = false
+	cfg.MQ.ConsumerPrintEnabled = false
+	cfg.MQ.ConsumerCacheEnabled = false
+	cfg.MQ.ConsumerSecurityEnabled = false
+	cfg.MQ.ConsumerDispatchEnabled = false
+	cfg.MQ.ConsumerRealtimeEnabled = false
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected ordinary production degradation config to pass: %v", err)
+	}
+}
+
+func TestCP1ReleaseProfileRequiresCompleteRuntime(t *testing.T) {
+	tests := []struct {
+		name     string
+		mutate   func(*Config)
+		expected string
+	}{
+		{name: "production baseline", mutate: func(cfg *Config) { cfg.App.Env = "preprod" }, expected: "JXE_APP_ENV=production"},
+		{name: "printing", mutate: func(cfg *Config) { cfg.CP1.PrintEnabled = false }, expected: "JXE_CP1_PRINT_ENABLED=true"},
+		{name: "real print provider", mutate: func(cfg *Config) { cfg.CP1.PrintProvider = "fake" }, expected: "non-fake JXE_CP1_PRINT_PROVIDER"},
+		{name: "cp1 worker", mutate: func(cfg *Config) { cfg.CP1.WorkerEnabled = false }, expected: "JXE_CP1_WORKER_ENABLED=true"},
+		{name: "order idempotency", mutate: func(cfg *Config) { cfg.Feature.OrderIdempotencyEnabled = false }, expected: "JXE_ORDER_IDEMPOTENCY_ENABLED=true"},
+		{name: "stock reservation", mutate: func(cfg *Config) { cfg.Feature.StockReserveEnabled = false }, expected: "JXE_STOCK_RESERVE_ENABLED=true"},
+		{name: "realtime", mutate: func(cfg *Config) { cfg.Realtime.Enabled = false }, expected: "JXE_REALTIME_ENABLED=true"},
+		{name: "realtime relay", mutate: func(cfg *Config) { cfg.Realtime.RelayEnabled = false }, expected: "JXE_REALTIME_RELAY_ENABLED=true"},
+		{name: "publisher", mutate: func(cfg *Config) { cfg.Feature.MQPublisherEnabled = false }, expected: "JXE_MQ_PUBLISH_ENABLED=true"},
+		{name: "notification consumer", mutate: func(cfg *Config) { cfg.MQ.ConsumerNotificationEnabled = false }, expected: "JXE_MQ_CONSUMER_NOTIFICATION_ENABLED=true"},
+		{name: "print consumer", mutate: func(cfg *Config) { cfg.MQ.ConsumerPrintEnabled = false }, expected: "JXE_MQ_CONSUMER_PRINT_ENABLED=true"},
+		{name: "cache consumer", mutate: func(cfg *Config) { cfg.MQ.ConsumerCacheEnabled = false }, expected: "JXE_MQ_CONSUMER_CACHE_ENABLED=true"},
+		{name: "security consumer", mutate: func(cfg *Config) { cfg.MQ.ConsumerSecurityEnabled = false }, expected: "JXE_MQ_CONSUMER_SECURITY_ENABLED=true"},
+		{name: "dispatch consumer", mutate: func(cfg *Config) { cfg.MQ.ConsumerDispatchEnabled = false }, expected: "JXE_MQ_CONSUMER_DISPATCH_ENABLED=true"},
+		{name: "realtime consumer", mutate: func(cfg *Config) { cfg.MQ.ConsumerRealtimeEnabled = false }, expected: "JXE_MQ_CONSUMER_REALTIME_ENABLED=true"},
+		{name: "database fallback", mutate: func(cfg *Config) { cfg.MQ.DBFallbackEnabled = false }, expected: "JXE_MQ_DB_FALLBACK_ENABLED=true"},
+		{name: "topology gate", mutate: func(cfg *Config) { cfg.MQ.FailOnTopologyDrift = false }, expected: "JXE_MQ_FAIL_ON_TOPOLOGY_DRIFT=true"},
+		{name: "rabbitmq required", mutate: func(cfg *Config) { cfg.RabbitMQ.Required = false }, expected: "JXE_RABBITMQ_REQUIRED=true"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validCP1ReleaseConfig()
+			tt.mutate(&cfg)
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), tt.expected) {
+				t.Fatalf("expected release gate error containing %q, got %v", tt.expected, err)
+			}
+		})
+	}
+}
+
+func TestCP1ReleaseProfileAcceptsCompleteRuntime(t *testing.T) {
+	if err := validCP1ReleaseConfig().Validate(); err != nil {
+		t.Fatalf("expected complete CP1 release profile to pass: %v", err)
+	}
+}
+
+func TestCP1ReleaseProfileLoadsFromEnvironment(t *testing.T) {
+	t.Setenv("JXE_CP1_RELEASE_PROFILE", CP1ReleaseProfilePhaseOne)
+	if got := Load().CP1.ReleaseProfile; got != CP1ReleaseProfilePhaseOne {
+		t.Fatalf("release profile=%q", got)
+	}
+}
+
+func TestCP1CoreOrderGatesLoadFromDocumentedEnvironment(t *testing.T) {
+	t.Setenv("JXE_ORDER_IDEMPOTENCY_ENABLED", "false")
+	t.Setenv("JXE_STOCK_RESERVE_ENABLED", "false")
+	// These look-alike names are intentionally unsupported. Setting them must
+	// never shadow the long-standing runtime configuration keys above.
+	t.Setenv("JXE_FEATURE_ORDER_IDEMPOTENCY_ENABLED", "true")
+	t.Setenv("JXE_FEATURE_STOCK_RESERVE_ENABLED", "true")
+	cfg := Load()
+	if cfg.Feature.OrderIdempotencyEnabled || cfg.Feature.StockReserveEnabled {
+		t.Fatalf("core order gates ignored documented env: %+v", cfg.Feature)
+	}
+	cfg.CP1.ReleaseProfile = CP1ReleaseProfilePhaseOne
+	cfg.App.Env = "production"
+	problems := strings.Join(cfg.CP1ReleaseProfileProblems(), "; ")
+	for _, expected := range []string{"JXE_ORDER_IDEMPOTENCY_ENABLED=true", "JXE_STOCK_RESERVE_ENABLED=true"} {
+		if !strings.Contains(problems, expected) {
+			t.Fatalf("release problems %q do not name documented key %s", problems, expected)
+		}
+	}
+}
+
+func TestDeliveryVerificationTTLIsAtLeastTwoHours(t *testing.T) {
+	cfg := Load()
+	cfg.CP1.DeliveryVerificationTTL = 119 * time.Minute
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "invalid CP1 worker or verification configuration") {
+		t.Fatalf("expected short delivery verification TTL to fail, got %v", err)
+	}
+}
+
+func TestDeliveryVerificationMaxTTLIsConfigurableAndNotBelowFloor(t *testing.T) {
+	t.Setenv("JXE_CP1_DELIVERY_VERIFICATION_MAX_TTL", "7h")
+	cfg := Load()
+	if cfg.CP1.DeliveryVerificationMaxTTL != 7*time.Hour {
+		t.Fatalf("delivery verification max ttl=%s", cfg.CP1.DeliveryVerificationMaxTTL)
+	}
+	cfg.CP1.DeliveryVerificationTTL = 3 * time.Hour
+	cfg.CP1.DeliveryVerificationMaxTTL = 2 * time.Hour
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "invalid CP1 worker or verification configuration") {
+		t.Fatalf("expected max ttl below floor to fail, got %v", err)
+	}
+}
+
+func TestEnabledPrintingRequiresConfiguredProvider(t *testing.T) {
+	cfg := Load()
+	cfg.CP1.PrintEnabled = true
+	cfg.CP1.PrintProvider = ""
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "JXE_CP1_PRINT_PROVIDER") {
+		t.Fatalf("expected enabled printing without a provider to fail, got %v", err)
+	}
+}
+
+func TestPrintConsumerRequiresPrintingEnabled(t *testing.T) {
+	cfg := Load()
+	cfg.CP1.PrintEnabled = false
+	cfg.MQ.ConsumerPrintEnabled = true
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "JXE_CP1_PRINT_ENABLED=true") {
+		t.Fatalf("expected print consumer without printing to fail, got %v", err)
+	}
+}
+
 func TestProductionPaymentAndRefundWorkersAreMandatory(t *testing.T) {
 	t.Run("payment reconciliation worker", func(t *testing.T) {
 		cfg := validProductionConfig()
@@ -238,11 +394,38 @@ func validProductionConfig() Config {
 	cfg.CP1.NotificationProvider = "approved-notification-provider"
 	cfg.CP1.IdentityProvider = "approved-identity-provider"
 	cfg.CP1.ComplianceMode = "enforce"
+	cfg.CP1.PickupVerificationMode = "enforce"
+	cfg.CP1.DeliveryVerificationMode = "enforce"
 	cfg.CP1.VerificationPepper = "production-verification-pepper-123456789"
 	cfg.CP1.IdentityCallbackSecret = "production-identity-callback-secret-123456789"
 	cfg.CP1.DataEncryptionKey = "production-data-encryption-key-123456789"
 	cfg.MapRoute.Enabled = false
 	cfg.MapRoute.Provider = "fake"
 	cfg.MapRoute.AmapKey = ""
+	return cfg
+}
+
+func validCP1ReleaseConfig() Config {
+	cfg := validProductionConfig()
+	cfg.CP1.ReleaseProfile = CP1ReleaseProfilePhaseOne
+	cfg.CP1.PrintEnabled = true
+	cfg.CP1.WorkerEnabled = true
+	cfg.CP1.ComplianceMode = "enforce"
+	cfg.CP1.PickupVerificationMode = "enforce"
+	cfg.CP1.DeliveryVerificationMode = "enforce"
+	cfg.Realtime.Enabled = true
+	cfg.Realtime.RelayEnabled = true
+	cfg.Realtime.AllowedOrigins = []string{"https://merchant.example.com", "https://rider.example.com"}
+	cfg.Feature.MQPublisherEnabled = true
+	cfg.MQ.ConsumerNotificationEnabled = true
+	cfg.MQ.ConsumerPrintEnabled = true
+	cfg.MQ.ConsumerCacheEnabled = true
+	cfg.MQ.ConsumerSecurityEnabled = true
+	cfg.MQ.ConsumerDispatchEnabled = true
+	cfg.MQ.ConsumerRealtimeEnabled = true
+	cfg.MQ.DBFallbackEnabled = true
+	cfg.MQ.FailOnTopologyDrift = true
+	cfg.Dispatch.Enabled = true
+	cfg.Dispatch.WorkerEnabled = true
 	return cfg
 }

@@ -119,6 +119,7 @@ paths:
   /rider-applications:
     post:
       summary: 骑手首次提交申请
+      description: 相同 Idempotency-Key 与相同请求返回首次结果且不重复消费短信验证码；新的幂等键必须使用尚未消费的一次性验证码。
       security: []
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
@@ -213,7 +214,11 @@ paths:
       summary: 分类列表
       security: []
       responses:
-        "200": { $ref: "#/components/responses/Page" }
+        "200":
+          description: 分类列表
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CategoryListEnvelope" }
         default: { $ref: "#/components/responses/Problem" }
   /products:
     get:
@@ -231,12 +236,20 @@ paths:
         - { name: lat, in: query, schema: { type: number, format: double } }
         - { name: lng, in: query, schema: { type: number, format: double } }
       responses:
-        "200": { $ref: "#/components/responses/Page" }
+        "200":
+          description: 公共商品分页列表
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProductListEnvelope" }
         default: { $ref: "#/components/responses/Problem" }
   /products/{id}:
     get:
       summary: 公共商品详情
-      security: []
+      x-auth-mode: public_optional_identity
+      x-object-scope: public_optional_location_context
+      security:
+        - {}
+        - bearerAuth: []
       parameters:
         - $ref: "#/components/parameters/ID"
         - $ref: "#/components/parameters/LocationContext"
@@ -246,7 +259,11 @@ paths:
         - { name: lat, in: query, schema: { type: number, format: double } }
         - { name: lng, in: query, schema: { type: number, format: double } }
       responses:
-        "200": { $ref: "#/components/responses/Success" }
+        "200":
+          description: 按服务门店上下文返回的商品详情
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProductDetailEnvelope" }
         default: { $ref: "#/components/responses/Problem" }
   /search/discovery:
     get:
@@ -481,46 +498,79 @@ paths:
   /cart/items:
     get:
       summary: 购物车列表
+      description: 返回本人购物车完整快照与当前可用性计算结果。
+      x-permission: cart:view
+      x-object-scope: customer.self_cart
       responses:
-        "200": { $ref: "#/components/responses/Page" }
+        "200":
+          description: 本人购物车快照
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CartEnvelope" }
         default: { $ref: "#/components/responses/Problem" }
     post:
       summary: 加购
+      x-permission: cart:update
+      x-object-scope: customer.self_cart
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody: { $ref: "#/components/requestBodies/CartItemAdd" }
       responses:
-        "200": { $ref: "#/components/responses/Success" }
+        "200":
+          description: 加购后的本人购物车快照
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CartEnvelope" }
         default: { $ref: "#/components/responses/Problem" }
     delete:
       summary: 清空本人购物车或指定门店商品
+      x-permission: cart:update
+      x-object-scope: customer.self_cart
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
         - { name: shop_id, in: query, schema: { type: string } }
       responses:
-        "200": { $ref: "#/components/responses/Success" }
+        "200":
+          description: 清空成功，data 为空对象
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CartEmptyEnvelope" }
         default: { $ref: "#/components/responses/Problem" }
   /cart/items/{id}:
     put:
       summary: 修改购物车数量
+      x-permission: cart:update
+      x-object-scope: customer.self_cart_item
       parameters:
         - $ref: "#/components/parameters/ID"
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody: { $ref: "#/components/requestBodies/CartItemUpdate" }
       responses:
-        "200": { $ref: "#/components/responses/Success" }
+        "200":
+          description: 修改后的本人购物车快照
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CartEnvelope" }
         default: { $ref: "#/components/responses/Problem" }
     delete:
       summary: 删除购物车商品
+      x-permission: cart:update
+      x-object-scope: customer.self_cart_item
       parameters:
         - $ref: "#/components/parameters/ID"
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
-        "200": { $ref: "#/components/responses/Success" }
+        "200":
+          description: 删除成功，data 为空对象
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CartEmptyEnvelope" }
         default: { $ref: "#/components/responses/Problem" }
   /cart/items/{id}/selection:
     patch:
       summary: 修改购物车单项选中状态
+      x-permission: cart:update
+      x-object-scope: customer.self_cart_item
       parameters:
         - $ref: "#/components/parameters/ID"
         - $ref: "#/components/parameters/IdempotencyKey"
@@ -528,30 +578,32 @@ paths:
         required: true
         content:
           application/json:
-            schema:
-              type: object
-              required: [selected]
-              properties: { selected: { type: boolean } }
+            schema: { $ref: "#/components/schemas/CartItemSelectionReq" }
       responses:
-        "200": { $ref: "#/components/responses/Success" }
+        "200":
+          description: 修改后的本人购物车快照
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CartEnvelope" }
         default: { $ref: "#/components/responses/Problem" }
   /cart/selection:
     post:
       summary: 按门店批量修改选中状态
+      x-permission: cart:update
+      x-object-scope: customer.self_cart
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              type: object
-              required: [selected, shop_id]
-              properties:
-                selected: { type: boolean }
-                shop_id: { type: string }
+            schema: { $ref: "#/components/schemas/CartSelectionReq" }
       responses:
-        "200": { $ref: "#/components/responses/Success" }
+        "200":
+          description: 修改后的本人购物车快照
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CartEnvelope" }
         default: { $ref: "#/components/responses/Problem" }
   /addresses:
     get:
@@ -597,11 +649,24 @@ paths:
   /orders:
     get:
       summary: C 端本人订单列表
+      x-permission: order:list
+      x-object-scope: customer.self_orders
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageToken"
+        - { name: status, in: query, schema: { type: string, maxLength: 32 } }
+        - { name: order_by, in: query, schema: { type: string, enum: ["created_at desc,id desc"] } }
       responses:
-        "200": { $ref: "#/components/responses/Page" }
+        "200":
+          description: 本人订单分页列表
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CustomerOrderPageEnvelope" }
         default: { $ref: "#/components/responses/Problem" }
     post:
       summary: 创建订单并预占库存
+      x-permission: order:create
+      x-object-scope: customer.self_order
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -615,6 +680,8 @@ paths:
   /orders/{id}:
     get:
       summary: 订单详情
+      x-permission: order:view
+      x-object-scope: customer.self_order
       parameters:
         - $ref: "#/components/parameters/ID"
       responses:
@@ -623,6 +690,8 @@ paths:
   /orders/{id}/cancel:
     post:
       summary: 取消订单
+      x-permission: order:cancel
+      x-object-scope: customer.self_order_or_authorized_admin
       parameters:
         - $ref: "#/components/parameters/ID"
         - $ref: "#/components/parameters/IdempotencyKey"
@@ -632,6 +701,8 @@ paths:
   /orders/{id}/payments:
     post:
       summary: 创建或复用本人订单的微信支付单
+      x-permission: payment:create
+      x-object-scope: customer.self_order
       parameters:
         - $ref: "#/components/parameters/ID"
         - $ref: "#/components/parameters/IdempotencyKey"
@@ -646,6 +717,8 @@ paths:
   /orders/{id}/payment:
     get:
       summary: 查询本人订单支付事实
+      x-permission: payment:view
+      x-object-scope: customer.self_order
       parameters:
         - $ref: "#/components/parameters/ID"
       responses:
@@ -655,6 +728,8 @@ paths:
     post:
       summary: 主动向微信确认本人订单支付结果
       description: 小程序支付结果以该接口或服务端回调为准；仅 creating、pending 会请求微信，已成功支付直接返回本地结果。
+      x-permission: payment:view
+      x-object-scope: customer.self_order
       parameters:
         - $ref: "#/components/parameters/ID"
       responses:
@@ -681,6 +756,8 @@ paths:
   /orders/{id}/pay/mock:
     post:
       summary: 模拟支付
+      x-permission: payment:create
+      x-object-scope: customer.self_order
       parameters:
         - $ref: "#/components/parameters/ID"
         - $ref: "#/components/parameters/IdempotencyKey"
@@ -691,83 +768,192 @@ paths:
   /store/orders:
     get:
       summary: 商户授权门店订单
+      x-permission: store_order:list
+      x-object-scope: merchant_and_authorized_shop
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageToken"
+        - { name: shop_id, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string, maxLength: 32 } }
+        - { name: keyword, in: query, schema: { type: string, maxLength: 64 } }
+        - { name: order_no, in: query, schema: { type: string, maxLength: 64 } }
+        - { name: paid_from, in: query, schema: { type: string, format: date-time } }
+        - { name: paid_to, in: query, schema: { type: string, format: date-time } }
+        - { name: order_by, in: query, schema: { type: string, enum: ["created_at desc,id desc"], default: "created_at desc,id desc" } }
       responses:
-        "200": { $ref: "#/components/responses/Page" }
+        "200":
+          description: 授权门店订单分页
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StoreOrderPageEnvelope" }
+        default: { $ref: "#/components/responses/Problem" }
+  /store/orders/{id}:
+    get:
+      summary: 查看授权门店的商家订单详情
+      description: 需要 store_order:view 权限。对非当前商户授权门店的订单统一返回 404，避免暴露订单是否存在；响应不包含完整联系电话、精确坐标和内部支付流水。
+      x-permission: store_order:view
+      x-object-scope: merchant_and_authorized_shop
+      x-sensitive-response: true
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "200":
+          description: 商家订单详情
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StoreOrderDetailEnvelope" }
+        "404": { $ref: "#/components/responses/Problem" }
         default: { $ref: "#/components/responses/Problem" }
   /store/orders/{id}/accept:
     post:
       summary: 商户接单
+      x-permission: store_order:accept
+      x-object-scope: merchant_and_authorized_shop
       parameters:
         - $ref: "#/components/parameters/ID"
         - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StoreOrderActionReq" }
       responses:
-        "200": { $ref: "#/components/responses/Success" }
+        "200":
+          description: 接单后的商家订单快照
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StoreOrderDetailEnvelope" }
+        "409": { $ref: "#/components/responses/Problem" }
         default: { $ref: "#/components/responses/Problem" }
   /store/orders/{id}/prepare:
     post:
       summary: 商户备货完成
+      x-permission: store_order:prepare
+      x-object-scope: merchant_and_authorized_shop
       parameters:
         - $ref: "#/components/parameters/ID"
         - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StoreOrderActionReq" }
       responses:
-        "200": { $ref: "#/components/responses/Success" }
+        "200":
+          description: 备货完成后的商家订单快照
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StoreOrderDetailEnvelope" }
+        "409": { $ref: "#/components/responses/Problem" }
         default: { $ref: "#/components/responses/Problem" }
   /store/orders/{id}/start-preparing:
     post:
       summary: 商户开始备货
+      x-permission: store_order:prepare
+      x-object-scope: merchant_and_authorized_shop
       parameters:
         - $ref: "#/components/parameters/ID"
         - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StoreOrderActionReq" }
       responses:
-        "200": { $ref: "#/components/responses/Success" }
+        "200":
+          description: 开始备货后的商家订单快照
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StoreOrderDetailEnvelope" }
+        "409": { $ref: "#/components/responses/Problem" }
         default: { $ref: "#/components/responses/Problem" }
   /store/shops/{id}/business-status:
     patch:
       summary: 更新门店营业状态
+      x-permission: shop:business_status
+      x-object-scope: authorized_shop
       parameters:
         - $ref: "#/components/parameters/ID"
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody: { $ref: "#/components/requestBodies/BusinessStatus" }
       responses:
-        "200": { $ref: "#/components/responses/Success" }
+        "200":
+          description: 门店营业状态
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StoreBusinessStatusEnvelope" }
         default: { $ref: "#/components/responses/Problem" }
   /store/shop-products:
     get:
       summary: 商户门店商品列表
+      x-permission: inventory:view
+      x-object-scope: authorized_shop
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageToken"
+        - { name: shop_id, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string, maxLength: 32 } }
+        - { name: keyword, in: query, schema: { type: string, maxLength: 64 } }
+        - { name: low_stock_only, in: query, schema: { type: boolean } }
+        - { name: order_by, in: query, schema: { type: string, enum: ["updated_at desc,id desc"], default: "updated_at desc,id desc" } }
       responses:
-        "200": { $ref: "#/components/responses/Page" }
+        "200":
+          description: 授权门店商品与库存分页
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ShopProductPageEnvelope" }
         default: { $ref: "#/components/responses/Problem" }
     post:
       summary: 新增门店商品
+      x-permission: shop_product:create
+      x-object-scope: authorized_shop
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody: { $ref: "#/components/requestBodies/ShopProductCreate" }
       responses:
-        "200": { $ref: "#/components/responses/Success" }
+        "200":
+          description: 新建的门店商品与库存快照
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ShopProductEnvelope" }
         default: { $ref: "#/components/responses/Problem" }
   /store/shop-products/{id}:
     patch:
       summary: 更新门店商品
+      x-permission: shop_product:update
+      x-object-scope: authorized_shop
       parameters:
         - $ref: "#/components/parameters/ID"
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody: { $ref: "#/components/requestBodies/ShopProductUpdate" }
       responses:
-        "200": { $ref: "#/components/responses/Success" }
+        "200":
+          description: 已更新的门店商品标识
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ShopProductMutationEnvelope" }
         default: { $ref: "#/components/responses/Problem" }
   /store/shop-products/{id}/stock:
     patch:
       summary: 商户调整库存
+      x-permission: inventory:adjust
+      x-object-scope: authorized_shop
       parameters:
         - $ref: "#/components/parameters/ID"
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody: { $ref: "#/components/requestBodies/StockAdjust" }
       responses:
-        "200": { $ref: "#/components/responses/Success" }
+        "200":
+          description: 调整后的门店商品与库存快照
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ShopProductEnvelope" }
         default: { $ref: "#/components/responses/Problem" }
   /delivery/riders/me/work-status:
     put:
       summary: 骑手上线或下线
+      x-permission: rider_work_status:update
+      x-object-scope: rider_self
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -776,23 +962,31 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               required: [status, expected_version]
               properties:
                 status: { type: string, enum: [online, offline] }
                 expected_version: { type: integer, minimum: 1 }
                 reason_code: { type: string, maxLength: 64 }
       responses:
-        "200": { $ref: "#/components/responses/Success" }
+        "200":
+          description: 骑手工作状态
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RiderWorkStatusEnvelope" }
         default: { $ref: "#/components/responses/Problem" }
   /delivery/riders/me/heartbeat:
     post:
       summary: 上报骑手心跳和位置
+      x-permission: rider_location:update
+      x-object-scope: rider_self
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               required: [device_id, sequence, captured_at, latitude, longitude, coordinate_system, accuracy_m]
               properties:
                 device_id: { type: string, minLength: 8, maxLength: 128 }
@@ -804,12 +998,19 @@ paths:
                 accuracy_m: { type: number, format: double, minimum: 0, maximum: 1000 }
                 app_version: { type: string, maxLength: 32 }
       responses:
-        "200": { $ref: "#/components/responses/Success" }
+        "200":
+          description: 心跳接收结果
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RiderHeartbeatEnvelope" }
         default: { $ref: "#/components/responses/Problem" }
   /delivery/orders/{id}/route:
     get:
       summary: 查询当前配送阶段路线
       description: 仅已分配骑手且具有 delivery:route 权限可查询；路线规划失败不改变履约状态。
+      x-permission: delivery:route
+      x-object-scope: assigned_rider
+      x-sensitive-response: true
       parameters:
         - $ref: "#/components/parameters/ID"
       responses:
@@ -819,6 +1020,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 required: [code, message, data, request_id]
                 properties:
                   code: { type: integer, enum: [0] }
@@ -829,15 +1031,23 @@ paths:
   /delivery/offers:
     get:
       summary: 查询本人未过期定向邀约
+      x-permission: delivery_offer:list
+      x-object-scope: rider_self_pending_offers
       parameters:
         - $ref: "#/components/parameters/PageSize"
         - $ref: "#/components/parameters/PageToken"
       responses:
-        "200": { $ref: "#/components/responses/Page" }
+        "200":
+          description: 本人有效定向邀约分页
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeliveryOfferPageEnvelope" }
         default: { $ref: "#/components/responses/Problem" }
   /delivery/offers/{id}/accept:
     post:
       summary: 接受本人有效邀约并原子完成归属
+      x-permission: delivery_offer:accept
+      x-object-scope: rider_self_pending_offer
       parameters:
         - $ref: "#/components/parameters/ID"
         - $ref: "#/components/parameters/IdempotencyKey"
@@ -847,11 +1057,17 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/DispatchOfferActionReq" }
       responses:
-        "200": { $ref: "#/components/responses/Success" }
+        "200":
+          description: 配送归属结果
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeliveryAssignmentEnvelope" }
         default: { $ref: "#/components/responses/Problem" }
   /delivery/offers/{id}/reject:
     post:
       summary: 拒绝本人有效邀约
+      x-permission: delivery_offer:reject
+      x-object-scope: rider_self_pending_offer
       parameters:
         - $ref: "#/components/parameters/ID"
         - $ref: "#/components/parameters/IdempotencyKey"
@@ -861,17 +1077,50 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/DispatchOfferRejectReq" }
       responses:
-        "200": { $ref: "#/components/responses/Success" }
+        "200":
+          description: 邀约拒绝结果
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeliveryOfferRejectEnvelope" }
         default: { $ref: "#/components/responses/Problem" }
   /delivery/orders:
     get:
       summary: 骑手可接和本人配送单
+      x-permission: delivery:list
+      x-object-scope: eligible_candidate_or_assigned_rider
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageToken"
+        - { name: status, in: query, schema: { type: string, maxLength: 32 } }
       responses:
-        "200": { $ref: "#/components/responses/Page" }
+        "200":
+          description: 候选摘要或本人配送单分页
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeliveryOrderPageEnvelope" }
+        default: { $ref: "#/components/responses/Problem" }
+  /delivery/orders/{id}:
+    get:
+      summary: 查看本人当前配送单详情
+      description: 需要 delivery:view_own 权限，且请求骑手必须持有该配送单的当前有效分配。其他骑手、仅候选骑手或已撤销分配均统一返回 404。
+      x-permission: delivery:view_own
+      x-object-scope: assigned_rider
+      x-sensitive-response: true
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "200":
+          description: 当前配送履约详情
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeliveryDetailEnvelope" }
+        "404": { $ref: "#/components/responses/Problem" }
         default: { $ref: "#/components/responses/Problem" }
   /delivery/orders/{id}/accept:
     post:
       summary: 骑手接单
+      x-permission: delivery:accept
+      x-object-scope: eligible_rider
       parameters:
         - $ref: "#/components/parameters/ID"
         - $ref: "#/components/parameters/IdempotencyKey"
@@ -881,7 +1130,11 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/DispatchGrabReq" }
       responses:
-        "200": { $ref: "#/components/responses/Success" }
+        "200":
+          description: 接单后的配送摘要
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeliveryOrderEnvelope" }
         default: { $ref: "#/components/responses/Problem" }
   /admin/dispatch/policies:
     get:
@@ -977,12 +1230,19 @@ paths:
   /delivery/orders/{id}/pickup:
     post:
       summary: 骑手取货
+      x-permission: delivery:pickup
+      x-legacy-permission: delivery:update_status
+      x-object-scope: assigned_rider
       parameters:
         - $ref: "#/components/parameters/ID"
         - $ref: "#/components/parameters/IdempotencyKey"
-      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [pickup_code], properties: { pickup_code: { type: string, pattern: "^[0-9]{6}$" } } } } } }
+      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: false, required: [pickup_code], properties: { pickup_code: { type: string, pattern: "^[0-9]{6}$" } } } } } }
       responses:
-        "200": { $ref: "#/components/responses/Success" }
+        "200":
+          description: 取货核销后的配送快照
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeliveryOrderEnvelope" }
         default: { $ref: "#/components/responses/Problem" }
   /delivery/orders/{id}/returns:
     post:
@@ -1085,24 +1345,22 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/DeliveryReturn" }
         default: { $ref: "#/components/responses/Problem" }
-  /delivery/orders/{id}/start:
-    post:
-      summary: 骑手开始配送
-      parameters:
-        - $ref: "#/components/parameters/ID"
-        - $ref: "#/components/parameters/IdempotencyKey"
-      responses:
-        "200": { $ref: "#/components/responses/Success" }
-        default: { $ref: "#/components/responses/Problem" }
   /delivery/orders/{id}/complete:
     post:
       summary: 骑手完成配送
+      x-permission: delivery:complete
+      x-legacy-permission: delivery:update_status
+      x-object-scope: assigned_rider
       parameters:
         - $ref: "#/components/parameters/ID"
         - $ref: "#/components/parameters/IdempotencyKey"
-      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [delivery_code], properties: { delivery_code: { type: string, pattern: "^[0-9]{6}$" } } } } } }
+      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: false, required: [delivery_code], properties: { delivery_code: { type: string, pattern: "^[0-9]{6}$" } } } } } }
       responses:
-        "200": { $ref: "#/components/responses/Success" }
+        "200":
+          description: 送达核销后的配送快照
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeliveryOrderEnvelope" }
         default: { $ref: "#/components/responses/Problem" }
   /admin/products:
     post:
@@ -1173,8 +1431,13 @@ paths:
   /admin/audit-logs:
     get:
       summary: 审计日志
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageToken"
+        - { name: filter, in: query, description: "白名单字段：event_id,actor_type,actor_id,account_id,action,resource_type,resource_id,shop_id,order_id,delivery_id,result,error_code,reason_code,before_status,after_status,version,request_id,ip_hash,created_at", schema: { type: string, maxLength: 512 } }
+        - { name: order_by, in: query, schema: { type: string, enum: ["created_at desc,id desc"], default: "created_at desc,id desc" } }
       responses:
-        "200": { $ref: "#/components/responses/Page" }
+        "200": { $ref: "#/components/responses/AuditLogPage" }
         default: { $ref: "#/components/responses/Problem" }
   /admin/merchants:
     get:
@@ -1652,66 +1915,146 @@ paths:
   /store/print-settings:
     get:
       summary: 查看授权门店打印设置
+      x-permission: print_setting:view_shop
+      x-object-scope: authorized_shop
       parameters:
         - { name: shop_id, in: query, required: true, schema: { type: string } }
       responses:
-        "200": { $ref: "#/components/responses/Success" }
+        "200":
+          description: 门店打印设置
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PrintSettingEnvelope" }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      summary: 为授权门店创建打印设置
+      description: 需要 print_setting:update_shop 权限，且 shop_id 必须在当前商户的授权门店范围内。每个门店只允许一份设置；device_id 只写入加密存储，不会在读接口中明文返回。
+      x-permission: print_setting:update_shop
+      x-object-scope: authorized_shop
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PrintSettingCreateReq" }
+      responses:
+        "200":
+          description: 已创建的门店打印设置
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PrintSettingEnvelope" }
         default: { $ref: "#/components/responses/Problem" }
   /store/print-settings/{id}:
     patch:
       summary: 更新门店打印设置
+      x-permission: print_setting:update_shop
+      x-object-scope: authorized_shop
       parameters:
         - $ref: "#/components/parameters/ID"
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/PrintSettingPatchReq" } } } }
       responses:
-        "200": { $ref: "#/components/responses/Success" }
+        "200":
+          description: 更新后的门店打印设置
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PrintSettingEnvelope" }
+        default: { $ref: "#/components/responses/Problem" }
+  /store/print-settings/{id}/test:
+    post:
+      summary: 向授权门店设备提交测试打印
+      description: 需要 print_setting:test_shop 权限和当前商户门店授权。同一 Idempotency-Key 产生稳定的供应商请求号，防止重复物理打印；测试页不包含顾客个人信息。非授权门店设置统一返回 404。
+      x-permission: print_setting:test_shop
+      x-object-scope: authorized_shop
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: 测试打印提交结果
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TestPrintEnvelope" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "503": { $ref: "#/components/responses/Problem" }
         default: { $ref: "#/components/responses/Problem" }
   /store/print-tasks:
     get:
       summary: 门店打印任务列表
+      x-permission: print_task:list_shop
+      x-object-scope: authorized_shop
       parameters:
         - $ref: "#/components/parameters/PageSize"
         - $ref: "#/components/parameters/PageToken"
-        - { name: status, in: query, schema: { type: string, enum: [pending, processing, succeeded, retry_wait, dead, cancelled] } }
+        - { name: status, in: query, schema: { type: string, enum: [pending, processing, querying, succeeded, retry_wait, dead, cancelled] } }
       responses:
-        "200": { $ref: "#/components/responses/Page" }
+        "200":
+          description: 授权门店打印任务分页
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PrintTaskPageEnvelope" }
         default: { $ref: "#/components/responses/Problem" }
   /store/print-tasks/{id}:
     get:
       summary: 门店打印任务详情
+      x-permission: print_task:list_shop
+      x-object-scope: authorized_shop
       parameters: [ { $ref: "#/components/parameters/ID" } ]
       responses:
-        "200": { $ref: "#/components/responses/Success" }
+        "200":
+          description: 安全化打印任务详情
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PrintTaskEnvelope" }
         default: { $ref: "#/components/responses/Problem" }
   /store/print-tasks/{id}/reprint:
     post:
       summary: 门店人工重打
+      x-permission: print_task:reprint_shop
+      x-object-scope: authorized_shop
       parameters:
         - $ref: "#/components/parameters/ID"
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ReasonReq" } } } }
       responses:
-        "200": { $ref: "#/components/responses/Success" }
+        "200":
+          description: 新建的重打任务
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PrintTaskEnvelope" }
         default: { $ref: "#/components/responses/Problem" }
   /admin/print-tasks:
     get:
       summary: 全局打印任务列表
+      x-permission: print_task:list_all
+      x-object-scope: global
       parameters:
         - $ref: "#/components/parameters/PageSize"
         - $ref: "#/components/parameters/PageToken"
+        - { name: status, in: query, schema: { type: string, enum: [pending, processing, querying, succeeded, retry_wait, dead, cancelled] } }
       responses:
-        "200": { $ref: "#/components/responses/Page" }
+        "200":
+          description: 全局打印任务分页
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PrintTaskPageEnvelope" }
         default: { $ref: "#/components/responses/Problem" }
   /admin/print-tasks/{id}/retry:
     post:
       summary: 重试失败打印任务
+      x-permission: print_task:retry_all
+      x-object-scope: global
       parameters:
         - $ref: "#/components/parameters/ID"
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ReasonReq" } } } }
       responses:
-        "200": { $ref: "#/components/responses/Success" }
+        "200":
+          description: 重试后的打印任务
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PrintTaskEnvelope" }
         default: { $ref: "#/components/responses/Problem" }
   /messages:
     get:
@@ -1784,24 +2127,61 @@ paths:
   /store/orders/{id}/verification:
     get:
       summary: 商户受控查看取货码
+      x-permission: delivery_verification:view_shop
+      x-object-scope: merchant_and_authorized_shop_ready_order
+      x-sensitive-response: true
       parameters: [ { $ref: "#/components/parameters/ID" } ]
       responses:
-        "200": { $ref: "#/components/responses/Success" }
+        "200":
+          description: 取货码敏感响应，禁止缓存
+          headers:
+            Cache-Control:
+              description: 必须为 no-store
+              x-required-response-header: true
+              schema: { type: string, enum: [no-store] }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PickupVerificationEnvelope" }
         default: { $ref: "#/components/responses/Problem" }
   /orders/{id}/verification:
     get:
       summary: 顾客受控查看送达码
+      x-permission: delivery_verification:view_customer
+      x-object-scope: customer_self_delivering_order
+      x-sensitive-response: true
       parameters: [ { $ref: "#/components/parameters/ID" } ]
       responses:
-        "200": { $ref: "#/components/responses/Success" }
+        "200":
+          description: 送达码敏感响应，禁止缓存
+          headers:
+            Cache-Control:
+              description: 必须为 no-store
+              x-required-response-header: true
+              schema: { type: string, enum: [no-store] }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeliveryVerificationEnvelope" }
         default: { $ref: "#/components/responses/Problem" }
   /admin/deliveries/{id}/verification/unlock:
     post:
       summary: 解锁并重生核销码
-      parameters: [ { $ref: "#/components/parameters/ID" } ]
+      x-permission: delivery_verification:unlock
+      x-object-scope: admin_delivery
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/VerificationUnlockReq" } } } }
       responses:
-        "200": { $ref: "#/components/responses/Success" }
+        "200":
+          description: 解锁后的核销凭据摘要，不返回明文码
+          headers:
+            Cache-Control:
+              description: 必须为 no-store
+              x-required-response-header: true
+              schema: { type: string, enum: [no-store] }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VerificationUnlockEnvelope" }
         default: { $ref: "#/components/responses/Problem" }
   /admin/merchants/provision:
     post:
@@ -1814,20 +2194,38 @@ paths:
   /admin/merchants/{id}/users:
     post:
       summary: 新增商户用户
+      x-permission: merchant_user:create
       parameters:
         - $ref: "#/components/parameters/ID"
         - $ref: "#/components/parameters/IdempotencyKey"
-      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/MerchantUserReq" } } } }
       responses:
         "200": { $ref: "#/components/responses/Success" }
         default: { $ref: "#/components/responses/Problem" }
   /admin/merchant-users/{id}/shops:
     put:
       summary: 设置商户用户门店授权
+      x-permission: merchant_user:authorize_shop
       parameters:
         - $ref: "#/components/parameters/ID"
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody: { required: true, content: { application/json: { schema: { type: object, required: [shop_ids], properties: { shop_ids: { type: array, items: { type: string } } } } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Success" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/merchant-users/{id}/role:
+    patch:
+      summary: 调整商家用户最小权限角色并使旧令牌失效
+      x-permission: merchant_user:update_role
+      x-object-scope: merchant_user
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MerchantUserRoleReq" }
       responses:
         "200": { $ref: "#/components/responses/Success" }
         default: { $ref: "#/components/responses/Problem" }
@@ -1967,6 +2365,8 @@ paths:
   /admin/deliveries/{id}/force-complete:
     post:
       summary: 指定复核人执行已批准的强制完成请求
+      x-permission: delivery:force_complete_approve
+      x-object-scope: named_checker_admin_and_pending_approval
       parameters:
         - $ref: "#/components/parameters/ID"
         - $ref: "#/components/parameters/IdempotencyKey"
@@ -1977,6 +2377,8 @@ paths:
   /admin/deliveries/{id}/force-complete-requests:
     post:
       summary: 发起强制完成双人审批请求（仅记录，不推进状态）
+      x-permission: delivery:force_complete_request
+      x-object-scope: distinct_authorized_checker
       parameters:
         - $ref: "#/components/parameters/ID"
         - $ref: "#/components/parameters/IdempotencyKey"
@@ -2326,6 +2728,11 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/PageEnvelope" }
+    AuditLogPage:
+      description: 结构化审计分页结果；不返回明文 IP 或完整 PII
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/AuditLogPageEnvelope" }
     Token:
       description: 登录或刷新成功
       content:
@@ -2522,12 +2929,14 @@ components:
         protocol_version: { type: integer, enum: [1] }
     DispatchOfferActionReq:
       type: object
+      additionalProperties: false
       required: [expected_offer_version, expected_assignment_version]
       properties:
         expected_offer_version: { type: integer, minimum: 1 }
         expected_assignment_version: { type: integer, minimum: 1 }
     DispatchOfferRejectReq:
       type: object
+      additionalProperties: false
       required: [expected_offer_version, reason_code]
       properties:
         expected_offer_version: { type: integer, minimum: 1 }
@@ -2535,6 +2944,7 @@ components:
         remark: { type: string, maxLength: 255 }
     DispatchGrabReq:
       type: object
+      additionalProperties: false
       required: [expected_assignment_version]
       properties:
         expected_assignment_version: { type: integer, minimum: 1 }
@@ -2622,6 +3032,49 @@ components:
               items: { type: object, additionalProperties: true }
             next_page_token: { type: string }
         request_id: { type: string }
+    AuditLog:
+      type: object
+      additionalProperties: false
+      required: [id, event_id, actor_type, actor_id, action, resource_type, result, created_at]
+      properties:
+        id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        event_id: { type: string, minLength: 1, maxLength: 64 }
+        actor_type: { type: string, maxLength: 32 }
+        actor_id: { type: string, pattern: "^[0-9]{1,20}$" }
+        account_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        action: { type: string, maxLength: 64 }
+        resource_type: { type: string, maxLength: 64 }
+        resource_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        shop_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        order_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        delivery_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        before_data: { type: object, additionalProperties: true, description: "已剔除完整 PII、验证码、密钥与自由文本" }
+        after_data: { type: object, additionalProperties: true, description: "已剔除完整 PII、验证码、密钥与自由文本" }
+        result: { type: string, maxLength: 32 }
+        error_code: { type: string, maxLength: 64 }
+        reason_code: { type: string, maxLength: 64 }
+        before_status: { type: string, maxLength: 64 }
+        after_status: { type: string, maxLength: 64 }
+        version: { type: integer, format: int64, minimum: 0 }
+        request_id: { type: string, maxLength: 128 }
+        ip_hash: { type: string, pattern: "^[0-9a-f]{64}$" }
+        user_agent: { type: string, maxLength: 512 }
+        created_at: { type: string, format: date-time }
+    AuditLogPageEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, example: 0 }
+        message: { type: string, example: ok }
+        data:
+          type: object
+          additionalProperties: false
+          required: [items, next_page_token]
+          properties:
+            items: { type: array, items: { $ref: "#/components/schemas/AuditLog" } }
+            next_page_token: { type: string }
+        request_id: { type: string }
     TokenEnvelope:
       type: object
       required: [code, message, data, request_id]
@@ -2697,6 +3150,58 @@ components:
             properties:
               shop_product_id: { type: string }
               quantity: { type: integer }
+    ShopSummary:
+      type: object
+      additionalProperties: false
+      required: [id, name]
+      properties:
+        id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        name: { type: string }
+    OrderItemSummary:
+      type: object
+      additionalProperties: false
+      required: [product_id, name, quantity]
+      properties:
+        product_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        name: { type: string }
+        spec: { type: string }
+        image_url: { type: string }
+        quantity: { type: integer, minimum: 0 }
+    OrderSummary:
+      type: object
+      additionalProperties: false
+      required: [id, order_no, shop_id, status, pay_status, delivery_status, payable_amount, shop_summary, item_summary, item_kind_count, total_quantity, created_at, updated_at]
+      properties:
+        id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        order_no: { type: string }
+        shop_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        status: { type: string }
+        pay_status: { type: string }
+        delivery_status: { type: string }
+        payable_amount: { type: integer, format: int64, minimum: 0, description: 人民币分 }
+        shop_summary: { $ref: "#/components/schemas/ShopSummary" }
+        item_summary: { $ref: "#/components/schemas/OrderItemSummary" }
+        item_kind_count: { type: integer, minimum: 0 }
+        total_quantity: { type: integer, minimum: 0 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    CustomerOrderPageEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, enum: [0] }
+        message: { type: string, example: ok }
+        data:
+          type: object
+          additionalProperties: false
+          required: [items, next_page_token]
+          properties:
+            items:
+              type: array
+              items: { $ref: "#/components/schemas/OrderSummary" }
+            next_page_token: { type: string }
+        request_id: { type: string }
     LocationResolveReq:
       type: object
       additionalProperties: false
@@ -2775,17 +3280,220 @@ components:
       required: [refresh_token]
       properties:
         refresh_token: { type: string }
+    Category:
+      type: object
+      additionalProperties: false
+      required: [id, name, sort_order, status, age_restricted]
+      properties:
+        id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        parent_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        name: { type: string }
+        sort_order: { type: integer }
+        status: { type: string, enum: [active] }
+        age_restricted: { type: boolean }
+    CategoryListEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, enum: [0] }
+        message: { type: string, example: ok }
+        data:
+          type: object
+          additionalProperties: false
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: "#/components/schemas/Category" }
+        request_id: { type: string }
+    ProductListEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, enum: [0] }
+        message: { type: string, example: ok }
+        data:
+          type: object
+          additionalProperties: false
+          required: [items, next_page_token]
+          properties:
+            items:
+              type: array
+              items: { $ref: "#/components/schemas/ProductDetail" }
+            next_page_token: { type: string }
+        request_id: { type: string }
+    ProductDeliveryPolicy:
+      type: object
+      additionalProperties: false
+      required: [code, version, title, summary]
+      properties:
+        code: { type: string }
+        version: { type: integer, minimum: 0 }
+        title: { type: string }
+        summary: { type: string }
+        terms_url: { type: string }
+    ProductDeliveryPromise:
+      type: object
+      additionalProperties: false
+      required: [delivery_fee_amount, eta_min_minutes, eta_max_minutes, confirmed]
+      properties:
+        delivery_fee_amount: { type: integer, format: int64, minimum: 0, description: 人民币分 }
+        free_delivery_threshold_amount: { type: integer, format: int64, minimum: 0, description: 人民币分 }
+        eta_min_minutes: { type: integer, minimum: 0 }
+        eta_max_minutes: { type: integer, minimum: 0 }
+        overtime_policy_code: { type: string }
+        policy: { $ref: "#/components/schemas/ProductDeliveryPolicy" }
+        route_distance_m: { type: integer, format: int64, minimum: 0 }
+        route_duration_seconds: { type: integer, format: int64, minimum: 0 }
+        route_source: { type: string }
+        confirmed: { type: boolean }
+    ProductDetailServiceShop:
+      type: object
+      additionalProperties: false
+      required: [id, category_id, context_type, shop_id, shop_product_id, name, sale_price_amount, status, available_qty, purchasable, unavailable_reason, age_restricted]
+      properties:
+        id: { type: string }
+        category_id: { type: string }
+        context_type: { type: string, enum: [service_shop] }
+        shop_id: { type: string }
+        shop_product_id: { type: string }
+        name: { type: string }
+        brand_name: { type: string }
+        spec: { type: string }
+        image_url: { type: string }
+        description: { type: string }
+        sale_price_amount: { type: integer, format: int64, minimum: 0, description: 人民币分 }
+        original_price_amount: { type: integer, format: int64, minimum: 0, description: 人民币分 }
+        status: { type: string }
+        available_qty: { type: integer, minimum: 0 }
+        purchasable: { type: boolean }
+        unavailable_reason:
+          type: string
+          nullable: true
+          enum: [shop_closed, not_on_sale, out_of_stock]
+        delivery_promise: { $ref: "#/components/schemas/ProductDeliveryPromise" }
+        age_restricted: { type: boolean }
+    ProductDetailNoServiceShop:
+      type: object
+      additionalProperties: false
+      required: [id, category_id, context_type, name, status, purchasable, unavailable_reason, age_restricted]
+      properties:
+        id: { type: string }
+        category_id: { type: string }
+        context_type: { type: string, enum: [no_service_shop] }
+        name: { type: string }
+        brand_name: { type: string }
+        spec: { type: string }
+        image_url: { type: string }
+        description: { type: string }
+        status: { type: string }
+        purchasable: { type: boolean, enum: [false] }
+        unavailable_reason: { type: string, enum: [location_required, out_of_service] }
+        age_restricted: { type: boolean }
+    ProductDetail:
+      oneOf:
+        - $ref: "#/components/schemas/ProductDetailServiceShop"
+        - $ref: "#/components/schemas/ProductDetailNoServiceShop"
+      discriminator:
+        propertyName: context_type
+        mapping:
+          service_shop: "#/components/schemas/ProductDetailServiceShop"
+          no_service_shop: "#/components/schemas/ProductDetailNoServiceShop"
+    ProductDetailEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, enum: [0] }
+        message: { type: string, example: ok }
+        data: { $ref: "#/components/schemas/ProductDetail" }
+        request_id: { type: string }
+    CartItem:
+      type: object
+      additionalProperties: false
+      required: [id, shop_product_id, shop_id, product_id, name, quantity, sale_price_amount, total_amount, selected, availability_status, available, unavailable_reason]
+      properties:
+        id: { type: string }
+        shop_product_id: { type: string }
+        shop_id: { type: string }
+        product_id: { type: string }
+        name: { type: string }
+        brand_name: { type: string }
+        spec: { type: string }
+        image_url: { type: string }
+        quantity: { type: integer, minimum: 1, maximum: 99 }
+        sale_price_amount: { type: integer, format: int64, minimum: 0, description: 当前销售单价，单位人民币分 }
+        total_amount: { type: integer, format: int64, minimum: 0, description: 当前单价与数量之积，单位人民币分 }
+        selected: { type: boolean }
+        availability_status:
+          type: string
+          enum: [available, not_on_sale, out_of_stock, shop_closed]
+          description: 购物车读取时基于商品、门店与库存现状实时计算
+        available:
+          type: boolean
+          description: 仅当商品、分类、门店商品、门店和库存均满足购买条件时为 true
+        unavailable_reason:
+          type: string
+          nullable: true
+          enum: [not_on_sale, out_of_stock, shop_closed]
+          description: available=false 时返回稳定原因码；available=true 时固定为 null
+    Cart:
+      type: object
+      additionalProperties: false
+      required: [items, total_quantity, total_amount, unavailable_count]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/CartItem" }
+        total_quantity: { type: integer, minimum: 0, description: 已选且 availability_status 为 available 的商品数量合计 }
+        total_amount: { type: integer, format: int64, minimum: 0, description: 已选且可用商品的金额合计，单位人民币分 }
+        unavailable_count: { type: integer, minimum: 0, description: availability_status 非 available 的明细数 }
+    CartEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, enum: [0] }
+        message: { type: string, example: ok }
+        data: { $ref: "#/components/schemas/Cart" }
+        request_id: { type: string }
+    CartEmptyEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, enum: [0] }
+        message: { type: string, example: ok }
+        data: { type: object, additionalProperties: false, description: 删除或清空成功后返回的空对象 }
+        request_id: { type: string }
     CartItemAddReq:
       type: object
+      additionalProperties: false
       required: [shop_product_id, quantity]
       properties:
         shop_product_id: { type: string }
         quantity: { type: integer, minimum: 1, maximum: 99 }
     CartItemUpdateReq:
       type: object
+      additionalProperties: false
       required: [quantity]
       properties:
         quantity: { type: integer, minimum: 1, maximum: 99 }
+    CartItemSelectionReq:
+      type: object
+      additionalProperties: false
+      required: [selected]
+      properties:
+        selected: { type: boolean }
+    CartSelectionReq:
+      type: object
+      additionalProperties: false
+      required: [selected, shop_id]
+      properties:
+        selected: { type: boolean }
+        shop_id: { type: string }
     AddressUpsertReq:
       type: object
       required: [contact_name, contact_phone, province, city, city_code, district, address_detail, location_source, latitude, longitude, coordinate_system]
@@ -2818,8 +3526,8 @@ components:
       additionalProperties: false
       required: [latitude, longitude]
       properties:
-        latitude: { type: number, minimum: -90, maximum: 90 }
-        longitude: { type: number, minimum: -180, maximum: 180 }
+        latitude: { type: number, minimum: -90, maximum: 90, x-sensitive: precise_location }
+        longitude: { type: number, minimum: -180, maximum: 180, x-sensitive: precise_location }
     RouteStep:
       type: object
       additionalProperties: false
@@ -2952,11 +3660,13 @@ components:
         message: { type: string }
     BusinessStatusReq:
       type: object
+      additionalProperties: false
       required: [business_status]
       properties:
         business_status: { type: string, enum: [open, closed, resting] }
     ShopProductCreateReq:
       type: object
+      additionalProperties: false
       required: [shop_id, product_id, sale_price_amount]
       properties:
         shop_id: { type: string }
@@ -2967,13 +3677,15 @@ components:
         initial_available_qty: { type: integer, minimum: 0 }
     ShopProductUpdateReq:
       type: object
+      additionalProperties: false
       properties:
         sale_price_amount: { type: integer, format: int64, minimum: 1 }
         status: { type: string, enum: [draft, on_sale, off_sale] }
         sort_order: { type: integer }
     StockAdjustReq:
       type: object
-      required: [quantity_delta, reason]
+      additionalProperties: false
+      required: [quantity_delta]
       properties:
         quantity_delta: { type: integer }
         reason: { type: string, minLength: 1, maxLength: 255 }
@@ -3052,19 +3764,813 @@ components:
         dry_run: { type: boolean, default: true }
     ReasonReq:
       type: object
+      additionalProperties: false
       required: [reason]
       properties:
         reason: { type: string, minLength: 2, maxLength: 255 }
-    PrintSettingPatchReq:
+    StoreOrderActionReq:
       type: object
-      required: [enabled, provider, device_id, template_id, copies, auto_print_events, version]
+      additionalProperties: false
+      description: 商家订单状态动作的乐观锁请求；expected_version 必须与最近读取到的订单版本一致。
+      required: [expected_version]
       properties:
+        expected_version: { type: integer, minimum: 0 }
+    StoreOrderSummary:
+      type: object
+      additionalProperties: false
+      description: 商家订单列表的最小核单投影；不包含顾客 ID、完整联系方式、完整地址或全部商品。
+      required: [id, order_no, shop_id, status, pay_status, delivery_status, payable_amount, shop_summary, item_summary, item_kind_count, total_quantity, address_summary, customer_contact_mask, has_remark, version, created_at, updated_at]
+      properties:
+        id: { type: string }
+        order_no: { type: string }
+        shop_id: { type: string }
+        status: { type: string }
+        pay_status: { type: string }
+        delivery_status: { type: string }
+        payable_amount: { type: integer, format: int64, minimum: 0, description: 人民币分 }
+        shop_summary: { $ref: "#/components/schemas/StoreShopSummary" }
+        item_summary: { $ref: "#/components/schemas/StoreOrderItemSummary" }
+        item_kind_count: { type: integer, minimum: 0 }
+        total_quantity: { type: integer, minimum: 0 }
+        address_summary: { type: string, maxLength: 512, x-sensitive: pii_masked }
+        customer_contact_mask: { type: string, x-sensitive: pii_masked }
+        has_remark: { type: boolean }
+        version: { type: integer, minimum: 0 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        paid_at: { type: string, format: date-time }
+    StoreOrderPageEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, enum: [0] }
+        message: { type: string, example: ok }
+        data:
+          type: object
+          additionalProperties: false
+          required: [items, next_page_token]
+          properties:
+            items:
+              type: array
+              items: { $ref: "#/components/schemas/StoreOrderSummary" }
+            next_page_token: { type: string }
+        request_id: { type: string }
+    StoreBusinessStatusEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, enum: [0] }
+        message: { type: string, example: ok }
+        data:
+          type: object
+          additionalProperties: false
+          required: [shop_id, business_status]
+          properties:
+            shop_id: { type: string }
+            business_status: { type: string, enum: [open, closed, resting] }
+        request_id: { type: string }
+    ShopProduct:
+      type: object
+      additionalProperties: false
+      required: [id, shop_product_id, merchant_id, shop_id, product_id, category_id, name, sale_price_amount, original_price_amount, status, sort_order, available_qty, reserved_qty, locked_qty, total_qty, low_stock_threshold, low_stock, version, updated_at, age_restricted]
+      properties:
+        id: { type: string }
+        shop_product_id: { type: string }
+        merchant_id: { type: string }
+        shop_id: { type: string }
+        product_id: { type: string }
+        category_id: { type: string }
+        name: { type: string }
+        brand_name: { type: string }
+        spec: { type: string }
+        image_url: { type: string }
+        sale_price_amount: { type: integer, format: int64, minimum: 0, description: 人民币分 }
+        original_price_amount: { type: integer, format: int64, minimum: 0, description: 人民币分 }
+        status: { type: string, enum: [draft, on_sale, off_sale] }
+        sort_order: { type: integer }
+        available_qty: { type: integer, minimum: 0 }
+        reserved_qty: { type: integer, minimum: 0 }
+        locked_qty: { type: integer, minimum: 0 }
+        total_qty: { type: integer, minimum: 0, description: available_qty + reserved_qty + locked_qty }
+        low_stock_threshold: { type: integer, minimum: 0 }
+        low_stock: { type: boolean }
+        version: { type: integer, minimum: 0 }
+        updated_at: { type: string, format: date-time }
+        age_restricted: { type: boolean }
+    ShopProductEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, enum: [0] }
+        message: { type: string, example: ok }
+        data: { $ref: "#/components/schemas/ShopProduct" }
+        request_id: { type: string }
+    ShopProductPageEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, enum: [0] }
+        message: { type: string, example: ok }
+        data:
+          type: object
+          additionalProperties: false
+          required: [items, next_page_token]
+          properties:
+            items:
+              type: array
+              items: { $ref: "#/components/schemas/ShopProduct" }
+            next_page_token: { type: string }
+        request_id: { type: string }
+    ShopProductMutationEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, enum: [0] }
+        message: { type: string, example: ok }
+        data:
+          type: object
+          additionalProperties: false
+          required: [shop_product_id]
+          properties:
+            shop_product_id: { type: string }
+        request_id: { type: string }
+    StoreOrderItem:
+      type: object
+      additionalProperties: false
+      required: [id, shop_product_id, product_id, name, quantity, sale_price_amount, total_amount]
+      properties:
+        id: { type: string }
+        shop_product_id: { type: string }
+        product_id: { type: string }
+        name: { type: string }
+        brand_name: { type: string }
+        spec: { type: string }
+        image_url: { type: string }
+        quantity: { type: integer, minimum: 1 }
+        sale_price_amount: { type: integer, format: int64, minimum: 0, description: 人民币分 }
+        total_amount: { type: integer, format: int64, minimum: 0, description: 人民币分 }
+    StoreShopSummary:
+      type: object
+      additionalProperties: false
+      required: [id, name]
+      properties:
+        id: { type: string }
+        name: { type: string }
+    StoreOrderItemSummary:
+      type: object
+      additionalProperties: false
+      required: [product_id, name, quantity]
+      properties:
+        product_id: { type: string }
+        name: { type: string }
+        spec: { type: string }
+        image_url: { type: string }
+        quantity: { type: integer, minimum: 0 }
+    StoreOrderAddressSnapshot:
+      type: object
+      additionalProperties: false
+      required: [snapshot_quality, contact_name_mask, province, city, district, address_detail, address_version]
+      properties:
+        snapshot_quality: { type: string, enum: [complete, legacy_incomplete] }
+        contact_name_mask: { type: string, description: 已脱敏收货人姓名, x-sensitive: pii_masked }
+        province: { type: string }
+        city: { type: string }
+        city_code: { type: string, pattern: "^[0-9]{6}$" }
+        district: { type: string }
+        district_code: { type: string, pattern: "^[0-9]{6}$" }
+        address_detail: { type: string, x-sensitive: pii }
+        doorplate: { type: string, x-sensitive: pii }
+        formatted_address: { type: string, x-sensitive: pii }
+        address_version: { type: integer, minimum: 1 }
+    StoreDeliveryPolicySummary:
+      type: object
+      additionalProperties: false
+      required: [code, version, title, summary]
+      properties:
+        code: { type: string }
+        version: { type: integer, minimum: 0 }
+        title: { type: string }
+        summary: { type: string }
+        terms_url: { type: string }
+    StoreDeliveryPromise:
+      type: object
+      additionalProperties: false
+      required: [delivery_fee_amount, eta_min_minutes, eta_max_minutes, confirmed]
+      properties:
+        schema_version: { type: integer, minimum: 0 }
+        service_area_version: { type: integer, minimum: 0 }
+        selection_source: { type: string }
+        delivery_fee_amount: { type: integer, format: int64, minimum: 0, description: 人民币分 }
+        free_delivery_threshold_amount: { type: integer, format: int64, minimum: 0, description: 人民币分 }
+        eta_min_minutes: { type: integer, minimum: 0 }
+        eta_max_minutes: { type: integer, minimum: 0 }
+        overtime_policy_code: { type: string }
+        policy:
+          allOf:
+            - $ref: "#/components/schemas/StoreDeliveryPolicySummary"
+          nullable: true
+        route_distance_m: { type: integer, format: int64, minimum: 0 }
+        route_duration_seconds: { type: integer, format: int64, minimum: 0 }
+        route_source: { type: string, enum: [amap, cache, local_distance] }
+        confirmed: { type: boolean }
+        resolved_at: { type: string, format: date-time }
+    StoreComplianceSummary:
+      type: object
+      additionalProperties: false
+      required: [age_restricted, status]
+      properties:
+        age_restricted: { type: boolean }
+        status: { type: string, enum: [not_required, verified, legacy_unknown] }
+        policy_version: { type: string }
+        verification_level: { type: string }
+        checked_at: { type: string, format: date-time }
+    StorePaymentSummary:
+      type: object
+      additionalProperties: false
+      required: [payment_no, status, amount, currency, refunded_amount]
+      properties:
+        payment_no: { type: string }
+        status: { type: string }
+        amount: { type: integer, format: int64, minimum: 0, description: 人民币分 }
+        currency: { type: string, example: CNY }
+        refunded_amount: { type: integer, format: int64, minimum: 0, description: 人民币分 }
+        channel: { type: string }
+        provider: { type: string }
+        expires_at: { type: string, format: date-time }
+        paid_at: { type: string, format: date-time }
+    StoreDeliverySummary:
+      type: object
+      additionalProperties: false
+      required: [delivery_order_id, status, pickup_ready_status, assignment_version]
+      properties:
+        delivery_order_id: { type: string }
+        rider_id: { type: string }
+        status: { type: string }
+        pickup_ready_status: { type: string }
+        assignment_version: { type: integer, minimum: 0 }
+    StoreOrderLogSummary:
+      type: object
+      additionalProperties: false
+      required: [id, action, actor_type, created_at]
+      properties:
+        id: { type: string }
+        action: { type: string }
+        actor_type: { type: string }
+        from_status: { type: string }
+        to_status: { type: string }
+        created_at: { type: string, format: date-time }
+    StoreOrderDetail:
+      type: object
+      additionalProperties: false
+      required: [id, order_no, shop_id, status, pay_status, delivery_status, payable_amount, shop_summary, item_summary, item_kind_count, total_quantity, created_at, items, address_snapshot, remark, delivery_promise, compliance_summary, goods_amount, discount_amount, delivery_fee_amount, paid_amount, version, payment_summary, customer_contact_mask, delivery_summary, recent_logs]
+      properties:
+        id: { type: string }
+        order_no: { type: string }
+        shop_id: { type: string }
+        status: { type: string }
+        pay_status: { type: string }
+        delivery_status: { type: string }
+        payable_amount: { type: integer, format: int64, minimum: 0, description: 人民币分 }
+        shop_summary: { $ref: "#/components/schemas/StoreShopSummary" }
+        item_summary: { $ref: "#/components/schemas/StoreOrderItemSummary" }
+        item_kind_count: { type: integer, minimum: 0 }
+        total_quantity: { type: integer, minimum: 0 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/StoreOrderItem" }
+        address_snapshot: { $ref: "#/components/schemas/StoreOrderAddressSnapshot" }
+        remark: { type: string }
+        delivery_promise:
+          allOf:
+            - $ref: "#/components/schemas/StoreDeliveryPromise"
+          nullable: true
+        compliance_summary: { $ref: "#/components/schemas/StoreComplianceSummary" }
+        goods_amount: { type: integer, format: int64, minimum: 0, description: 人民币分 }
+        discount_amount: { type: integer, format: int64, minimum: 0, description: 人民币分 }
+        delivery_fee_amount: { type: integer, format: int64, minimum: 0, description: 人民币分 }
+        paid_amount: { type: integer, format: int64, minimum: 0, description: 人民币分 }
+        cancel_source: { type: string }
+        cancel_reason_code: { type: string }
+        version: { type: integer, minimum: 0 }
+        expires_at: { type: string, format: date-time }
+        paid_at: { type: string, format: date-time }
+        cancelled_at: { type: string, format: date-time }
+        completed_at: { type: string, format: date-time }
+        payment_summary:
+          allOf:
+            - $ref: "#/components/schemas/StorePaymentSummary"
+          nullable: true
+        customer_contact_mask: { type: string, description: 已脱敏顾客联系方式, x-sensitive: pii_masked }
+        delivery_summary:
+          allOf:
+            - $ref: "#/components/schemas/StoreDeliverySummary"
+          nullable: true
+        recent_logs:
+          type: array
+          items: { $ref: "#/components/schemas/StoreOrderLogSummary" }
+    StoreOrderDetailEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, enum: [0] }
+        message: { type: string, example: ok }
+        data: { $ref: "#/components/schemas/StoreOrderDetail" }
+        request_id: { type: string }
+    RiderWorkStatus:
+      type: object
+      additionalProperties: false
+      required: [rider_id, status, version, has_active_deliveries]
+      properties:
+        rider_id: { type: string }
+        status: { type: string, enum: [online, offline] }
+        version: { type: integer, minimum: 1 }
+        has_active_deliveries: { type: boolean }
+    RiderWorkStatusEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, enum: [0] }
+        message: { type: string, example: ok }
+        data: { $ref: "#/components/schemas/RiderWorkStatus" }
+        request_id: { type: string }
+    RiderHeartbeat:
+      type: object
+      additionalProperties: false
+      required: [server_time, accepted_sequence, presence_expires_at, persisted, coordinate_system]
+      properties:
+        server_time: { type: string, format: date-time }
+        accepted_sequence: { type: integer, format: int64, minimum: 1 }
+        presence_expires_at: { type: string, format: date-time }
+        persisted: { type: boolean }
+        coordinate_system: { type: string, enum: [gcj02] }
+    RiderHeartbeatEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, enum: [0] }
+        message: { type: string, example: ok }
+        data: { $ref: "#/components/schemas/RiderHeartbeat" }
+        request_id: { type: string }
+    DeliveryOffer:
+      type: object
+      additionalProperties: false
+      required: [offer_id, delivery_order_id, assignment_version, shop_id, shop_name, item_count, expires_at, version, sound_key, pickup_ready_status]
+      properties:
+        offer_id: { type: string }
+        delivery_order_id: { type: string }
+        assignment_version: { type: integer, minimum: 1 }
+        shop_id: { type: string }
+        shop_name: { type: string }
+        destination_district: { type: string }
+        distance_m: { type: integer, minimum: 0 }
+        item_count: { type: integer, minimum: 0 }
+        expires_at: { type: string, format: date-time }
+        version: { type: integer, minimum: 1 }
+        sound_key: { type: string, enum: [new_delivery_offer] }
+        pickup_ready_status: { type: string }
+    DeliveryOfferPageEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, enum: [0] }
+        message: { type: string, example: ok }
+        data:
+          type: object
+          additionalProperties: false
+          required: [items, next_page_token]
+          properties:
+            items:
+              type: array
+              items: { $ref: "#/components/schemas/DeliveryOffer" }
+            next_page_token: { type: string }
+        request_id: { type: string }
+    DeliveryAssignment:
+      type: object
+      additionalProperties: false
+      required: [delivery_order_id, order_id, shop_id, rider_id, status, dispatch_status, assignment_version, pickup_ready_status, accepted_at]
+      properties:
+        delivery_order_id: { type: string }
+        order_id: { type: string }
+        shop_id: { type: string }
+        rider_id: { type: string }
+        status: { type: string }
+        dispatch_status: { type: string }
+        assignment_version: { type: integer, minimum: 1 }
+        pickup_ready_status: { type: string }
+        pickup_ready_at: { type: string, format: date-time }
+        accepted_at: { type: string, format: date-time }
+    DeliveryAssignmentEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, enum: [0] }
+        message: { type: string, example: ok }
+        data: { $ref: "#/components/schemas/DeliveryAssignment" }
+        request_id: { type: string }
+    DeliveryOfferRejectEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, enum: [0] }
+        message: { type: string, example: ok }
+        data:
+          type: object
+          additionalProperties: false
+          required: [offer_id, status, version]
+          properties:
+            offer_id: { type: string }
+            status: { type: string, enum: [rejected] }
+            version: { type: integer, minimum: 1 }
+        request_id: { type: string }
+    DeliveryPickupSnapshot:
+      type: object
+      additionalProperties: false
+      properties:
+        shop_id: { type: string }
+        name: { type: string }
+        phone: { type: string, x-sensitive: pii }
+        district: { type: string }
+        address: { type: string, x-sensitive: pii }
+        latitude: { type: number, format: double, minimum: -90, maximum: 90, nullable: true, x-sensitive: precise_location }
+        longitude: { type: number, format: double, minimum: -180, maximum: 180, nullable: true, x-sensitive: precise_location }
+        coordinate_system: { type: string, enum: [gcj02, wgs84, bd09] }
+    DeliveryRecipientSnapshot:
+      type: object
+      additionalProperties: false
+      properties:
+        contact_name: { type: string, x-sensitive: pii }
+        contact_phone: { type: string, x-sensitive: pii }
+        province: { type: string }
+        city: { type: string }
+        city_code: { type: string }
+        district: { type: string }
+        district_code: { type: string }
+        address_detail: { type: string, x-sensitive: pii }
+        doorplate: { type: string, x-sensitive: pii }
+        poi_id: { type: string }
+        formatted_address: { type: string, x-sensitive: pii }
+        latitude: { type: number, format: double, minimum: -90, maximum: 90, nullable: true, x-sensitive: precise_location }
+        longitude: { type: number, format: double, minimum: -180, maximum: 180, nullable: true, x-sensitive: precise_location }
+        coordinate_system: { type: string, enum: [gcj02, wgs84, bd09] }
+        location_source: { type: string }
+        geocode_provider: { type: string }
+        geocode_status: { type: string }
+        address_version: { type: integer, minimum: 0 }
+    DeliveryReturnPolicySnapshot:
+      type: object
+      additionalProperties: false
+      required: [eligible, policy_code, policy_version, sealed_package_required]
+      properties:
+        eligible: { type: boolean }
+        policy_code: { type: string }
+        policy_version: { type: string }
+        sealed_package_required: { type: boolean }
+    DeliveryProductSnapshot:
+      type: object
+      additionalProperties: false
+      required: [name, brand_name, spec, image_url, age_restricted, return_policy]
+      properties:
+        name: { type: string }
+        brand_name: { type: string }
+        spec: { type: string }
+        image_url: { type: string }
+        age_restricted: { type: boolean }
+        return_policy: { $ref: "#/components/schemas/DeliveryReturnPolicySnapshot" }
+    DeliveryCandidateSummary:
+      type: object
+      additionalProperties: false
+      required: [view_type, id, order_id, shop_id, shop_name, destination_district, item_count, pickup_distance_m, grab_expires_at, assignment_version]
+      properties:
+        view_type: { type: string, enum: [candidate] }
+        id: { type: string }
+        order_id: { type: string }
+        shop_id: { type: string }
+        assignment_version: { type: integer, minimum: 1 }
+        shop_name: { type: string }
+        destination_district: { type: string }
+        item_count: { type: integer, minimum: 0 }
+        pickup_distance_m: { type: integer, minimum: 0 }
+        grab_expires_at: { type: string, format: date-time }
+    AssignedDeliverySummary:
+      type: object
+      additionalProperties: false
+      required: [view_type, id, order_id, shop_id, rider_id, status, assignment_version, dispatch_status, pickup_ready_status, pickup_snapshot, recipient_snapshot, created_at]
+      properties:
+        view_type: { type: string, enum: [assigned] }
+        id: { type: string }
+        order_id: { type: string }
+        shop_id: { type: string }
+        rider_id: { type: string }
+        status: { type: string }
+        assignment_version: { type: integer, minimum: 1 }
+        dispatch_status: { type: string }
+        pickup_ready_status: { type: string }
+        pickup_ready_at: { type: string, format: date-time }
+        pickup_snapshot: { $ref: "#/components/schemas/DeliveryPickupSnapshot" }
+        recipient_snapshot: { $ref: "#/components/schemas/DeliveryRecipientSnapshot" }
+        created_at: { type: string, format: date-time }
+        accepted_at: { type: string, format: date-time }
+        picked_up_at: { type: string, format: date-time }
+        picked_up_verified_at: { type: string, format: date-time }
+        started_at: { type: string, format: date-time }
+        completed_at: { type: string, format: date-time }
+        completed_verified_at: { type: string, format: date-time }
+        shop_name: { type: string }
+        destination_district: { type: string }
+        item_count: { type: integer, minimum: 0 }
+        pickup_distance_m: { type: integer, minimum: 0 }
+        grab_expires_at: { type: string, format: date-time }
+    DeliveryOrder:
+      oneOf:
+        - $ref: "#/components/schemas/DeliveryCandidateSummary"
+        - $ref: "#/components/schemas/AssignedDeliverySummary"
+      discriminator:
+        propertyName: view_type
+        mapping:
+          candidate: "#/components/schemas/DeliveryCandidateSummary"
+          assigned: "#/components/schemas/AssignedDeliverySummary"
+    DeliveryOrderEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, enum: [0] }
+        message: { type: string, example: ok }
+        data: { $ref: "#/components/schemas/DeliveryOrder" }
+        request_id: { type: string }
+    DeliveryOrderPageEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, enum: [0] }
+        message: { type: string, example: ok }
+        data:
+          type: object
+          additionalProperties: false
+          required: [items, next_page_token]
+          properties:
+            items:
+              type: array
+              items: { $ref: "#/components/schemas/DeliveryOrder" }
+            next_page_token: { type: string }
+        request_id: { type: string }
+    DeliveryContact:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string, x-sensitive: pii }
+        phone: { type: string, x-sensitive: pii }
+        formatted_address: { type: string, x-sensitive: pii }
+    DeliveryDetailOrder:
+      type: object
+      additionalProperties: false
+      required: [id, order_no, status, pay_status, delivery_status, goods_amount, discount_amount, delivery_fee_amount, payable_amount, paid_amount, version]
+      properties:
+        id: { type: string }
+        order_no: { type: string }
+        status: { type: string }
+        pay_status: { type: string }
+        delivery_status: { type: string }
+        goods_amount: { type: integer, format: int64, minimum: 0, description: 人民币分 }
+        discount_amount: { type: integer, format: int64, minimum: 0, description: 人民币分 }
+        delivery_fee_amount: { type: integer, format: int64, minimum: 0, description: 人民币分 }
+        payable_amount: { type: integer, format: int64, minimum: 0, description: 人民币分 }
+        paid_amount: { type: integer, format: int64, minimum: 0, description: 人民币分 }
+        remark: { type: string }
+        version: { type: integer, minimum: 0 }
+        paid_at: { type: string, format: date-time }
+        cancelled_at: { type: string, format: date-time }
+        completed_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    DeliveryDetailShop:
+      type: object
+      additionalProperties: false
+      required: [id, name, city, district, address, status, business_status]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        phone: { type: string }
+        province: { type: string }
+        city: { type: string }
+        district: { type: string }
+        address: { type: string }
+        latitude: { type: number, format: double, minimum: -90, maximum: 90 }
+        longitude: { type: number, format: double, minimum: -180, maximum: 180 }
+        coordinate_system: { type: string, enum: [gcj02, wgs84, bd09] }
+        status: { type: string }
+        business_status: { type: string }
+    DeliveryDetailItem:
+      type: object
+      additionalProperties: false
+      required: [id, shop_product_id, product_id, product_snapshot, quantity, sale_price_amount, total_amount]
+      properties:
+        id: { type: string }
+        shop_product_id: { type: string }
+        product_id: { type: string }
+        product_snapshot: { $ref: "#/components/schemas/DeliveryProductSnapshot" }
+        quantity: { type: integer, minimum: 1 }
+        sale_price_amount: { type: integer, format: int64, minimum: 0, description: 人民币分 }
+        total_amount: { type: integer, format: int64, minimum: 0, description: 人民币分 }
+    DeliveryDetail:
+      type: object
+      additionalProperties: false
+      required: [id, order_id, shop_id, rider_id, status, version, assignment_version, dispatch_status, pickup_ready_status, pickup_snapshot, recipient_snapshot, pickup_contact, recipient_contact, order, shop, items]
+      properties:
+        id: { type: string }
+        order_id: { type: string }
+        shop_id: { type: string }
+        rider_id: { type: string }
+        status: { type: string }
+        version: { type: integer, minimum: 0 }
+        assignment_version: { type: integer, minimum: 0 }
+        dispatch_status: { type: string }
+        pickup_ready_status: { type: string }
+        pickup_snapshot:
+          allOf:
+            - $ref: "#/components/schemas/DeliveryPickupSnapshot"
+          nullable: true
+        recipient_snapshot:
+          allOf:
+            - $ref: "#/components/schemas/DeliveryRecipientSnapshot"
+          nullable: true
+        pickup_contact: { $ref: "#/components/schemas/DeliveryContact" }
+        recipient_contact: { $ref: "#/components/schemas/DeliveryContact" }
+        order: { $ref: "#/components/schemas/DeliveryDetailOrder" }
+        shop: { $ref: "#/components/schemas/DeliveryDetailShop" }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/DeliveryDetailItem" }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        pickup_ready_at: { type: string, format: date-time }
+        accepted_at: { type: string, format: date-time }
+        picked_up_at: { type: string, format: date-time }
+        picked_up_verified_at: { type: string, format: date-time }
+        started_at: { type: string, format: date-time }
+        completed_at: { type: string, format: date-time }
+        completed_verified_at: { type: string, format: date-time }
+        cancelled_at: { type: string, format: date-time }
+    DeliveryDetailEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, enum: [0] }
+        message: { type: string, example: ok }
+        data: { $ref: "#/components/schemas/DeliveryDetail" }
+        request_id: { type: string }
+    PrintRenderSummary:
+      type: object
+      additionalProperties: false
+      description: 非管理员可见的安全渲染摘要；不包含小票原始载荷、收货信息、核验码、设备明文或 Provider 原始错误。
+      required: [item_kind_count, total_quantity, payable_amount, paper_width_mm, content_hash]
+      properties:
+        item_kind_count: { type: integer, minimum: 1 }
+        total_quantity: { type: integer, minimum: 1 }
+        payable_amount: { type: integer, format: int64, minimum: 0, description: 人民币分 }
+        paper_width_mm: { type: integer, enum: [58, 80] }
+        line_count: { type: integer, minimum: 1 }
+        content_hash: { type: string, pattern: "^[a-f0-9]{64}$" }
+    PrintTask:
+      type: object
+      additionalProperties: false
+      required: [id, task_no, order_id, shop_id, event_type, template_id, template_version, payload_schema_version, reprint_seq, provider, status, attempts, created_at]
+      properties:
+        id: { type: string }
+        task_no: { type: string }
+        order_id: { type: string, description: 测试打印任务为 0 }
+        shop_id: { type: string }
+        event_type: { type: string }
+        template_id: { type: string }
+        template_version: { type: string }
+        payload_schema_version: { type: string }
+        source_task_id: { type: string }
+        reprint_seq: { type: integer, minimum: 0 }
+        provider: { type: string }
+        provider_request_id: { type: string }
+        provider_status: { type: string }
+        status: { type: string, enum: [pending, processing, querying, succeeded, retry_wait, dead, cancelled] }
+        attempts: { type: integer, minimum: 0 }
+        next_retry_at: { type: string, format: date-time }
+        last_error_code: { type: string }
+        succeeded_at: { type: string, format: date-time }
+        render_summary: { $ref: "#/components/schemas/PrintRenderSummary" }
+        created_at: { type: string, format: date-time }
+    PrintTaskEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, enum: [0] }
+        message: { type: string, example: ok }
+        data: { $ref: "#/components/schemas/PrintTask" }
+        request_id: { type: string }
+    PrintTaskPageEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, enum: [0] }
+        message: { type: string, example: ok }
+        data:
+          type: object
+          additionalProperties: false
+          required: [items, next_page_token]
+          properties:
+            items:
+              type: array
+              items: { $ref: "#/components/schemas/PrintTask" }
+            next_page_token: { type: string }
+        request_id: { type: string }
+    PrintSettingCreateReq:
+      type: object
+      additionalProperties: false
+      required: [shop_id, enabled, provider, device_id, template_id, copies, auto_print_events]
+      properties:
+        shop_id: { type: string }
         enabled: { type: boolean }
-        provider: { type: string, maxLength: 32 }
-        device_id: { type: string, maxLength: 128, writeOnly: true }
+        provider: { type: string, minLength: 1, maxLength: 32 }
+        device_id: { type: string, minLength: 1, maxLength: 128, writeOnly: true }
         template_id: { type: string }
         copies: { type: integer, minimum: 1, maximum: 3 }
-        auto_print_events: { type: array, items: { type: string, enum: [order_accepted, order_prepared] } }
+        auto_print_events:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { type: string, enum: [order_accepted, order_prepared] }
+    PrintSetting:
+      type: object
+      additionalProperties: false
+      required: [id, shop_id, provider, device_id_mask, template_id, copies, auto_print_events, enabled, version, device_status]
+      properties:
+        id: { type: string }
+        shop_id: { type: string }
+        provider: { type: string }
+        device_id_mask: { type: string, description: 打印设备标识的脱敏值, x-sensitive: credential_masked }
+        template_id: { type: string }
+        copies: { type: integer, minimum: 1, maximum: 3 }
+        auto_print_events:
+          type: array
+          items: { type: string, enum: [order_accepted, order_prepared] }
+        enabled: { type: boolean }
+        version: { type: integer, minimum: 1 }
+        device_status: { type: string, enum: [unknown, online, offline, error] }
+        last_health_at: { type: string, format: date-time }
+        last_health_error_code: { type: string }
+    PrintSettingEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, enum: [0] }
+        message: { type: string, example: ok }
+        data: { $ref: "#/components/schemas/PrintSetting" }
+        request_id: { type: string }
+    TestPrint:
+      type: object
+      additionalProperties: false
+      required: [task_id, provider_request_id, status, submitted_at]
+      properties:
+        task_id: { type: string }
+        provider_request_id: { type: string }
+        status: { type: string, enum: [querying, succeeded] }
+        submitted_at: { type: string, format: date-time }
+    TestPrintEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, enum: [0] }
+        message: { type: string, example: ok }
+        data: { $ref: "#/components/schemas/TestPrint" }
+        request_id: { type: string }
+    PrintSettingPatchReq:
+      type: object
+      additionalProperties: false
+      required: [version]
+      minProperties: 2
+      properties:
+        enabled: { type: boolean }
+        provider: { type: string, minLength: 1, maxLength: 32 }
+        device_id: { type: string, minLength: 1, maxLength: 128, writeOnly: true }
+        template_id: { type: string }
+        copies: { type: integer, minimum: 1, maximum: 3 }
+        auto_print_events: { type: array, minItems: 1, uniqueItems: true, items: { type: string, enum: [order_accepted, order_prepared] } }
         version: { type: integer, minimum: 1 }
     NotificationTemplateReq:
       type: object
@@ -3079,21 +4585,120 @@ components:
         body_template: { type: string, maxLength: 2000 }
         allowed_fields: { type: array, items: { type: string } }
         status: { type: string, enum: [draft, published, retired] }
+    PickupVerification:
+      type: object
+      additionalProperties: false
+      required: [delivery_order_id, stage, status, code, code_mask, expires_at, version]
+      properties:
+        delivery_order_id: { type: string }
+        stage: { type: string, enum: [pickup] }
+        status: { type: string, enum: [active, locked] }
+        code: { type: string, pattern: "^[0-9]{6}$", writeOnly: false, x-sensitive: one_time_credential }
+        code_mask: { type: string, pattern: "^\\*{4}[0-9]{2}$" }
+        failed_attempts: { type: integer, minimum: 0 }
+        remaining_attempts: { type: integer, minimum: 0 }
+        expires_at: { type: string, format: date-time }
+        locked_until: { type: string, format: date-time }
+        verified_at: { type: string, format: date-time }
+        version: { type: integer, minimum: 1 }
+    PickupVerificationEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, enum: [0] }
+        message: { type: string, example: ok }
+        data: { $ref: "#/components/schemas/PickupVerification" }
+        request_id: { type: string }
+    DeliveryVerification:
+      type: object
+      additionalProperties: false
+      required: [delivery_order_id, stage, status, code, code_mask, expires_at, version]
+      properties:
+        delivery_order_id: { type: string }
+        stage: { type: string, enum: [delivery] }
+        status: { type: string, enum: [active, locked] }
+        code: { type: string, pattern: "^[0-9]{6}$", writeOnly: false, x-sensitive: one_time_credential }
+        code_mask: { type: string, pattern: "^\\*{4}[0-9]{2}$" }
+        failed_attempts: { type: integer, minimum: 0 }
+        remaining_attempts: { type: integer, minimum: 0 }
+        expires_at: { type: string, format: date-time }
+        locked_until: { type: string, format: date-time }
+        verified_at: { type: string, format: date-time }
+        version: { type: integer, minimum: 1 }
+    DeliveryVerificationEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, enum: [0] }
+        message: { type: string, example: ok }
+        data: { $ref: "#/components/schemas/DeliveryVerification" }
+        request_id: { type: string }
+    VerificationUnlock:
+      type: object
+      additionalProperties: false
+      required: [delivery_order_id, stage, status, code_mask, expires_at, version]
+      properties:
+        delivery_order_id: { type: string }
+        stage: { type: string, enum: [pickup, delivery] }
+        status: { type: string, enum: [active] }
+        code_mask: { type: string, pattern: "^\\*{4}[0-9]{2}$" }
+        failed_attempts: { type: integer, minimum: 0 }
+        remaining_attempts: { type: integer, minimum: 0 }
+        expires_at: { type: string, format: date-time }
+        locked_until: { type: string, format: date-time }
+        verified_at: { type: string, format: date-time }
+        version: { type: integer, minimum: 1 }
+    VerificationUnlockEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, enum: [0] }
+        message: { type: string, example: ok }
+        data: { $ref: "#/components/schemas/VerificationUnlock" }
+        request_id: { type: string }
     VerificationUnlockReq:
       type: object
-      required: [stage, reason_code, reason]
+      additionalProperties: false
+      required: [stage, reason_code, reason, expected_version]
       properties:
         stage: { type: string, enum: [pickup, delivery] }
         reason_code: { type: string, maxLength: 64 }
         reason: { type: string, minLength: 2, maxLength: 255 }
+        expected_version: { type: integer, minimum: 1 }
     MerchantProvisionReq:
       type: object
+      additionalProperties: false
       required: [merchant, shop, account, merchant_user_name]
       properties:
         merchant: { type: object, required: [code, name], additionalProperties: true }
         shop: { type: object, required: [name, city, district, address], additionalProperties: true }
         account: { type: object, required: [username], properties: { username: { type: string }, phone: { type: string } } }
         merchant_user_name: { type: string, maxLength: 64 }
+        role_code: { type: string, enum: [merchant_owner, merchant_order_operator, merchant_inventory_clerk], default: merchant_owner }
+    MerchantUserReq:
+      type: object
+      additionalProperties: false
+      required: [account, name, shop_ids, role_code]
+      properties:
+        account:
+          type: object
+          additionalProperties: false
+          required: [username]
+          properties:
+            username: { type: string, minLength: 1, maxLength: 64 }
+            phone: { type: string, maxLength: 32 }
+        name: { type: string, minLength: 1, maxLength: 64 }
+        shop_ids: { type: array, minItems: 1, uniqueItems: true, items: { type: string } }
+        role_code: { type: string, enum: [merchant_owner, merchant_order_operator, merchant_inventory_clerk] }
+    MerchantUserRoleReq:
+      type: object
+      additionalProperties: false
+      required: [role_code]
+      properties:
+        role_code: { type: string, enum: [merchant_owner, merchant_order_operator, merchant_inventory_clerk] }
     AccountStatusReq:
       type: object
       required: [status, reason]
@@ -3523,5 +5128,7 @@ components:
         status: { type: integer }
         detail: { type: string }
         instance: { type: string }
-        error_code: { type: string }
+        error_code:
+          type: string
+          description: 幂等写请求同 key 异参固定返回 IDEMPOTENCY_KEY_REUSED；同参请求仍处于有效处理租约时固定返回 IDEMPOTENCY_IN_PROGRESS。
         request_id: { type: string }

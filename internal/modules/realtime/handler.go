@@ -88,7 +88,7 @@ func (h *Handler) websocket(c *gin.Context) {
 		response.Error(c, err)
 		return
 	}
-	if !h.hub.CanRegister(info.RiderID) {
+	if !h.hub.CanRegister(info) {
 		response.Error(c, problem.TooManyRequests("REALTIME_CONNECTION_LIMIT", "connection limit reached"))
 		return
 	}

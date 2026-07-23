@@ -71,6 +71,14 @@ type AfterCommitConsumerHandler interface {
 	AfterCommit(context.Context, EventEnvelope, ConsumerResult) error
 }
 
+// ReliableAfterCommitConsumerHandler keeps the consumer receipt unfinished
+// until a transient fanout has actually succeeded. Handlers should opt in only
+// when they do not already have a durable DB relay/fallback.
+type ReliableAfterCommitConsumerHandler interface {
+	AfterCommitConsumerHandler
+	RequiresSuccessfulAfterCommit(EventEnvelope, ConsumerResult) bool
+}
+
 type ConsumerHandlerFunc func(context.Context, *gorm.DB, EventEnvelope) (ConsumerResult, error)
 
 // Handle 处理消费者结果请求。
@@ -231,14 +239,10 @@ func (r *ConsumerRuntime) handleDelivery(ctx context.Context, channel *amqp.Chan
 	handlerCtx, cancel := context.WithTimeout(ctx, r.spec.HandlerTimeout)
 	defer cancel()
 	duplicate, handlerResult, err := r.processEnvelope(handlerCtx, envelope)
+	if err == nil && !duplicate {
+		err = r.finalizeAfterCommit(handlerCtx, envelope, handlerResult)
+	}
 	if err == nil {
-		if !duplicate {
-			if postCommit, ok := r.handler.(AfterCommitConsumerHandler); ok {
-				if postErr := postCommit.AfterCommit(handlerCtx, envelope, handlerResult); postErr != nil {
-					r.log.Warn("mq consumer post-commit action failed; DB fallback will reconcile", slog.String("consumer", r.spec.Name), slog.String("event_id", envelope.EventID), slog.Any("error", postErr))
-				}
-			}
-		}
 		r.incConsume(map[bool]string{true: "duplicate", false: "succeeded"}[duplicate])
 		return delivery.Ack(false)
 	}
@@ -289,7 +293,17 @@ func (r *ConsumerRuntime) processEnvelope(ctx context.Context, envelope EventEnv
 		if err != nil {
 			return err
 		}
-		updates := map[string]any{"status": "succeeded", "processed_at": now, "locked_by": nil, "locked_until": nil, "last_error_code": nil}
+		status := "succeeded"
+		processedAt := any(now)
+		if r.requiresSuccessfulAfterCommit(envelope, result) {
+			status = "post_commit"
+			processedAt = nil
+		}
+		updates := map[string]any{"status": status, "processed_at": processedAt, "last_error_code": nil}
+		if status == "succeeded" {
+			updates["locked_by"] = nil
+			updates["locked_until"] = nil
+		}
 		if result.RefType != "" {
 			updates["result_ref_type"] = result.RefType
 		}
@@ -300,6 +314,42 @@ func (r *ConsumerRuntime) processEnvelope(ctx context.Context, envelope EventEnv
 		return tx.Model(&ConsumerReceipt{}).Where("id=?", receipt.ID).Updates(updates).Error
 	})
 	return duplicate, handlerResult, err
+}
+
+func (r *ConsumerRuntime) requiresSuccessfulAfterCommit(envelope EventEnvelope, result ConsumerResult) bool {
+	handler, ok := r.handler.(ReliableAfterCommitConsumerHandler)
+	return ok && handler.RequiresSuccessfulAfterCommit(envelope, result)
+}
+
+// finalizeAfterCommit closes the receipt only after a reliable transient
+// fanout succeeds. A failure is returned to the normal MQ retry/dead-letter
+// path, whose recordFailure transition makes the receipt processable again.
+func (r *ConsumerRuntime) finalizeAfterCommit(ctx context.Context, envelope EventEnvelope, result ConsumerResult) error {
+	postCommit, ok := r.handler.(AfterCommitConsumerHandler)
+	if !ok {
+		return nil
+	}
+	postErr := postCommit.AfterCommit(ctx, envelope, result)
+	if !r.requiresSuccessfulAfterCommit(envelope, result) {
+		if postErr != nil && r.log != nil {
+			r.log.Warn("mq consumer post-commit action failed; DB fallback will reconcile", slog.String("consumer", r.spec.Name), slog.String("event_id", envelope.EventID), slog.Any("error", postErr))
+		}
+		return nil
+	}
+	if postErr != nil {
+		return TemporaryConsumerError("MQ_POST_COMMIT_FAILED", "post-commit delivery temporarily failed", postErr)
+	}
+	now := time.Now()
+	resultDB := r.db.WithContext(ctx).Model(&ConsumerReceipt{}).
+		Where("consumer_name=? AND event_id=? AND status<>'dead'", r.spec.Name, envelope.EventID).
+		Updates(map[string]any{"status": "succeeded", "processed_at": now, "locked_by": nil, "locked_until": nil, "last_error_code": nil})
+	if resultDB.Error != nil {
+		return TemporaryConsumerError("MQ_POST_COMMIT_RECEIPT_FAILED", "post-commit receipt update temporarily failed", resultDB.Error)
+	}
+	if resultDB.RowsAffected != 1 {
+		return TemporaryConsumerError("MQ_POST_COMMIT_RECEIPT_MISSING", "post-commit receipt is unavailable", nil)
+	}
+	return nil
 }
 
 // consumerAllowed 判断消费者允许状态。

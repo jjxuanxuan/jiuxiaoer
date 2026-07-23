@@ -120,11 +120,15 @@ func TestL1IdentityPaymentAndExpiryIntegration(t *testing.T) {
 	if err := tx.Where("id = ?", tamperedOrderID).First(&tamperedOrder).Error; err != nil {
 		t.Fatalf("load tampered callback order: %v", err)
 	}
-	if tamperedOrder.Status != "pending_payment" {
-		t.Fatalf("amount mismatch changed order state to %s", tamperedOrder.Status)
+	if tamperedOrder.Status != "payment_exception" {
+		t.Fatalf("amount mismatch must enter payment_exception, got %s", tamperedOrder.Status)
+	}
+	var tamperedDeductions int64
+	if err := tx.Table("stock_records").Where("source_type = 'payment' AND source_id = (SELECT id FROM payments WHERE payment_no = ?)", tamperedPaymentNo).Count(&tamperedDeductions).Error; err != nil || tamperedDeductions != 0 {
+		t.Fatalf("amount mismatch must not deduct stock: deductions=%d err=%v", tamperedDeductions, err)
 	}
 	var rejectedCallbacks int64
-	if err := tx.Table("payment_callbacks").Where("provider_event_id = 'l1-callback-tampered' AND process_status = 'failed' AND error_code = 'PAYMENT_AMOUNT_MISMATCH'").Count(&rejectedCallbacks).Error; err != nil || rejectedCallbacks != 1 {
+	if err := tx.Table("payment_callbacks").Where("provider_event_id = 'l1-callback-tampered' AND process_status = 'failed' AND error_code = 'PAYMENT_PROVIDER_DATA_MISMATCH'").Count(&rejectedCallbacks).Error; err != nil || rejectedCallbacks != 1 {
 		t.Fatalf("expected persisted rejected callback: count=%d err=%v", rejectedCallbacks, err)
 	}
 
@@ -192,8 +196,8 @@ func TestL1IdentityPaymentAndExpiryIntegration(t *testing.T) {
 	if err := tx.Table("stock_records").Where("source_type = 'payment' AND source_id = ?", mismatchPaymentID).Count(&mismatchDeductions).Error; err != nil {
 		t.Fatalf("count query mismatch deductions: %v", err)
 	}
-	if mismatchOrder.Status != "pending_payment" || mismatchDeductions != 0 || mismatchProvider.closed {
-		t.Fatalf("query mismatch changed business state: order=%+v deductions=%d closed=%t", mismatchOrder, mismatchDeductions, mismatchProvider.closed)
+	if mismatchOrder.Status != "payment_exception" || mismatchDeductions != 0 || mismatchProvider.closed {
+		t.Fatalf("query mismatch must enter payment exception without stock deduction or closing provider order: order=%+v deductions=%d closed=%t", mismatchOrder, mismatchDeductions, mismatchProvider.closed)
 	}
 }
 

@@ -17,6 +17,7 @@ func RegisterRoutes(g *gin.RouterGroup, h *Handler) {
 	g.POST("/merchants/provision", h.ProvisionMerchant)
 	g.POST("/merchants/:id/users", h.CreateMerchantUser)
 	g.PUT("/merchant-users/:id/shops", h.AuthorizeShops)
+	g.PATCH("/merchant-users/:id/role", h.UpdateMerchantUserRole)
 	g.PATCH("/accounts/:id/status", h.AccountStatus)
 	g.POST("/accounts/:id/reset-password", h.ResetPassword)
 	g.POST("/riders", h.CreateRider)
@@ -82,6 +83,20 @@ func (h *Handler) AuthorizeShops(c *gin.Context) {
 		return
 	}
 	x, e := h.service.AuthorizeShops(c.Request.Context(), v, c.Request.Method, c.FullPath(), c.GetHeader("Idempotency-Key"), c.Param("id"), r)
+	done(c, x, e)
+}
+
+// UpdateMerchantUserRole 调整商家用户角色并使旧权限快照失效。
+func (h *Handler) UpdateMerchantUserRole(c *gin.Context) {
+	v, ok := pc(c)
+	if !ok {
+		return
+	}
+	var r MerchantUserRoleReq
+	if bad(c, c.ShouldBindJSON(&r)) {
+		return
+	}
+	x, e := h.service.UpdateMerchantUserRole(c.Request.Context(), v, c.Request.Method, c.FullPath(), c.GetHeader("Idempotency-Key"), c.Param("id"), r)
 	done(c, x, e)
 }
 

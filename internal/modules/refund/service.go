@@ -19,6 +19,7 @@ import (
 
 	"jiuxiaoer-admin/backend-go/internal/config"
 	"jiuxiaoer-admin/backend-go/internal/modules/auth"
+	"jiuxiaoer-admin/backend-go/internal/modules/deliveryverification"
 	"jiuxiaoer-admin/backend-go/internal/pkg/idempotency"
 	"jiuxiaoer-admin/backend-go/internal/pkg/pagination"
 	"jiuxiaoer-admin/backend-go/internal/pkg/paygateway"
@@ -91,7 +92,7 @@ func (s *Service) ProcessCallback(ctx context.Context, providerCode string, requ
 		}
 		if err := s.applyState(ctx, tx, row, event.State); err != nil {
 			reject = err
-			if isStateMismatch(err) {
+			if isStateMismatch(err) && !isTerminalRefundRow(row) {
 				if updateErr := s.repo.Update(ctx, tx, row.ID, map[string]any{"status": "exception", "failure_code": "PROVIDER_DATA_MISMATCH", "failure_detail": err.Error(), "next_retry_at": nil, "locked_by": nil, "locked_until": nil}); updateErr != nil {
 					return updateErr
 				}
@@ -135,7 +136,7 @@ func (s *Service) applyProviderState(ctx context.Context, refundID uint64, claim
 			return nil
 		}
 		err = s.applyState(ctx, tx, row, state)
-		if err != nil && isStateMismatch(err) {
+		if err != nil && isStateMismatch(err) && !isTerminalRefundRow(row) {
 			if updateErr := s.repo.Update(ctx, tx, row.ID, map[string]any{"status": "exception", "failure_code": "PROVIDER_DATA_MISMATCH", "failure_detail": err.Error(), "next_retry_at": nil, "locked_by": nil, "locked_until": nil}); updateErr != nil {
 				return updateErr
 			}
@@ -150,6 +151,11 @@ func (s *Service) applyProviderState(ctx context.Context, refundID uint64, claim
 
 // applyState 应用状态。
 func (s *Service) applyState(ctx context.Context, tx *gorm.DB, row Row, state State) error {
+	incomingStatus := strings.ToUpper(strings.TrimSpace(state.Status))
+	idempotent, err := guardTerminalRefundTransition(row, incomingStatus)
+	if err != nil {
+		return err
+	}
 	currencyMismatch := state.Currency != "" && state.Currency != row.Currency
 	if state.CurrencyRequired && state.Currency == "" {
 		currencyMismatch = true
@@ -167,9 +173,8 @@ func (s *Service) applyState(ctx context.Context, tx *gorm.DB, row Row, state St
 	if state.PaymentNo != payment.PaymentNo {
 		return problem.Conflict("REFUND_PAYMENT_MISMATCH", "provider payment number does not match local payment")
 	}
-	incomingStatus := strings.ToUpper(strings.TrimSpace(state.Status))
-	if row.Status == "succeeded" && incomingStatus != "SUCCESS" {
-		return problem.Conflict("REFUND_STATUS_REGRESSION", "provider refund status cannot regress after success")
+	if idempotent {
+		return nil
 	}
 	providerID := optional(state.ProviderRefundID)
 	providerStatus := optional(state.Status)
@@ -221,6 +226,11 @@ func (s *Service) applyState(ctx context.Context, tx *gorm.DB, row Row, state St
 		if err := tx.WithContext(ctx).Model(&Order{}).Where("id=? AND refunded_amount+?<=paid_amount", order.ID, row.Amount).Updates(map[string]any{"refunded_amount": gorm.Expr("refunded_amount+?", row.Amount), "after_sale_status": orderStatus, "status": financialStatus, "version": gorm.Expr("version+1")}).Error; err != nil {
 			return err
 		}
+		if financialStatus == "refunded" {
+			if err := deliveryverification.InvalidateByOrder(ctx, tx, s.ids, order.ID, "order_fully_refunded"); err != nil {
+				return err
+			}
+		}
 		afterStatus := afterSale.Status
 		if afterSale.RefundedAmount+row.Amount == afterSale.ApprovedAmount {
 			afterStatus = "completed"
@@ -264,6 +274,31 @@ func (s *Service) applyState(ctx context.Context, tx *gorm.DB, row Row, state St
 	}
 }
 
+// guardTerminalRefundTransition keeps the two provider terminal states
+// immutable. CLOSED must be retried with a new merchant refund number, so the
+// original row can only receive an idempotent CLOSED observation after it has
+// failed or a replacement has been created.
+func guardTerminalRefundTransition(row Row, incomingStatus string) (bool, error) {
+	switch {
+	case row.Status == "succeeded":
+		if incomingStatus == "SUCCESS" {
+			return true, nil
+		}
+		return false, problem.Conflict("REFUND_STATUS_REGRESSION", "provider refund status cannot regress after success")
+	case row.Status == "failed" || refundProviderStatus(row) == "CLOSED":
+		if incomingStatus == "CLOSED" {
+			return true, nil
+		}
+		return false, problem.Conflict("REFUND_STATUS_REGRESSION", "provider refund status cannot change after CLOSED")
+	default:
+		return false, nil
+	}
+}
+
+func isTerminalRefundRow(row Row) bool {
+	return row.Status == "succeeded" || row.Status == "failed" || refundProviderStatus(row) == "CLOSED"
+}
+
 func refundPollDelay(attempts uint32) time.Duration {
 	switch {
 	case attempts <= 5:
@@ -293,14 +328,16 @@ func isStateMismatch(err error) bool {
 	}
 }
 
-// MarkAttemptError 标记尝试错误的状态。
-func (s *Service) MarkAttemptError(ctx context.Context, refundID uint64, cause error) error {
+// MarkAttemptError records a retryable result only while the exact worker claim
+// is still current. Callback and operator writes increment version and fence out
+// stale provider results.
+func (s *Service) MarkAttemptError(ctx context.Context, refundID uint64, claimedVersion uint32, cause error) error {
 	return s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		row, err := s.repo.Lock(ctx, tx, refundID)
 		if err != nil {
 			return err
 		}
-		if row.Status == "succeeded" || row.Status == "failed" || row.Status == "exception" {
+		if !workerResultApplicable(row, claimedVersion) {
 			return nil
 		}
 		status := row.Status
@@ -317,13 +354,15 @@ func (s *Service) MarkAttemptError(ctx context.Context, refundID uint64, cause e
 	})
 }
 
-func (s *Service) MarkPermanentError(ctx context.Context, refundID uint64, code string, cause error) error {
+// MarkPermanentError records a permanent result only while the exact worker
+// claim is still current. In particular it must never overwrite CLOSED/failed.
+func (s *Service) MarkPermanentError(ctx context.Context, refundID uint64, claimedVersion uint32, code string, cause error) error {
 	return s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		row, err := s.repo.Lock(ctx, tx, refundID)
 		if err != nil {
 			return err
 		}
-		if row.Status == "succeeded" {
+		if !workerResultApplicable(row, claimedVersion) {
 			return nil
 		}
 		detail := "provider rejected refund request"
@@ -336,6 +375,18 @@ func (s *Service) MarkPermanentError(ctx context.Context, refundID uint64, code 
 		now := time.Now()
 		return s.repo.Update(ctx, tx, row.ID, map[string]any{"status": "exception", "next_retry_at": nil, "locked_by": nil, "locked_until": nil, "failed_at": &now, "failure_code": code, "failure_detail": detail})
 	})
+}
+
+func workerResultApplicable(row Row, claimedVersion uint32) bool {
+	if row.Version != claimedVersion {
+		return false
+	}
+	switch row.Status {
+	case "creating", "submission_unknown", "pending":
+		return true
+	default:
+		return false
+	}
 }
 
 // List 查询DTO列表列表。
@@ -623,7 +674,7 @@ func (s *Service) outbox(ctx context.Context, tx *gorm.DB, eventType string, agg
 func (s *Service) audit(ctx context.Context, tx *gorm.DB, actorID uint64, action string, before Row, after any) error {
 	beforeJSON, _ := json.Marshal(before)
 	afterJSON, _ := json.Marshal(after)
-	return tx.WithContext(ctx).Create(&Audit{ID: s.ids.Next(), ActorType: "admin", ActorID: actorID, Action: action, ResourceType: "refund", ResourceID: before.ID, BeforeData: datatypes.JSON(beforeJSON), AfterData: datatypes.JSON(afterJSON), Result: "success", RequestID: requestctx.RequestIDPtr(ctx), IP: requestctx.IPPtr(ctx), UserAgent: requestctx.UserAgentPtr(ctx)}).Error
+	return tx.WithContext(ctx).Create(&Audit{ID: s.ids.Next(), ActorType: "admin", ActorID: actorID, Action: action, ResourceType: "refund", ResourceID: before.ID, BeforeData: datatypes.JSON(beforeJSON), AfterData: datatypes.JSON(afterJSON), Result: "success", RequestID: requestctx.RequestIDPtr(ctx), IPHash: requestctx.IPHashPtr(ctx), UserAgent: requestctx.UserAgentPtr(ctx)}).Error
 }
 
 type DTO struct {

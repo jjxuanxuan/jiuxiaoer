@@ -41,6 +41,7 @@ const (
 type Identity struct {
 	AccountType       string
 	AccountID         uint64
+	CredentialVersion uint
 	CustomerID        uint64
 	AdminUserID       uint64
 	MerchantUserID    uint64
@@ -63,6 +64,7 @@ func (i Identity) toClaims(tokenType string) Claims {
 		TokenType:         tokenType,
 		AccountType:       i.AccountType,
 		AccountID:         strconv.FormatUint(i.AccountID, 10),
+		CredentialVersion: i.CredentialVersion,
 		CustomerID:        idString(i.CustomerID),
 		AdminUserID:       idString(i.AdminUserID),
 		MerchantUserID:    idString(i.MerchantUserID),
@@ -198,10 +200,11 @@ func (s *Service) CustomerSMSLogin(ctx context.Context, req SmsLoginReq) (*Token
 	}
 
 	identity := Identity{
-		AccountType: "customer",
-		AccountID:   account.ID,
-		CustomerID:  customer.ID,
-		Permissions: []string{"customer:login", "product:list", "order:create"},
+		AccountType:       "customer",
+		AccountID:         account.ID,
+		CredentialVersion: account.CredentialVersion,
+		CustomerID:        customer.ID,
+		Permissions:       customerPermissions(),
 		Profile: map[string]any{
 			"customer_id": idString(customer.ID),
 			"phone":       req.Phone,
@@ -293,10 +296,11 @@ func (s *Service) WeChatLogin(ctx context.Context, req WeChatLoginReq) (*WeChatL
 	}
 	phoneBound := customer.Phone != ""
 	identity := Identity{
-		AccountType: "customer",
-		AccountID:   account.ID,
-		CustomerID:  customer.ID,
-		Permissions: []string{"customer:login", "product:list", "order:create"},
+		AccountType:       "customer",
+		AccountID:         account.ID,
+		CredentialVersion: account.CredentialVersion,
+		CustomerID:        customer.ID,
+		Permissions:       customerPermissions(),
 		Profile: map[string]any{
 			"customer_id": idString(customer.ID),
 			"phone":       customer.Phone,
@@ -435,8 +439,8 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*TokenResp,
 	if account.Status != "active" {
 		return nil, problem.Forbidden("AUTH_ACCOUNT_DISABLED", "account disabled")
 	}
-	if account.TokenInvalidBefore != nil && claims.IssuedAt != nil && !claims.IssuedAt.Time.After(*account.TokenInvalidBefore) {
-		return nil, problem.Unauthorized("AUTH_SESSION_REVOKED", "session revoked")
+	if err := validateAccountTokenSnapshot(account, claims); err != nil {
+		return nil, err
 	}
 	identity, err := s.identityForAccount(ctx, account)
 	if err != nil {
@@ -473,10 +477,23 @@ func (s *Service) VerifyAccess(ctx context.Context, rawToken string) (*Claims, e
 	if err != nil || account.Status != "active" {
 		return nil, problem.Unauthorized("AUTH_SESSION_REVOKED", "session revoked")
 	}
-	if account.TokenInvalidBefore != nil && claims.IssuedAt != nil && !claims.IssuedAt.Time.After(*account.TokenInvalidBefore) {
-		return nil, problem.Unauthorized("AUTH_SESSION_REVOKED", "session revoked")
+	if err := validateAccountTokenSnapshot(account, claims); err != nil {
+		return nil, err
 	}
 	return claims, nil
+}
+
+// validateAccountTokenSnapshot closes the permission/scope revocation window.
+// credential_version is authoritative for newly issued tokens; the timestamp
+// remains a defence-in-depth boundary for legacy sessions and explicit resets.
+func validateAccountTokenSnapshot(account Account, claims *Claims) error {
+	if claims == nil || claims.CredentialVersion == 0 || claims.CredentialVersion != account.CredentialVersion {
+		return problem.Unauthorized("AUTH_SESSION_REVOKED", "session revoked")
+	}
+	if account.TokenInvalidBefore != nil && claims.IssuedAt != nil && claims.IssuedAt.Time.Before(account.TokenInvalidBefore.Truncate(time.Second)) {
+		return problem.Unauthorized("AUTH_SESSION_REVOKED", "session revoked")
+	}
+	return nil
 }
 
 // VerifyAccessForLogout 核验Access For Logout是否有效。
@@ -557,11 +574,12 @@ func (s *Service) identityForAccount(ctx context.Context, account Account) (Iden
 			return Identity{}, problem.Forbidden("AUTH_ACCOUNT_DISABLED", "account disabled")
 		}
 		return Identity{
-			AccountType: account.AccountType,
-			AccountID:   account.ID,
-			AdminUserID: admin.ID,
-			RoleCode:    roleCode,
-			Permissions: permissions,
+			AccountType:       account.AccountType,
+			AccountID:         account.ID,
+			CredentialVersion: account.CredentialVersion,
+			AdminUserID:       admin.ID,
+			RoleCode:          roleCode,
+			Permissions:       permissions,
 			Profile: map[string]any{
 				"admin_user_id":  idString(admin.ID),
 				"admin_sub_role": admin.AdminSubRole,
@@ -571,25 +589,30 @@ func (s *Service) identityForAccount(ctx context.Context, account Account) (Iden
 			},
 		}, nil
 	case "merchant":
-		merchantUser, shopIDs, err := s.repo.MerchantProfile(ctx, account.ID)
+		merchantUser, roleCode, shopIDs, permissions, err := s.repo.MerchantProfile(ctx, account.ID)
 		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return Identity{}, problem.Forbidden("MERCHANT_ROLE_INVALID", "merchant role is unavailable")
+			}
 			return Identity{}, err
 		}
 		if merchantUser.Status != "active" {
 			return Identity{}, problem.Forbidden("MERCHANT_DISABLED", "merchant disabled")
 		}
-		permissions := []string{"store_order:list", "store_order:accept", "store_order:prepare", "shop_product:list", "shop_product:create", "shop_product:update", "shop:business_status", "inventory:view", "inventory:adjust", "after_sale:list_shop", "after_sale:view_shop", "after_sale:review_shop", "after_sale:receive_return", "after_sale:create_replacement", "print_setting:view_shop", "print_setting:update_shop", "print_task:list_shop", "print_task:reprint_shop", "delivery_verification:view_shop", "delivery_incident:view_shop", "delivery_return:list_shop", "delivery_return:view_shop", "delivery_return:receive_shop"}
 		return Identity{
 			AccountType:       account.AccountType,
 			AccountID:         account.ID,
+			CredentialVersion: account.CredentialVersion,
 			MerchantUserID:    merchantUser.ID,
 			MerchantID:        merchantUser.MerchantID,
 			AuthorizedShopIDs: shopIDs,
+			RoleCode:          roleCode,
 			Permissions:       permissions,
 			Profile: map[string]any{
 				"merchant_user_id":    idString(merchantUser.ID),
 				"merchant_id":         idString(merchantUser.MerchantID),
 				"authorized_shop_ids": uint64Strings(shopIDs),
+				"role_code":           roleCode,
 				"name":                merchantUser.Name,
 				"permissions":         permissions,
 			},
@@ -602,12 +625,13 @@ func (s *Service) identityForAccount(ctx context.Context, account Account) (Iden
 		if rider.Status != "active" {
 			return Identity{}, problem.Forbidden("RIDER_DISABLED", "rider disabled")
 		}
-		permissions := []string{"delivery:list", "delivery:accept", "delivery:update_status", "delivery:route", "rider_work_status:update", "rider_location:update", "delivery_offer:list", "delivery_offer:accept", "delivery_offer:reject", "delivery_incident:create", "delivery_incident:view_own", "delivery_incident:evidence_add", "delivery_return:create", "delivery_return:view_own", "delivery_return:arrive"}
+		permissions := []string{"delivery:list", "delivery:view_own", "delivery:accept", "delivery:pickup", "delivery:complete", "delivery:route", "rider_work_status:update", "rider_location:update", "delivery_offer:list", "delivery_offer:accept", "delivery_offer:reject", "delivery_incident:create", "delivery_incident:view_own", "delivery_incident:evidence_add", "delivery_return:create", "delivery_return:view_own", "delivery_return:arrive"}
 		return Identity{
-			AccountType: account.AccountType,
-			AccountID:   account.ID,
-			RiderID:     rider.ID,
-			Permissions: permissions,
+			AccountType:       account.AccountType,
+			AccountID:         account.ID,
+			CredentialVersion: account.CredentialVersion,
+			RiderID:           rider.ID,
+			Permissions:       permissions,
 			Profile: map[string]any{
 				"rider_id":    idString(rider.ID),
 				"name":        rider.Name,
@@ -620,12 +644,13 @@ func (s *Service) identityForAccount(ctx context.Context, account Account) (Iden
 		if err != nil {
 			return Identity{}, err
 		}
-		permissions := []string{"customer:login", "product:list", "order:create"}
+		permissions := customerPermissions()
 		return Identity{
-			AccountType: account.AccountType,
-			AccountID:   account.ID,
-			CustomerID:  customer.ID,
-			Permissions: permissions,
+			AccountType:       account.AccountType,
+			AccountID:         account.ID,
+			CredentialVersion: account.CredentialVersion,
+			CustomerID:        customer.ID,
+			Permissions:       permissions,
 			Profile: map[string]any{
 				"customer_id": idString(customer.ID),
 				"phone":       customer.Phone,
@@ -635,6 +660,10 @@ func (s *Service) identityForAccount(ctx context.Context, account Account) (Iden
 	default:
 		return Identity{}, problem.Forbidden("AUTH_ACCOUNT_DISABLED", "unsupported account type")
 	}
+}
+
+func customerPermissions() []string {
+	return []string{"customer:login", "product:list", "cart:view", "cart:update", "order:create", "order:list", "order:view", "order:cancel", "payment:create", "payment:view", "delivery_verification:view_customer"}
 }
 
 // issueResponse 返回issue 响应。
@@ -864,17 +893,23 @@ func (s *Service) createAudit(ctx context.Context, identity Identity, action str
 	if !s.repo.DBConfigured() {
 		return nil
 	}
+	var accountID *uint64
+	if identity.AccountID != 0 {
+		value := identity.AccountID
+		accountID = &value
+	}
 	return s.repo.CreateAuditLog(ctx, AuditLog{
 		ID:           s.idGen.Next(),
 		ActorType:    identity.AccountType,
 		ActorID:      actorIDForIdentity(identity),
+		AccountID:    accountID,
 		Action:       action,
 		ResourceType: resourceType,
 		ResourceID:   resourceID,
 		AfterData:    jsonData(after),
 		Result:       result,
 		RequestID:    requestctx.RequestIDPtr(ctx),
-		IP:           requestctx.IPPtr(ctx),
+		IPHash:       requestctx.IPHashPtr(ctx),
 		UserAgent:    requestctx.UserAgentPtr(ctx),
 	})
 }
@@ -885,13 +920,14 @@ func identityFromClaims(claims *Claims) Identity {
 		return Identity{AccountType: "unknown"}
 	}
 	return Identity{
-		AccountType:    claims.AccountType,
-		AccountID:      parseUintOrZero(claims.AccountID),
-		CustomerID:     parseUintOrZero(claims.CustomerID),
-		AdminUserID:    parseUintOrZero(claims.AdminUserID),
-		MerchantUserID: parseUintOrZero(claims.MerchantUserID),
-		MerchantID:     parseUintOrZero(claims.MerchantID),
-		RiderID:        parseUintOrZero(claims.RiderID),
+		AccountType:       claims.AccountType,
+		AccountID:         parseUintOrZero(claims.AccountID),
+		CredentialVersion: claims.CredentialVersion,
+		CustomerID:        parseUintOrZero(claims.CustomerID),
+		AdminUserID:       parseUintOrZero(claims.AdminUserID),
+		MerchantUserID:    parseUintOrZero(claims.MerchantUserID),
+		MerchantID:        parseUintOrZero(claims.MerchantID),
+		RiderID:           parseUintOrZero(claims.RiderID),
 	}
 }
 

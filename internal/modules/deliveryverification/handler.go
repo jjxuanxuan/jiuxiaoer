@@ -38,6 +38,7 @@ func vc(c *gin.Context) (*auth.Claims, bool) {
 
 // GetStore 获取门店。
 func (h *Handler) GetStore(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	v, ok := vc(c)
 	if !ok {
 		return
@@ -47,12 +48,12 @@ func (h *Handler) GetStore(c *gin.Context) {
 		response.Error(c, e)
 		return
 	}
-	c.Header("Cache-Control", "no-store")
 	response.OK(c, x)
 }
 
 // GetCustomer 获取用户。
 func (h *Handler) GetCustomer(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	v, ok := vc(c)
 	if !ok {
 		return
@@ -62,12 +63,12 @@ func (h *Handler) GetCustomer(c *gin.Context) {
 		response.Error(c, e)
 		return
 	}
-	c.Header("Cache-Control", "no-store")
 	response.OK(c, x)
 }
 
 // Unlock 解锁deliveryverification。
 func (h *Handler) Unlock(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	v, ok := vc(c)
 	if !ok {
 		return
@@ -77,7 +78,7 @@ func (h *Handler) Unlock(c *gin.Context) {
 		response.Error(c, problem.InvalidArgument("VALIDATION_FAILED", e.Error()))
 		return
 	}
-	x, e := h.service.Unlock(c.Request.Context(), v, c.Param("id"), r)
+	x, e := h.service.Unlock(c.Request.Context(), v, c.Request.Method, c.FullPath(), c.GetHeader("Idempotency-Key"), c.Param("id"), r)
 	if e != nil {
 		response.Error(c, e)
 		return

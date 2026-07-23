@@ -38,15 +38,25 @@ func (s *Server) RunMQWorker(ctx context.Context, role string) error {
 		return fmt.Errorf("unknown MQ worker role %q", role)
 	}
 	selected := func(candidate string) bool { return role == "all" || role == candidate }
+	if selected("mq-consumer-print") && s.cfg.MQ.ConsumerPrintEnabled {
+		if err := s.ensurePrintProvider(ctx); err != nil {
+			return err
+		}
+	}
 	if s.deps.DB == nil {
 		return fmt.Errorf("worker requires MySQL")
+	}
+	var printWorker *printjob.Worker
+	if selected("mq-consumer-print") && s.cfg.MQ.ConsumerPrintEnabled {
+		var err error
+		printWorker, err = s.newPrintWorker(ctx)
+		if err != nil {
+			return err
+		}
 	}
 	needsMQ := role != "search-retention"
 	if needsMQ && (s.deps.RabbitMQ == nil || s.deps.IDGen == nil) {
 		return fmt.Errorf("MQ worker requires RabbitMQ and Snowflake ID generation")
-	}
-	if selected("mq-consumer-print") && s.cfg.MQ.ConsumerPrintEnabled && (!s.cfg.CP1.PrintEnabled || s.cfg.CP1.PrintProvider != "fake") {
-		return fmt.Errorf("print MQ worker has no configured provider implementation")
 	}
 	if selected("mq-consumer-cache") && s.cfg.MQ.ConsumerCacheEnabled && s.deps.Redis == nil {
 		return fmt.Errorf("cache MQ worker requires Redis")
@@ -125,12 +135,11 @@ func (s *Server) RunMQWorker(ctx context.Context, role string) error {
 	}
 
 	if selected("mq-consumer-print") && s.cfg.MQ.ConsumerPrintEnabled {
-		worker := printjob.NewWorker(s.cfg.CP1, s.deps.DB, s.deps.IDGen, &printjob.FakeProvider{}, s.cfg.App.InstanceID, s.log)
 		spec, _ := mq.DefaultConsumerSpec("print")
-		runtime := mq.NewConsumerRuntime(spec, s.deps.DB, s.deps.RabbitMQ, registry, printjob.NewMQHandler(worker), s.deps.IDGen, s.deps.Metrics, s.cfg.App.InstanceID, s.log)
+		runtime := mq.NewConsumerRuntime(spec, s.deps.DB, s.deps.RabbitMQ, registry, printjob.NewMQHandler(printWorker), s.deps.IDGen, s.deps.Metrics, s.cfg.App.InstanceID, s.log)
 		spawn(func() { runtime.Run(runCtx) })
 		if s.cfg.CP1.WorkerEnabled && s.cfg.MQ.DBFallbackEnabled {
-			spawn(func() { worker.Run(runCtx) })
+			spawn(func() { printWorker.Run(runCtx) })
 		}
 	}
 

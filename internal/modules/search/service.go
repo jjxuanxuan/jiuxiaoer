@@ -49,6 +49,7 @@ type hotCachePayload struct {
 type idempotencyStore interface {
 	ReplayCompleted(context.Context, *gorm.DB, string, uint64, string, string, string, any) (bool, error)
 	Start(context.Context, *gorm.DB, uint64, string, uint64, string, string, string, string) (bool, error)
+	CachedResponse(context.Context, *gorm.DB, string, uint64, string, string, any) (bool, error)
 	Succeed(context.Context, *gorm.DB, string, uint64, string, string, any) error
 }
 
@@ -192,6 +193,7 @@ func (s *Service) RecordEvent(ctx context.Context, claims *auth.Claims, method, 
 	counted := req.Source == SourceManual && blockErr == nil && eligibleForHot(normalized, blocklist)
 	now := s.now()
 	var responseValue EventResponse
+	replayedAfterStart := false
 	err = s.dbTransaction(ctx, func(tx *gorm.DB) error {
 		if lockErr := s.repo.LockCustomer(ctx, tx, customerID); lockErr != nil {
 			if errors.Is(lockErr, gorm.ErrRecordNotFound) {
@@ -204,7 +206,8 @@ func (s *Service) RecordEvent(ctx context.Context, claims *auth.Claims, method, 
 			return startErr
 		}
 		if !started {
-			return problem.Conflict("IDEMPOTENCY_CONFLICT", "same idempotency key already completed")
+			replayedAfterStart = true
+			return cachedResponse(ctx, s.idem, tx, customerID, path, idempotencyKey, &responseValue)
 		}
 		stored, writeErr := s.repo.UpsertHistory(ctx, tx, &History{
 			ID: s.ids.Next(), CustomerID: customerID, Keyword: display, NormalizedKeyword: normalized,
@@ -232,6 +235,9 @@ func (s *Service) RecordEvent(ctx context.Context, claims *auth.Claims, method, 
 	if err != nil {
 		s.metrics.incEvent(req.Source, problem.FromError(err).ErrorCode, false)
 		return EventResponse{}, err
+	}
+	if replayedAfterStart {
+		return responseValue, nil
 	}
 	s.metrics.incEvent(req.Source, "success", counted)
 	scopeType := ScopeGlobal
@@ -264,13 +270,15 @@ func (s *Service) ClearHistory(ctx context.Context, claims *auth.Claims, method,
 		return replay, nil
 	}
 	var responseValue ClearResponse
+	replayedAfterStart := false
 	err = s.dbTransaction(ctx, func(tx *gorm.DB) error {
 		started, startErr := s.idem.Start(ctx, tx, s.ids.Next(), "customer", customerID, method, path, idempotencyKey, requestHash)
 		if startErr != nil {
 			return startErr
 		}
 		if !started {
-			return problem.Conflict("IDEMPOTENCY_CONFLICT", "same idempotency key already completed")
+			replayedAfterStart = true
+			return cachedResponse(ctx, s.idem, tx, customerID, path, idempotencyKey, &responseValue)
 		}
 		deleted, deleteErr := s.repo.ClearHistory(ctx, tx, customerID)
 		if deleteErr != nil {
@@ -283,8 +291,22 @@ func (s *Service) ClearHistory(ctx context.Context, claims *auth.Claims, method,
 		s.metrics.incHistory("clear", "error")
 		return ClearResponse{}, err
 	}
+	if replayedAfterStart {
+		return responseValue, nil
+	}
 	s.metrics.incHistory("clear", "success")
 	return responseValue, nil
+}
+
+func cachedResponse(ctx context.Context, store idempotencyStore, tx *gorm.DB, customerID uint64, path, key string, target any) error {
+	found, err := store.CachedResponse(ctx, tx, "customer", customerID, path, key, target)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return problem.Conflict("IDEMPOTENCY_IN_PROGRESS", "request with the same idempotency key is still processing")
+	}
+	return nil
 }
 
 func (s *Service) upsertStat(ctx context.Context, tx *gorm.DB, scopeType, scopeID, display, normalized string, now time.Time) error {

@@ -91,8 +91,11 @@ func TestL2CatalogAndCartMissingAcceptanceScenarios(t *testing.T) {
 				t.Fatalf("fixture product is not available at shop B: %#v", availableAtB)
 			}
 			path := fmt.Sprintf("/api/v1/products/%d?city_code=440300&lat=22.54&lng=113.93", catalog.productID)
-			status, response := perform(t, f.router, http.MethodGet, path, "", "", nil)
-			expectProblem(t, status, response, http.StatusConflict, "PRODUCT_NOT_ON_SALE")
+			response := performOK(t, f.router, http.MethodGet, path, "", "", nil)
+			row := object(t, response["data"])
+			if row["shop_id"] != "4201" || int(l2Number(t, row["available_qty"])) != 0 || row["purchasable"] != false || row["unavailable_reason"] != "out_of_stock" {
+				t.Fatalf("product detail crossed shops or hid its stock state: %#v", row)
+			}
 		})
 	})
 
@@ -113,16 +116,36 @@ func TestL2CatalogAndCartMissingAcceptanceScenarios(t *testing.T) {
 	t.Run("ACC-L2-CART-002-unavailable-item-cannot-order", func(t *testing.T) {
 		f.subtest(t, func(t *testing.T) {
 			catalog := f.createCatalog(t, 10, 0)
-			performOK(t, f.router, http.MethodPost, "/api/v1/cart/items", f.customerToken, f.key("cart-unavailable"), map[string]any{"shop_product_id": fmt.Sprint(catalog.shopProductA), "quantity": 1})
+			added := performOK(t, f.router, http.MethodPost, "/api/v1/cart/items", f.customerToken, f.key("cart-unavailable"), map[string]any{"shop_product_id": fmt.Sprint(catalog.shopProductA), "quantity": 1})
+			itemID := stringValue(t, object(t, array(t, object(t, added["data"])["items"])[0])["id"])
+			performOK(t, f.router, http.MethodPatch, "/api/v1/cart/items/"+itemID+"/selection", f.customerToken, f.key("cart-unselect-before-off-sale"), map[string]any{"selected": false})
 			if err := f.db.Exec("UPDATE shop_products SET status = 'off_sale' WHERE id = ?", catalog.shopProductA).Error; err != nil {
 				t.Fatalf("off-sale product: %v", err)
 			}
 			cart := object(t, performOK(t, f.router, http.MethodGet, "/api/v1/cart/items", f.customerToken, "", nil)["data"])
 			item := object(t, array(t, cart["items"])[0])
-			if item["availability_status"] != "not_on_sale" || int(l2Number(t, cart["unavailable_count"])) != 1 {
+			if item["availability_status"] != "not_on_sale" || item["available"] != false || item["unavailable_reason"] != "not_on_sale" || int(l2Number(t, cart["unavailable_count"])) != 1 {
 				t.Fatalf("unavailable cart item not marked: %#v", cart)
 			}
-			status, response := perform(t, f.router, http.MethodPost, "/api/v1/orders", f.customerToken, f.key("order-unavailable"), map[string]any{"shop_id": "4201", "address_id": f.addressID, "items": []map[string]any{{"shop_product_id": fmt.Sprint(catalog.shopProductA), "quantity": 1}}})
+			status, response := perform(t, f.router, http.MethodPatch, "/api/v1/cart/items/"+itemID+"/selection", f.customerToken, f.key("cart-reselect-off-sale"), map[string]any{"selected": true})
+			expectProblem(t, status, response, http.StatusConflict, "PRODUCT_NOT_ON_SALE")
+			status, response = perform(t, f.router, http.MethodPost, "/api/v1/cart/selection", f.customerToken, f.key("cart-select-shop-off-sale"), map[string]any{"shop_id": "4201", "selected": true})
+			expectProblem(t, status, response, http.StatusConflict, "PRODUCT_NOT_ON_SALE")
+			status, response = perform(t, f.router, http.MethodPut, "/api/v1/cart/items/"+itemID, f.customerToken, f.key("cart-update-off-sale"), map[string]any{"quantity": 2})
+			expectProblem(t, status, response, http.StatusConflict, "PRODUCT_NOT_ON_SALE")
+			if err := f.db.Exec("UPDATE shop_products SET deleted_at = CURRENT_TIMESTAMP(3) WHERE id = ?", catalog.shopProductA).Error; err != nil {
+				t.Fatalf("soft-delete shop product: %v", err)
+			}
+			cart = object(t, performOK(t, f.router, http.MethodGet, "/api/v1/cart/items", f.customerToken, "", nil)["data"])
+			items := array(t, cart["items"])
+			if len(items) != 1 {
+				t.Fatalf("soft-deleted shop product removed cart fact: %#v", cart)
+			}
+			item = object(t, items[0])
+			if item["shop_product_id"] != fmt.Sprint(catalog.shopProductA) || item["available"] != false || item["unavailable_reason"] != "not_on_sale" || int(l2Number(t, item["sale_price_amount"])) != 0 || int(l2Number(t, item["total_amount"])) != 0 || item["selected"] != false {
+				t.Fatalf("soft-deleted shop product cart projection is unsafe: %#v", item)
+			}
+			status, response = perform(t, f.router, http.MethodPost, "/api/v1/orders", f.customerToken, f.key("order-unavailable"), map[string]any{"shop_id": "4201", "address_id": f.addressID, "items": []map[string]any{{"shop_product_id": fmt.Sprint(catalog.shopProductA), "quantity": 1}}})
 			expectProblem(t, status, response, http.StatusConflict, "PRODUCT_NOT_ON_SALE")
 		})
 	})

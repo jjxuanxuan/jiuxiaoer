@@ -262,7 +262,7 @@ func (s *Service) Review(ctx context.Context, claims *auth.Claims, method, path,
 	}
 	var out VerificationDTO
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		started, startErr := s.idem.Start(ctx, tx, s.ids.Next(), "admin", actor, method, path, key, idempotency.RequestHash(req))
+		started, startErr := s.idem.Start(ctx, tx, s.ids.Next(), "admin", actor, method, path, key, idempotency.ResourceRequestHash("identity_verification.review", id, req))
 		if startErr != nil {
 			return startErr
 		}

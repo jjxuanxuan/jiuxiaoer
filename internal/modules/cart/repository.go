@@ -58,12 +58,17 @@ func (r *Repository) SaleableShopProduct(ctx context.Context, tx *gorm.DB, shopP
 			p.spec,
 			p.image_url,
 			sp.sale_price_amount,
-			sp.status,
+			p.status AS product_status,
+			c.status AS category_status,
+			sp.status AS shop_product_status,
 			s.status AS shop_status,
-			s.business_status
+			s.business_status,
+			COALESCE(ps.available_qty, 0) AS available_qty
 		`).
 		Joins("JOIN products p ON p.id = sp.product_id AND p.deleted_at IS NULL").
+		Joins("JOIN categories c ON c.id = p.category_id AND c.deleted_at IS NULL").
 		Joins("JOIN shops s ON s.id = sp.shop_id AND s.deleted_at IS NULL").
+		Joins("LEFT JOIN product_stocks ps ON ps.shop_product_id = sp.id AND ps.deleted_at IS NULL").
 		Where("sp.id = ? AND sp.deleted_at IS NULL", shopProductID).
 		Scan(&row).Error
 	if err != nil {
@@ -73,6 +78,31 @@ func (r *Repository) SaleableShopProduct(ctx context.Context, tx *gorm.DB, shopP
 		return ShopProductRow{}, gorm.ErrRecordNotFound
 	}
 	return row, nil
+}
+
+// CartItemQuantity locks the current cart line so an additive request can
+// validate the resulting quantity instead of silently truncating it to 99.
+func (r *Repository) CartItemQuantity(ctx context.Context, tx *gorm.DB, cartID, shopProductID uint64) (int, error) {
+	var item CartItem
+	err := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("cart_id=? AND shop_product_id=? AND deleted_at IS NULL", cartID, shopProductID).
+		First(&item).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, nil
+	}
+	return item.Quantity, err
+}
+
+// LockCustomerCartItem resolves ownership inside SQL before a quantity update.
+func (r *Repository) LockCustomerCartItem(ctx context.Context, tx *gorm.DB, customerID, itemID uint64) (CartItem, error) {
+	var item CartItem
+	err := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).
+		Table("cart_items ci").
+		Select("ci.*").
+		Joins("JOIN carts c ON c.id=ci.cart_id AND c.deleted_at IS NULL").
+		Where("ci.id=? AND c.customer_id=? AND ci.deleted_at IS NULL", itemID, customerID).
+		Take(&item).Error
+	return item, err
 }
 
 // AddItem 添加明细。
@@ -163,21 +193,29 @@ func (r *Repository) ListItems(ctx context.Context, db *gorm.DB, customerID uint
 			ci.shop_product_id,
 			ci.shop_id,
 			ci.product_id,
-			p.name,
+			COALESCE(p.name, '') AS name,
 			p.brand_name,
 			p.spec,
 			p.image_url,
 			ci.quantity,
-			sp.sale_price_amount,
-			ci.selected
-			, p.status AS product_status, sp.status AS shop_product_status,
-			s.status AS shop_status, s.business_status,
+			CASE
+				WHEN sp.id IS NOT NULL AND p.id IS NOT NULL AND cat.id IS NOT NULL AND s.id IS NOT NULL
+				THEN sp.sale_price_amount
+				ELSE 0
+			END AS sale_price_amount,
+			ci.selected,
+			COALESCE(p.status, '') AS product_status,
+			COALESCE(cat.status, '') AS category_status,
+			COALESCE(sp.status, '') AS shop_product_status,
+			COALESCE(s.status, '') AS shop_status,
+			COALESCE(s.business_status, '') AS business_status,
 			COALESCE(ps.available_qty, 0) AS available_qty
 		`).
 		Joins("JOIN carts c ON c.id = ci.cart_id AND c.deleted_at IS NULL").
-		Joins("JOIN shop_products sp ON sp.id = ci.shop_product_id AND sp.deleted_at IS NULL").
-		Joins("JOIN products p ON p.id = ci.product_id AND p.deleted_at IS NULL").
-		Joins("JOIN shops s ON s.id = ci.shop_id AND s.deleted_at IS NULL").
+		Joins("LEFT JOIN shop_products sp ON sp.id = ci.shop_product_id AND sp.shop_id = ci.shop_id AND sp.product_id = ci.product_id AND sp.deleted_at IS NULL").
+		Joins("LEFT JOIN products p ON p.id = ci.product_id AND p.deleted_at IS NULL").
+		Joins("LEFT JOIN categories cat ON cat.id = p.category_id AND cat.deleted_at IS NULL").
+		Joins("LEFT JOIN shops s ON s.id = ci.shop_id AND s.deleted_at IS NULL").
 		Joins("LEFT JOIN product_stocks ps ON ps.shop_product_id = ci.shop_product_id AND ps.deleted_at IS NULL").
 		Where("c.customer_id = ? AND ci.deleted_at IS NULL", customerID).
 		Order("ci.updated_at DESC, ci.id DESC").

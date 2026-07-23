@@ -3,13 +3,32 @@ package compliance
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"testing"
 	"time"
+
+	"jiuxiaoer-admin/backend-go/internal/config"
 )
 
 const testIdentityCallbackSecret = "test-identity-callback-secret-123456789"
+
+type registryProvider struct{ code string }
+
+func (p *registryProvider) Code() string { return p.code }
+
+func (*registryProvider) CreateSession(context.Context, ProviderSessionRequest) (ProviderSession, error) {
+	return ProviderSession{}, nil
+}
+
+func (*registryProvider) ParseCallback(context.Context, http.Header, []byte) (ProviderCallback, error) {
+	return ProviderCallback{}, nil
+}
+
+func (*registryProvider) Query(context.Context, string) (ProviderResult, error) {
+	return ProviderResult{}, nil
+}
 
 // TestFakeProviderSessionCallbackAndQuery 验证Fake 提供器会话回调 And 查询的预期行为。
 func TestFakeProviderSessionCallbackAndQuery(t *testing.T) {
@@ -76,5 +95,56 @@ func TestProviderAdultResultContract(t *testing.T) {
 	}
 	if validProviderResult(ProviderResult{RequestID: "provider-request", Status: StatusVerified, AdultResult: "18", VerificationLevel: "identity"}) {
 		t.Fatal("backend must not infer age from an unrecognized provider value")
+	}
+}
+
+func TestProviderRegistryBuildsOnlyMatchingAdapter(t *testing.T) {
+	registry := NewProviderRegistry()
+	provider := &registryProvider{code: "approved-provider"}
+	if err := registry.Register("approved-provider", func(context.Context, config.Config) (Provider, error) {
+		return provider, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{CP1: config.CP1Config{IdentityProvider: "approved-provider"}}
+	built, err := registry.Build(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if built != provider {
+		t.Fatal("registry returned a different provider instance")
+	}
+
+	if err := registry.Register("mismatched-provider", func(context.Context, config.Config) (Provider, error) {
+		return &registryProvider{code: "different-provider"}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg.CP1.IdentityProvider = "mismatched-provider"
+	if _, err := registry.Build(context.Background(), cfg); !errors.Is(err, ErrProviderCodeMismatch) {
+		t.Fatalf("mismatched provider error=%v want ErrProviderCodeMismatch", err)
+	}
+}
+
+func TestProviderRegistryRejectsMissingDuplicateAndProductionFake(t *testing.T) {
+	registry := NewProviderRegistry()
+	cfg := config.Config{CP1: config.CP1Config{IdentityProvider: "missing-provider"}}
+	if _, err := registry.Build(context.Background(), cfg); !errors.Is(err, ErrProviderNotRegistered) {
+		t.Fatalf("missing provider error=%v want ErrProviderNotRegistered", err)
+	}
+	if err := registry.Register(FakeProviderCode, func(_ context.Context, cfg config.Config) (Provider, error) {
+		return NewFakeProvider(cfg.CP1.IdentityCallbackSecret), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register(FakeProviderCode, func(context.Context, config.Config) (Provider, error) {
+		return &registryProvider{code: FakeProviderCode}, nil
+	}); err == nil {
+		t.Fatal("duplicate provider registration must fail")
+	}
+	cfg.App.Env = "production"
+	cfg.CP1.IdentityProvider = FakeProviderCode
+	if _, err := registry.Build(context.Background(), cfg); err == nil {
+		t.Fatal("fake identity compliance provider must not build in production")
 	}
 }

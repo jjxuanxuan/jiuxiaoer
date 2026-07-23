@@ -1,8 +1,10 @@
 package product
 
 import (
-	"github.com/gin-gonic/gin"
 	"strconv"
+	"strings"
+
+	"github.com/gin-gonic/gin"
 
 	"jiuxiaoer-admin/backend-go/internal/modules/auth"
 	"jiuxiaoer-admin/backend-go/internal/modules/customerlocation"
@@ -29,17 +31,25 @@ func RegisterRoutes(router *gin.RouterGroup, handler *Handler) {
 
 // ListCategories 查询Categories列表。
 func (h *Handler) ListCategories(c *gin.Context) {
+	if len(c.Request.URL.Query()) != 0 {
+		response.Error(c, problem.InvalidArgument("VALIDATION_INVALID_QUERY", "categories does not accept query parameters"))
+		return
+	}
 	items, err := h.service.ListCategories(c.Request.Context())
 	if err != nil {
 		response.Error(c, err)
 		return
 	}
-	response.Page(c, items, "")
+	response.OK(c, gin.H{"items": items})
 }
 
 // ListProducts 查询商品列表。
 func (h *Handler) ListProducts(c *gin.Context) {
-	pageQuery, err := pagination.FromGin(c)
+	if err := validateProductListQuery(c); err != nil {
+		response.Error(c, err)
+		return
+	}
+	pageQuery, err := pagination.FromGin(c, "product", c.GetHeader("X-Location-Context"))
 	if err != nil {
 		response.Error(c, err)
 		return
@@ -75,6 +85,22 @@ func (h *Handler) ListProducts(c *gin.Context) {
 		return
 	}
 	response.Page(c, items, nextPageToken)
+}
+
+func validateProductListQuery(c *gin.Context) error {
+	allowed := map[string]struct{}{
+		"page_size": {}, "page_token": {}, "shop_id": {}, "category_id": {},
+		"keyword": {}, "city_code": {}, "lat": {}, "lng": {},
+	}
+	for key := range c.Request.URL.Query() {
+		if _, ok := allowed[key]; !ok {
+			return problem.InvalidArgument("VALIDATION_INVALID_QUERY", "unknown query parameter: "+key)
+		}
+	}
+	if len([]rune(strings.TrimSpace(c.Query("keyword")))) > 64 {
+		return problem.InvalidArgument("VALIDATION_INVALID_QUERY", "keyword is too long")
+	}
+	return nil
 }
 
 // GetProduct 获取商品。

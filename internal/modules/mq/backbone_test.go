@@ -89,6 +89,49 @@ func TestRegistryRoutableEventsHaveConsumerBindings(t *testing.T) {
 	}
 }
 
+// TestPaidOrderEventRoutesToRealtime ensures the committed payment fact can
+// reach the merchant WebSocket consumer. The consumer receipt keyed by
+// (consumer_name,event_id) remains the duplicate-delivery fence.
+func TestPaidOrderEventRoutesToRealtime(t *testing.T) {
+	registry := MustDefaultEventRegistry()
+	topology := DefaultTopology()
+	for _, eventType := range []string{"order.paid"} {
+		definition, ok := registry.Lookup(eventType)
+		if !ok {
+			t.Fatalf("missing event definition %s", eventType)
+		}
+		hasConsumer := false
+		for _, consumer := range definition.Consumers {
+			if consumer == "realtime" {
+				hasConsumer = true
+				break
+			}
+		}
+		if !hasConsumer {
+			t.Fatalf("%s is not registered for realtime", eventType)
+		}
+		hasBinding := false
+		for _, binding := range topology.Bindings {
+			if binding.Queue == realtimeQueueName && topicMatches(binding.RoutingKey, eventType) {
+				hasBinding = true
+				break
+			}
+		}
+		if !hasBinding {
+			t.Fatalf("%s has no realtime queue binding", eventType)
+		}
+	}
+	// order.paid is the only event emitted by the current payment success
+	// transaction. Keeping payment.succeeded out of realtime prevents a future
+	// compatibility alias from producing a second popup for the same payment.
+	legacy, _ := registry.Lookup("payment.succeeded")
+	for _, consumer := range legacy.Consumers {
+		if consumer == "realtime" {
+			t.Fatal("payment.succeeded must not be a second realtime source")
+		}
+	}
+}
+
 // TestAllLiteralOutboxEventsAreRegistered 验证All Literal 发件箱事件 Events Are Registered的预期行为。
 func TestAllLiteralOutboxEventsAreRegistered(t *testing.T) {
 	registry := MustDefaultEventRegistry()

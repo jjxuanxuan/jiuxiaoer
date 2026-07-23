@@ -28,6 +28,25 @@ func TestRequestLimitsRejectKnownOversizedBody(t *testing.T) {
 	}
 }
 
+func TestUntrustedForwardedForCannotSpoofClientIP(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	if err := router.SetTrustedProxies(nil); err != nil {
+		t.Fatal(err)
+	}
+	router.GET("/ip", func(c *gin.Context) { c.String(http.StatusOK, c.ClientIP()) })
+
+	request := httptest.NewRequest(http.MethodGet, "/ip", nil)
+	request.RemoteAddr = "192.0.2.10:54321"
+	request.Header.Set("X-Forwarded-For", "198.51.100.77")
+	request.Header.Set("X-Real-IP", "198.51.100.78")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Body.String() != "192.0.2.10" {
+		t.Fatalf("spoofed forwarding header became client IP: %q", recorder.Body.String())
+	}
+}
+
 // TestRequestDeadlineIsSkippedAfterWebSocketUpgrade 验证请求 Deadline Is Skipped 售后 Web Socket Upgrade的预期行为。
 func TestRequestDeadlineIsSkippedAfterWebSocketUpgrade(t *testing.T) {
 	gin.SetMode(gin.TestMode)

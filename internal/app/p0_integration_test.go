@@ -155,9 +155,9 @@ func TestP0Integration(t *testing.T) {
 
 	merchant := performOK(t, router, http.MethodPost, "/api/v1/auth/merchant/login", "", "", map[string]any{"username": "merchant_demo", "password": "merchant123"})
 	merchantToken := stringValue(t, object(t, merchant["data"])["access_token"])
-	performOK(t, router, http.MethodPost, "/api/v1/store/orders/"+orderID+"/accept", merchantToken, "store-accept-001", nil)
-	performOK(t, router, http.MethodPost, "/api/v1/store/orders/"+orderID+"/start-preparing", merchantToken, "store-prep-start", nil)
-	performOK(t, router, http.MethodPost, "/api/v1/store/orders/"+orderID+"/prepare", merchantToken, "store-prepared01", nil)
+	performStoreOrderAction(t, router, tx, orderID, "accept", merchantToken, "store-accept-001")
+	performStoreOrderAction(t, router, tx, orderID, "start-preparing", merchantToken, "store-prep-start")
+	performStoreOrderAction(t, router, tx, orderID, "prepare", merchantToken, "store-prepared01")
 
 	for _, action := range []string{"pickup", "start", "complete"} {
 		performOK(t, router, http.MethodPost, "/api/v1/delivery/orders/"+deliveryID+"/"+action, riderToken, "delivery-"+action+"-01", nil)
@@ -446,6 +446,17 @@ func stringValue(t *testing.T, value any) string {
 		t.Fatalf("expected non-empty string, got %#v", value)
 	}
 	return result
+}
+
+// performStoreOrderAction reads the latest order version immediately before
+// each merchant transition, matching the optimistic-lock HTTP contract.
+func performStoreOrderAction(t *testing.T, handler http.Handler, tx *gorm.DB, orderID, action, token, key string) map[string]any {
+	t.Helper()
+	var version uint
+	if err := tx.Table("orders").Select("version").Where("id = ?", orderID).Scan(&version).Error; err != nil {
+		t.Fatalf("query store order version before %s: %v", action, err)
+	}
+	return performOK(t, handler, http.MethodPost, "/api/v1/store/orders/"+orderID+"/"+action, token, key, map[string]any{"expected_version": version})
 }
 
 // findDeliveryID 查找配送ID。

@@ -28,6 +28,9 @@ type connection struct {
 	cancel     context.CancelFunc
 	resumeOnce sync.Once
 	closeOnce  sync.Once
+	seenMu     sync.Mutex
+	seenEvents map[string]struct{}
+	seenOrder  []string
 }
 
 // stop 处理stop相关逻辑。
@@ -40,6 +43,32 @@ func (c *connection) stop(code websocket.StatusCode, reason string) {
 	})
 }
 
+// markEvent suppresses duplicate merchant event_ids on a live connection. The
+// durable MQ consumer receipt prevents normal redelivery; this bounded cache
+// also protects clients from duplicated Redis wakeups.
+func (c *connection) markEvent(eventID string) bool {
+	if eventID == "" {
+		return false
+	}
+	c.seenMu.Lock()
+	defer c.seenMu.Unlock()
+	if c.seenEvents == nil {
+		c.seenEvents = make(map[string]struct{})
+	}
+	if _, exists := c.seenEvents[eventID]; exists {
+		return false
+	}
+	c.seenEvents[eventID] = struct{}{}
+	c.seenOrder = append(c.seenOrder, eventID)
+	const maximumSeenEvents = 256
+	if len(c.seenOrder) > maximumSeenEvents {
+		oldest := c.seenOrder[0]
+		c.seenOrder = c.seenOrder[1:]
+		delete(c.seenEvents, oldest)
+	}
+	return true
+}
+
 type Hub struct {
 	cfg         config.RealtimeConfig
 	service     *Service
@@ -47,7 +76,7 @@ type Hub struct {
 	metrics     *metricState
 	log         *slog.Logger
 	mu          sync.RWMutex
-	connections map[uint64]map[string]*connection
+	connections map[string]map[string]*connection
 	draining    bool
 	activeWG    sync.WaitGroup
 }
@@ -57,7 +86,7 @@ func NewHub(cfg config.RealtimeConfig, service *Service, redisClient *redis.Clie
 	if metrics == nil {
 		metrics = newMetricState(nil, "")
 	}
-	return &Hub{cfg: cfg, service: service, redis: redisClient, metrics: metrics, log: log, connections: make(map[uint64]map[string]*connection)}
+	return &Hub{cfg: cfg, service: service, redis: redisClient, metrics: metrics, log: log, connections: make(map[string]map[string]*connection)}
 }
 
 // RunSubscriber 运行Subscriber处理流程。
@@ -80,6 +109,13 @@ func (h *Hub) RunSubscriber(ctx context.Context) {
 			if !ok {
 				return
 			}
+			var merchant MerchantWakeup
+			if json.Unmarshal([]byte(message.Payload), &merchant) == nil && validMerchantWakeup(merchant) {
+				if err := h.DeliverMerchant(ctx, merchant); err != nil {
+					h.logError("merchant realtime wakeup delivery failed", err)
+				}
+				continue
+			}
 			var wakeup Wakeup
 			if json.Unmarshal([]byte(message.Payload), &wakeup) != nil || wakeup.DeliveryID == 0 || wakeup.RiderID == 0 {
 				continue
@@ -96,9 +132,10 @@ func (h *Hub) RunSubscriber(ctx context.Context) {
 
 // Deliver 返回Deliver。
 func (h *Hub) Deliver(ctx context.Context, wakeup Wakeup) error {
+	key := connectionKey(recipientRider, wakeup.RiderID)
 	h.mu.RLock()
-	targets := make([]*connection, 0, len(h.connections[wakeup.RiderID]))
-	for _, target := range h.connections[wakeup.RiderID] {
+	targets := make([]*connection, 0, len(h.connections[key]))
+	for _, target := range h.connections[key] {
 		targets = append(targets, target)
 	}
 	h.mu.RUnlock()
@@ -117,6 +154,58 @@ func (h *Hub) Deliver(ctx context.Context, wakeup Wakeup) error {
 		}
 	}
 	return nil
+}
+
+// DeliverMerchant rechecks the current account/shop grant immediately before
+// sending. It never trusts a stale shop list from the WebSocket ticket.
+func (h *Hub) DeliverMerchant(ctx context.Context, wakeup MerchantWakeup) error {
+	if !validMerchantWakeup(wakeup) {
+		return fmt.Errorf("merchant wakeup is invalid")
+	}
+	shopID, err := strconv.ParseUint(wakeup.Event.ShopID, 10, 64)
+	if err != nil || shopID == 0 {
+		return fmt.Errorf("merchant wakeup shop_id is invalid")
+	}
+	key := connectionKey(recipientMerchant, wakeup.AccountID)
+	h.mu.RLock()
+	targets := make([]*connection, 0, len(h.connections[key]))
+	for _, target := range h.connections[key] {
+		targets = append(targets, target)
+	}
+	h.mu.RUnlock()
+	if len(targets) == 0 {
+		return nil
+	}
+	if h.service == nil {
+		return fmt.Errorf("realtime service is unavailable")
+	}
+	allowed, err := h.service.MerchantAccountAuthorized(ctx, wakeup.AccountID, shopID)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return nil
+	}
+	frame := storeOrderPaidFrame(wakeup.Event)
+	for _, target := range targets {
+		if !target.markEvent(wakeup.Event.EventID) {
+			continue
+		}
+		if !h.enqueue(target, frame) {
+			h.metrics.slowClose()
+			target.stop(websocket.StatusTryAgainLater, "slow consumer")
+		}
+	}
+	return nil
+}
+
+func validMerchantWakeup(wakeup MerchantWakeup) bool {
+	if wakeup.AccountID == 0 || wakeup.Event.EventID == "" || wakeup.Event.OrderID == "" || wakeup.Event.ShopID == "" || wakeup.Event.SoundKey != "new_paid_order" || wakeup.Event.OccurredAt.IsZero() {
+		return false
+	}
+	orderID, orderErr := strconv.ParseUint(wakeup.Event.OrderID, 10, 64)
+	shopID, shopErr := strconv.ParseUint(wakeup.Event.ShopID, 10, 64)
+	return orderErr == nil && shopErr == nil && orderID > 0 && shopID > 0
 }
 
 // Serve 返回Serve。
@@ -275,6 +364,26 @@ func (h *Hub) readLoop(ctx context.Context, target *connection) error {
 
 // handleResume 处理Resume请求。
 func (h *Hub) handleResume(ctx context.Context, target *connection, frame ClientFrame) error {
+	recipientType, _ := target.info.recipient()
+	if recipientType == recipientMerchant {
+		// Merchant WS events are wakeups, never the order fact. On every
+		// reconnect the client is explicitly told to refresh the scoped list.
+		resync := frameNow(FrameEvent)
+		resync.EventType = "realtime.resync_required"
+		resync.Data = json.RawMessage(`{"reason_code":"store_order_list_required"}`)
+		if !h.enqueue(target, resync) {
+			return fmt.Errorf("realtime send queue full")
+		}
+		complete := frameNow(FrameSyncComplete)
+		complete.RequestID = frame.RequestID
+		complete.LastDeliveryID = "0"
+		hasMore := false
+		complete.HasMore = &hasMore
+		if !h.enqueue(target, complete) {
+			return fmt.Errorf("realtime send queue full")
+		}
+		return nil
+	}
 	var afterID uint64
 	var err error
 	if frame.AfterDeliveryID != "" && frame.AfterDeliveryID != "0" {
@@ -368,10 +477,15 @@ func (h *Hub) register(target *connection) error {
 	if h.draining {
 		return fmt.Errorf("realtime server is draining")
 	}
-	connections := h.connections[target.info.RiderID]
+	recipientType, recipientID := target.info.recipient()
+	if recipientID == 0 || (recipientType != recipientRider && recipientType != recipientMerchant) {
+		return fmt.Errorf("realtime recipient is invalid")
+	}
+	key := connectionKey(recipientType, recipientID)
+	connections := h.connections[key]
 	if connections == nil {
 		connections = make(map[string]*connection)
-		h.connections[target.info.RiderID] = connections
+		h.connections[key] = connections
 	}
 	if len(connections) >= h.cfg.MaxConnectionsPerRider {
 		return fmt.Errorf("realtime rider connection limit reached")
@@ -383,10 +497,14 @@ func (h *Hub) register(target *connection) error {
 }
 
 // CanRegister 判断当前条件是否允许Register。
-func (h *Hub) CanRegister(riderID uint64) bool {
+func (h *Hub) CanRegister(info TicketInfo) bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	return !h.draining && len(h.connections[riderID]) < h.cfg.MaxConnectionsPerRider
+	recipientType, recipientID := info.recipient()
+	if recipientID == 0 || (recipientType != recipientRider && recipientType != recipientMerchant) {
+		return false
+	}
+	return !h.draining && len(h.connections[connectionKey(recipientType, recipientID)]) < h.cfg.MaxConnectionsPerRider
 }
 
 // Accepting 判断Accepting。
@@ -400,16 +518,22 @@ func (h *Hub) Accepting() bool {
 func (h *Hub) unregister(target *connection) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	connections := h.connections[target.info.RiderID]
+	recipientType, recipientID := target.info.recipient()
+	key := connectionKey(recipientType, recipientID)
+	connections := h.connections[key]
 	if _, ok := connections[target.id]; !ok {
 		return
 	}
 	delete(connections, target.id)
 	if len(connections) == 0 {
-		delete(h.connections, target.info.RiderID)
+		delete(h.connections, key)
 	}
 	h.activeWG.Done()
 	h.metrics.connection(-1)
+}
+
+func connectionKey(recipientType string, recipientID uint64) string {
+	return recipientType + ":" + strconv.FormatUint(recipientID, 10)
 }
 
 // Shutdown 平滑停止当前实例并释放相关资源。

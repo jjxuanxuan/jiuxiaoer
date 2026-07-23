@@ -76,7 +76,7 @@ func DefaultTopology() Topology {
 		{name: "cache", queue: cacheQueueName, bindings: []string{"cache.invalidate"}, retries: []time.Duration{5 * time.Second, 30 * time.Second, 5 * time.Minute}},
 		{name: "security", queue: securityQueueName, bindings: []string{"delivery.verification.*", "delivery.reassigned", "delivery.force_completed", "dispatch.policy.published", "identity.verification.*", "account.status_changed", "account.password_reset.requested"}, retries: []time.Duration{time.Minute, 10 * time.Minute}},
 		{name: "dispatch", queue: dispatchQueueName, bindings: []string{"dispatch.job.ready", "dispatch.job.retry_requested", "dispatch.policy.published"}, retries: []time.Duration{time.Second, 5 * time.Second, 30 * time.Second}},
-		{name: "realtime", queue: realtimeQueueName, bindings: []string{"dispatch.offer.created", "dispatch.offer.rejected", "dispatch.offer.expired", "dispatch.grab.opened", "dispatch.manual_required", "delivery.assigned", "delivery.reassigned", "order.cancelled"}, retries: []time.Duration{time.Second, 5 * time.Second, 30 * time.Second}},
+		{name: "realtime", queue: realtimeQueueName, bindings: []string{"order.paid", "dispatch.offer.created", "dispatch.offer.rejected", "dispatch.offer.expired", "dispatch.grab.opened", "dispatch.manual_required", "delivery.assigned", "delivery.reassigned", "order.cancelled"}, retries: []time.Duration{time.Second, 5 * time.Second, 30 * time.Second}},
 	}
 	for _, consumer := range consumers {
 		topology.Queues = append(topology.Queues, QueueSpec{Name: consumer.queue, Consumer: consumer.name})

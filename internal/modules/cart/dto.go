@@ -26,17 +26,19 @@ type CartResp struct {
 }
 
 type CartItemDTO struct {
-	ID                 string `json:"id"`
-	ShopProductID      string `json:"shop_product_id"`
-	ShopID             string `json:"shop_id"`
-	ProductID          string `json:"product_id"`
-	Name               string `json:"name"`
-	BrandName          string `json:"brand_name,omitempty"`
-	Spec               string `json:"spec,omitempty"`
-	ImageURL           string `json:"image_url,omitempty"`
-	Quantity           int    `json:"quantity"`
-	SalePriceAmount    int64  `json:"sale_price_amount"`
-	TotalAmount        int64  `json:"total_amount"`
-	Selected           bool   `json:"selected"`
-	AvailabilityStatus string `json:"availability_status"`
+	ID                 string  `json:"id"`
+	ShopProductID      string  `json:"shop_product_id"`
+	ShopID             string  `json:"shop_id"`
+	ProductID          string  `json:"product_id"`
+	Name               string  `json:"name"`
+	BrandName          string  `json:"brand_name,omitempty"`
+	Spec               string  `json:"spec,omitempty"`
+	ImageURL           string  `json:"image_url,omitempty"`
+	Quantity           int     `json:"quantity"`
+	SalePriceAmount    int64   `json:"sale_price_amount"`
+	TotalAmount        int64   `json:"total_amount"`
+	Selected           bool    `json:"selected"`
+	AvailabilityStatus string  `json:"availability_status"`
+	Available          bool    `json:"available"`
+	UnavailableReason  *string `json:"unavailable_reason"`
 }

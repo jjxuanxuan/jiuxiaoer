@@ -51,6 +51,11 @@ func (s *Service) ProvisionMerchant(ctx context.Context, c *auth.Claims, method,
 	if e := normalizeShopCoordinates(&req.Shop); e != nil {
 		return OperationDTO{}, e
 	}
+	roleCode, e := normalizeMerchantRoleCode(req.RoleCode, true)
+	if e != nil {
+		return OperationDTO{}, e
+	}
+	req.RoleCode = roleCode
 	var out OperationDTO
 	e = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		started, e := s.idem.Start(ctx, tx, s.ids.Next(), "admin", actor, method, path, key, idempotency.RequestHash(req))
@@ -59,6 +64,10 @@ func (s *Service) ProvisionMerchant(ctx context.Context, c *auth.Claims, method,
 		}
 		if !started {
 			return cached(ctx, s.idem, tx, "admin", actor, path, key, &out)
+		}
+		roleID, e := merchantRoleID(ctx, tx, req.RoleCode)
+		if e != nil {
+			return e
 		}
 		now := time.Now()
 		opID := s.ids.Next()
@@ -87,7 +96,7 @@ func (s *Service) ProvisionMerchant(ctx context.Context, c *auth.Claims, method,
 		if e := createAccount(tx, accountID, "merchant", req.Account, hash, actor); e != nil {
 			return e
 		}
-		if e := tx.Table("merchant_users").Create(map[string]any{"id": userID, "account_id": accountID, "merchant_id": merchantID, "name": req.MerchantUserName, "status": "active", "created_by": actor, "updated_by": actor}).Error; e != nil {
+		if e := tx.Table("merchant_users").Create(map[string]any{"id": userID, "account_id": accountID, "merchant_id": merchantID, "role_id": roleID, "name": req.MerchantUserName, "status": "active", "created_by": actor, "updated_by": actor}).Error; e != nil {
 			return e
 		}
 		if e := tx.Table("merchant_user_shops").Create(map[string]any{"id": s.ids.Next(), "merchant_user_id": userID, "merchant_id": merchantID, "shop_id": shopID, "created_by": actor, "updated_by": actor}).Error; e != nil {
@@ -143,6 +152,11 @@ func (s *Service) CreateMerchantUser(ctx context.Context, c *auth.Claims, method
 	if e := s.requireEnabled(); e != nil {
 		return OperationDTO{}, e
 	}
+	roleCode, e := normalizeMerchantRoleCode(req.RoleCode, false)
+	if e != nil {
+		return OperationDTO{}, e
+	}
+	req.RoleCode = roleCode
 	merchant, e := parseID(merchantRaw)
 	if e != nil {
 		return OperationDTO{}, problem.InvalidArgument("VALIDATION_FAILED", "invalid merchant id")
@@ -153,19 +167,19 @@ func (s *Service) CreateMerchantUser(ctx context.Context, c *auth.Claims, method
 	}
 	var out OperationDTO
 	e = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		started, e := s.idem.Start(ctx, tx, s.ids.Next(), "admin", actor, method, path, key, idempotency.RequestHash(req))
+		started, e := s.idem.Start(ctx, tx, s.ids.Next(), "admin", actor, method, path, key, idempotency.ResourceRequestHash("merchant_user.create", merchant, req))
 		if e != nil {
 			return e
 		}
 		if !started {
 			return cached(ctx, s.idem, tx, "admin", actor, path, key, &out)
 		}
-		var count int64
-		if e := tx.Table("shops").Where("merchant_id=? AND id IN ? AND deleted_at IS NULL", merchant, shopIDs).Count(&count).Error; e != nil {
+		roleID, e := merchantRoleID(ctx, tx, req.RoleCode)
+		if e != nil {
 			return e
 		}
-		if int(count) != len(shopIDs) {
-			return problem.Forbidden("PERM_FORBIDDEN", "shop is outside merchant scope")
+		if e := validateMerchantShopScope(ctx, tx, merchant, shopIDs); e != nil {
+			return e
 		}
 		accountID, userID, opID := s.ids.Next(), s.ids.Next(), s.ids.Next()
 		password, _ := randomSecret()
@@ -173,7 +187,7 @@ func (s *Service) CreateMerchantUser(ctx context.Context, c *auth.Claims, method
 		if e := createAccount(tx, accountID, "merchant", req.Account, hash, actor); e != nil {
 			return e
 		}
-		if e := tx.Table("merchant_users").Create(map[string]any{"id": userID, "account_id": accountID, "merchant_id": merchant, "name": req.Name, "status": "active", "created_by": actor, "updated_by": actor}).Error; e != nil {
+		if e := tx.Table("merchant_users").Create(map[string]any{"id": userID, "account_id": accountID, "merchant_id": merchant, "role_id": roleID, "name": req.Name, "status": "active", "created_by": actor, "updated_by": actor}).Error; e != nil {
 			return e
 		}
 		for _, shop := range shopIDs {
@@ -212,25 +226,23 @@ func (s *Service) AuthorizeShops(ctx context.Context, c *auth.Claims, method, pa
 	}
 	var out OperationDTO
 	e = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		started, e := s.idem.Start(ctx, tx, s.ids.Next(), "admin", actor, method, path, key, idempotency.RequestHash(req))
+		started, e := s.idem.Start(ctx, tx, s.ids.Next(), "admin", actor, method, path, key, idempotency.ResourceRequestHash("merchant_user.authorize_shops", user, req))
 		if e != nil {
 			return e
 		}
 		if !started {
 			return cached(ctx, s.idem, tx, "admin", actor, path, key, &out)
 		}
-		var merchant uint64
-		if e := tx.Table("merchant_users").Select("merchant_id").Where("id=?", user).Scan(&merchant).Error; e != nil || merchant == 0 {
+		var merchantUser struct {
+			MerchantID uint64
+			AccountID  uint64
+		}
+		if e := tx.Table("merchant_users").Select("merchant_id", "account_id").Where("id=? AND deleted_at IS NULL", user).Scan(&merchantUser).Error; e != nil || merchantUser.MerchantID == 0 || merchantUser.AccountID == 0 {
 			return problem.NotFound("MERCHANT_USER_NOT_FOUND", "merchant user not found")
 		}
-		var count int64
-		if len(shops) > 0 {
-			if e := tx.Table("shops").Where("merchant_id=? AND id IN ?", merchant, shops).Count(&count).Error; e != nil {
-				return e
-			}
-			if int(count) != len(shops) {
-				return problem.Forbidden("PERM_FORBIDDEN", "shop is outside merchant scope")
-			}
+		merchant := merchantUser.MerchantID
+		if e := validateMerchantShopScope(ctx, tx, merchant, shops); e != nil {
+			return e
 		}
 		var before []uint64
 		if e := tx.Table("merchant_user_shops").Select("shop_id").Where("merchant_user_id=? AND deleted_at IS NULL", user).Scan(&before).Error; e != nil {
@@ -249,10 +261,92 @@ func (s *Service) AuthorizeShops(ctx context.Context, c *auth.Claims, method, pa
 				return e
 			}
 		}
+		// Shop scope is embedded in access tokens. Invalidate every existing
+		// token in the same transaction so removed shops lose access immediately
+		// instead of remaining writable until the normal token TTL expires.
+		if e := invalidateAccountTokens(tx, merchantUser.AccountID, actor, now); e != nil {
+			return e
+		}
 		beforeJSON, _ := json.Marshal(before)
 		afterJSON, _ := json.Marshal(shops)
 		out, e = s.finishSimpleOperation(ctx, tx, s.ids.Next(), actor, "merchant_shop_authorize", "merchant_user", user, map[string]string{"merchant_user_id": idString(user), "before_shop_ids": string(beforeJSON), "after_shop_ids": string(afterJSON)})
 		if e != nil {
+			return e
+		}
+		return s.idem.Succeed(ctx, tx, "admin", actor, path, key, out)
+	})
+	return out, e
+}
+
+// UpdateMerchantUserRole 调整商家用户的最小权限角色。角色快照进入 JWT，
+// 因此角色写入与账号 token 失效必须处于同一事务。
+func (s *Service) UpdateMerchantUserRole(ctx context.Context, c *auth.Claims, method, path, key, userRaw string, req MerchantUserRoleReq) (OperationDTO, error) {
+	actor, e := adminID(c, "merchant_user:update_role")
+	if e != nil {
+		return OperationDTO{}, e
+	}
+	if e := s.requireEnabled(); e != nil {
+		return OperationDTO{}, e
+	}
+	userID, e := parseID(userRaw)
+	if e != nil {
+		return OperationDTO{}, problem.InvalidArgument("VALIDATION_FAILED", "invalid merchant user id")
+	}
+	roleCode, e := normalizeMerchantRoleCode(req.RoleCode, false)
+	if e != nil {
+		return OperationDTO{}, e
+	}
+	req.RoleCode = roleCode
+
+	var out OperationDTO
+	e = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		started, e := s.idem.Start(ctx, tx, s.ids.Next(), "admin", actor, method, path, key, idempotency.ResourceRequestHash("merchant_user.update_role", userID, req))
+		if e != nil {
+			return e
+		}
+		if !started {
+			return cached(ctx, s.idem, tx, "admin", actor, path, key, &out)
+		}
+		newRoleID, e := merchantRoleID(ctx, tx, req.RoleCode)
+		if e != nil {
+			return e
+		}
+		var merchantUser struct {
+			AccountID uint64
+			RoleID    uint64
+		}
+		e = tx.Table("merchant_users").
+			Clauses(clause.Locking{Strength: "UPDATE"}).
+			Select("account_id", "role_id").
+			Where("id=? AND deleted_at IS NULL", userID).
+			Take(&merchantUser).Error
+		if errors.Is(e, gorm.ErrRecordNotFound) {
+			return problem.NotFound("MERCHANT_USER_NOT_FOUND", "merchant user not found")
+		}
+		if e != nil {
+			return e
+		}
+		oldRoleID := merchantUser.RoleID
+		if oldRoleID != newRoleID {
+			now := time.Now()
+			if e := tx.Table("merchant_users").Where("id=? AND role_id=? AND deleted_at IS NULL", userID, oldRoleID).Updates(map[string]any{"role_id": newRoleID, "updated_by": actor}).Error; e != nil {
+				return e
+			}
+			if e := invalidateAccountTokens(tx, merchantUser.AccountID, actor, now); e != nil {
+				return e
+			}
+		}
+		resources := map[string]string{
+			"merchant_user_id": idString(userID),
+			"before_role_id":   idString(oldRoleID),
+			"after_role_id":    idString(newRoleID),
+			"role_code":        req.RoleCode,
+		}
+		out, e = s.finishSimpleOperation(ctx, tx, s.ids.Next(), actor, "merchant_user_role_update", "merchant_user", userID, resources)
+		if e != nil {
+			return e
+		}
+		if e := audit(ctx, tx, s.ids.Next(), actor, "merchant_user.role_update", userID, resources); e != nil {
 			return e
 		}
 		return s.idem.Succeed(ctx, tx, "admin", actor, path, key, out)
@@ -275,7 +369,7 @@ func (s *Service) AccountStatus(ctx context.Context, c *auth.Claims, method, pat
 	}
 	var out OperationDTO
 	e = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		started, e := s.idem.Start(ctx, tx, s.ids.Next(), "admin", actor, method, path, key, idempotency.RequestHash(req))
+		started, e := s.idem.Start(ctx, tx, s.ids.Next(), "admin", actor, method, path, key, idempotency.ResourceRequestHash("account.status", id, req))
 		if e != nil {
 			return e
 		}
@@ -317,7 +411,7 @@ func (s *Service) ResetPassword(ctx context.Context, c *auth.Claims, method, pat
 	}
 	var out OperationDTO
 	e = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		started, e := s.idem.Start(ctx, tx, s.ids.Next(), "admin", actor, method, path, key, idempotency.RequestHash(req))
+		started, e := s.idem.Start(ctx, tx, s.ids.Next(), "admin", actor, method, path, key, idempotency.ResourceRequestHash("account.reset_password", id, req))
 		if e != nil {
 			return e
 		}
@@ -451,7 +545,7 @@ func (s *Service) updateRider(ctx context.Context, actor uint64, method, path, k
 	}
 	var out RiderDTO
 	e = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		started, e := s.idem.Start(ctx, tx, s.ids.Next(), "admin", actor, method, path, key, idempotency.RequestHash(map[string]string{"kind": kind, "value": value, "reason": reason}))
+		started, e := s.idem.Start(ctx, tx, s.ids.Next(), "admin", actor, method, path, key, idempotency.ResourceRequestHash("rider."+kind, id, map[string]string{"value": value, "reason": reason}))
 		if e != nil {
 			return e
 		}
@@ -560,6 +654,68 @@ func (s *Service) createResetToken(tx *gorm.DB, account, actor uint64, purpose s
 	return tx.Table("credential_reset_tokens").Create(map[string]any{"id": s.ids.Next(), "account_id": account, "token_hash": securevalue.HMAC(s.cfg.VerificationPepper, secret), "token_ciphertext": ciphertext, "purpose": purpose, "expires_at": time.Now().Add(30 * time.Minute), "created_by": actor}).Error
 }
 
+func normalizeMerchantRoleCode(raw string, allowOwnerDefault bool) (string, error) {
+	code := strings.TrimSpace(raw)
+	if code == "" && allowOwnerDefault {
+		return MerchantRoleOwner, nil
+	}
+	switch code {
+	case MerchantRoleOwner, MerchantRoleOrderOperator, MerchantRoleInventoryClerk:
+		return code, nil
+	default:
+		return "", problem.InvalidArgument("MERCHANT_ROLE_INVALID", "role_code is not an active merchant role")
+	}
+}
+
+func merchantRoleID(ctx context.Context, tx *gorm.DB, code string) (uint64, error) {
+	var role struct{ ID uint64 }
+	err := tx.WithContext(ctx).Table("roles").
+		Select("id").
+		Where("code=? AND scope='merchant' AND status='active' AND deleted_at IS NULL", code).
+		Take(&role).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, problem.InvalidArgument("MERCHANT_ROLE_INVALID", "role_code is not an active merchant role")
+	}
+	if err != nil {
+		return 0, err
+	}
+	if role.ID == 0 {
+		return 0, problem.InvalidArgument("MERCHANT_ROLE_INVALID", "role_code is not an active merchant role")
+	}
+	return role.ID, nil
+}
+
+func validateMerchantShopScope(ctx context.Context, tx *gorm.DB, merchantID uint64, shopIDs []uint64) error {
+	if len(shopIDs) == 0 {
+		return nil
+	}
+	var count int64
+	if err := tx.WithContext(ctx).Table("shops").
+		Where("merchant_id=? AND id IN ? AND deleted_at IS NULL", merchantID, shopIDs).
+		Count(&count).Error; err != nil {
+		return err
+	}
+	if int(count) != len(shopIDs) {
+		return problem.Forbidden("PERM_FORBIDDEN", "shop is outside merchant scope")
+	}
+	return nil
+}
+
+func invalidateAccountTokens(tx *gorm.DB, accountID, actor uint64, now time.Time) error {
+	result := tx.Table("accounts").Where("id=? AND deleted_at IS NULL", accountID).Updates(map[string]any{
+		"token_invalid_before": now,
+		"credential_version":   gorm.Expr("credential_version + 1"),
+		"updated_by":           actor,
+	})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return problem.NotFound("ACCOUNT_NOT_FOUND", "account not found")
+	}
+	return nil
+}
+
 // createAccount 创建账户。
 func createAccount(tx *gorm.DB, id uint64, kind string, input AccountInput, hash []byte, actor uint64) error {
 	return createAccountWithStatus(tx, id, kind, input, hash, "active", actor)
@@ -567,7 +723,7 @@ func createAccount(tx *gorm.DB, id uint64, kind string, input AccountInput, hash
 
 // createAccountWithStatus 创建指定初始状态的账户。
 func createAccountWithStatus(tx *gorm.DB, id uint64, kind string, input AccountInput, hash []byte, status string, actor uint64) error {
-	e := tx.Table("accounts").Create(map[string]any{"id": id, "account_type": kind, "username": input.Username, "phone": null(input.Phone), "password_hash": string(hash), "status": status, "created_by": actor, "updated_by": actor}).Error
+	e := tx.Table("accounts").Create(map[string]any{"id": id, "account_type": kind, "username": input.Username, "phone": null(input.Phone), "password_hash": string(hash), "status": status, "credential_version": 1, "created_by": actor, "updated_by": actor}).Error
 	return identityConflict(e)
 }
 

@@ -23,7 +23,7 @@ type Body struct {
 
 type PageBody struct {
 	Items         any    `json:"items"`
-	NextPageToken string `json:"next_page_token,omitempty"`
+	NextPageToken string `json:"next_page_token"`
 }
 
 // OK 使用稳定响应信封包装所有成功响应。

@@ -22,6 +22,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/modules/aftersale"
 	"jiuxiaoer-admin/backend-go/internal/modules/asset"
 	"jiuxiaoer-admin/backend-go/internal/modules/auth"
+	"jiuxiaoer-admin/backend-go/internal/modules/compliance"
 	"jiuxiaoer-admin/backend-go/internal/modules/deliveryreturn"
 	"jiuxiaoer-admin/backend-go/internal/modules/dispatch"
 	"jiuxiaoer-admin/backend-go/internal/modules/mq"
@@ -50,24 +51,72 @@ type Dependencies struct {
 	PaymentProvider     order.PaymentProvider
 	RefundProvider      refund.Provider
 	BillProvider        reconciliation.Provider
+	PrintProvider       printjob.Provider
+	ComplianceProvider  compliance.Provider
 	Realtime            *realtime.Runtime
 	RouteProvider       routeplanning.Provider
 	CustomerLBSProvider amap.Provider
 }
 
+func complianceProviderRequired(cfg config.Config) bool {
+	return cfg.CP1.ComplianceMode != "off"
+}
+
+// buildConfiguredComplianceProvider is the production composition boundary.
+// A selected vendor adapter must be registered by its integration package;
+// this function never substitutes an unavailable placeholder.
+func buildConfiguredComplianceProvider(ctx context.Context, cfg config.Config) (compliance.Provider, error) {
+	if !complianceProviderRequired(cfg) {
+		return nil, nil
+	}
+	provider, err := compliance.BuildProvider(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return provider, nil
+}
+
+// routerComplianceProvider supports direct router construction in tests while
+// enforcing the same provider-code invariant as NewServer.
+func routerComplianceProvider(deps Dependencies) compliance.Provider {
+	if deps.ComplianceProvider != nil {
+		if err := compliance.ValidateConfiguredProvider(deps.Config, deps.ComplianceProvider); err != nil {
+			panic(err)
+		}
+		return deps.ComplianceProvider
+	}
+	if !complianceProviderRequired(deps.Config) {
+		return &compliance.UnavailableProvider{}
+	}
+	provider, err := buildConfiguredComplianceProvider(context.Background(), deps.Config)
+	if err != nil {
+		panic(err)
+	}
+	return provider
+}
+
 // Server 持有 HTTP Server 以及所有长期存在的基础设施连接。
 // 统一放在这里关闭，避免业务模块误关共享的 DB/Redis/MQ 客户端。
 type Server struct {
-	cfg        config.Config
-	log        *slog.Logger
-	httpServer *http.Server
-	deps       Dependencies
+	cfg             config.Config
+	log             *slog.Logger
+	httpServer      *http.Server
+	deps            Dependencies
+	printProviderMu sync.Mutex
 }
 
 // NewServer 先初始化基础设施，再把共享依赖注入路由。
 // MySQL/Redis/RabbitMQ 是否必需由配置控制，便于本地 P0 分阶段启动。
 func NewServer(ctx context.Context, cfg config.Config, log *slog.Logger) (*Server, error) {
 	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	printProvider, err := buildConfiguredPrintProvider(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	complianceProvider, err := buildConfiguredComplianceProvider(ctx, cfg)
+	if err != nil {
 		return nil, err
 	}
 	var smsProvider auth.SMSProvider
@@ -138,19 +187,21 @@ func NewServer(ctx context.Context, cfg config.Config, log *slog.Logger) (*Serve
 		billProvider = provider
 	}
 	deps := Dependencies{
-		Config:          cfg,
-		Log:             log,
-		DB:              db,
-		Redis:           redisClient,
-		RabbitMQ:        rabbitManager,
-		NodeLease:       lease,
-		Metrics:         metricRegistry,
-		IDGen:           idGen,
-		WeChatAuth:      wechatAuth,
-		SMSProvider:     smsProvider,
-		PaymentProvider: paymentProvider,
-		RefundProvider:  refundProvider,
-		BillProvider:    billProvider,
+		Config:             cfg,
+		Log:                log,
+		DB:                 db,
+		Redis:              redisClient,
+		RabbitMQ:           rabbitManager,
+		NodeLease:          lease,
+		Metrics:            metricRegistry,
+		IDGen:              idGen,
+		WeChatAuth:         wechatAuth,
+		SMSProvider:        smsProvider,
+		PaymentProvider:    paymentProvider,
+		RefundProvider:     refundProvider,
+		BillProvider:       billProvider,
+		PrintProvider:      printProvider,
+		ComplianceProvider: complianceProvider,
 	}
 	deps.Realtime = realtime.NewRuntime(cfg, db, redisClient, idGen, metricRegistry, log)
 
@@ -174,6 +225,17 @@ func NewServer(ctx context.Context, cfg config.Config, log *slog.Logger) (*Serve
 // Run 在同一个父 context 下启动 HTTP 和可选的 outbox publisher。
 // 取消 context 会触发 HTTP 优雅关闭，并释放所有基础设施连接。
 func (s *Server) Run(ctx context.Context) error {
+	if err := s.ensurePrintProvider(ctx); err != nil {
+		return err
+	}
+	var printWorker *printjob.Worker
+	if s.deps.DB != nil && s.cfg.CP1.PrintEnabled {
+		var err error
+		printWorker, err = s.newPrintWorker(ctx)
+		if err != nil {
+			return err
+		}
+	}
 	runCtx, cancelWorkers := context.WithCancel(ctx)
 	defer cancelWorkers()
 	errCh := make(chan error, 4)
@@ -214,10 +276,6 @@ func (s *Server) Run(ctx context.Context) error {
 			worker := dispatch.NewWorker(dispatchService, s.cfg.App.InstanceID+":dispatch-sweeper", s.log)
 			spawn(func() { worker.Run(runCtx) })
 		}
-	}
-	var printWorker *printjob.Worker
-	if s.deps.DB != nil && s.cfg.CP1.PrintEnabled && s.cfg.CP1.PrintProvider == "fake" {
-		printWorker = printjob.NewWorker(s.cfg.CP1, s.deps.DB, s.deps.IDGen, &printjob.FakeProvider{}, s.cfg.App.InstanceID, s.log)
 	}
 	var notificationProvider notification.Provider = &notification.UnavailableProvider{}
 	if s.cfg.CP1.NotificationProvider == "fake" {

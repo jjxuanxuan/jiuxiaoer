@@ -66,7 +66,8 @@ func (s *Service) Cancel(ctx context.Context, c *auth.Claims, method, path, key,
 		return order.OrderDTO{}, e
 	}
 	_ = actor
-	return s.orders.Cancel(ctx, c, method, path, key, idRaw, order.OrderCancelReq{Reason: req.Reason, ReasonCode: req.ReasonCode, ExpectedVersion: req.ExpectedVersion})
+	expectedVersion := req.ExpectedVersion
+	return s.orders.CancelAdmin(ctx, c, method, path, key, idRaw, order.OrderCancelReq{Reason: req.Reason, ReasonCode: req.ReasonCode, ExpectedVersion: &expectedVersion})
 }
 
 // Assign 分配配送DTO。
@@ -105,7 +106,7 @@ func (s *Service) assign(ctx context.Context, c *auth.Claims, method, path, key,
 	}
 	var out DeliveryDTO
 	e = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		started, e := s.idem.Start(ctx, tx, s.ids.Next(), "admin", actor, method, path, key, idempotency.RequestHash(req))
+		started, e := s.idem.Start(ctx, tx, s.ids.Next(), "admin", actor, method, path, key, idempotency.ResourceRequestHash("delivery."+kind, id, req))
 		if e != nil {
 			return e
 		}
@@ -181,7 +182,7 @@ func (s *Service) assign(ctx context.Context, c *auth.Claims, method, path, key,
 
 // RequestForceComplete 返回请求强制操作 Complete。
 func (s *Service) RequestForceComplete(ctx context.Context, c *auth.Claims, method, path, key, idRaw string, req ForceCompleteRequestReq) (ApprovalDTO, error) {
-	maker, e := adminID(c, "delivery:force_complete")
+	maker, e := adminID(c, "delivery:force_complete_request")
 	if e != nil {
 		return ApprovalDTO{}, e
 	}
@@ -192,16 +193,23 @@ func (s *Service) RequestForceComplete(ctx context.Context, c *auth.Claims, meth
 	if e != nil || checker == maker {
 		return ApprovalDTO{}, problem.Forbidden("MAKER_CHECKER_REQUIRED", "a distinct checker is required")
 	}
-	if ok, e := s.checkerAllowed(ctx, checker, "delivery:force_complete"); e != nil || !ok {
-		return ApprovalDTO{}, problem.Forbidden("CHECKER_PERMISSION_REQUIRED", "checker lacks force-complete permission")
-	}
 	id, e := parseID(idRaw)
 	if e != nil {
 		return ApprovalDTO{}, problem.InvalidArgument("VALIDATION_FAILED", "invalid delivery id")
 	}
 	var out ApprovalDTO
 	e = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		started, e := s.idem.Start(ctx, tx, s.ids.Next(), "admin", maker, method, path, key, idempotency.RequestHash(req))
+		if ok, authErr := activeAdminHasPermission(ctx, tx, maker, "delivery:force_complete_request"); authErr != nil {
+			return authErr
+		} else if !ok {
+			return problem.Forbidden("PERM_FORBIDDEN", "maker is no longer active or authorized")
+		}
+		if ok, authErr := activeAdminHasPermission(ctx, tx, checker, "delivery:force_complete_approve"); authErr != nil {
+			return authErr
+		} else if !ok {
+			return problem.Forbidden("CHECKER_PERMISSION_REQUIRED", "checker is no longer active or authorized")
+		}
+		started, e := s.idem.Start(ctx, tx, s.ids.Next(), "admin", maker, method, path, key, idempotency.ResourceRequestHash("delivery.force_complete.request", id, req))
 		if e != nil {
 			return e
 		}
@@ -234,7 +242,7 @@ func (s *Service) RequestForceComplete(ctx context.Context, c *auth.Claims, meth
 
 // ForceComplete 强制执行Complete。
 func (s *Service) ForceComplete(ctx context.Context, c *auth.Claims, method, path, key, idRaw string, req ForceCompleteReq) (DeliveryDTO, error) {
-	checker, e := adminID(c, "delivery:force_complete")
+	checker, e := adminID(c, "delivery:force_complete_approve")
 	if e != nil {
 		return DeliveryDTO{}, e
 	}
@@ -251,7 +259,12 @@ func (s *Service) ForceComplete(ctx context.Context, c *auth.Claims, method, pat
 	}
 	var out DeliveryDTO
 	e = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		started, e := s.idem.Start(ctx, tx, s.ids.Next(), "admin", checker, method, path, key, idempotency.RequestHash(req))
+		if ok, authErr := activeAdminHasPermission(ctx, tx, checker, "delivery:force_complete_approve"); authErr != nil {
+			return authErr
+		} else if !ok {
+			return problem.Forbidden("PERM_FORBIDDEN", "checker is no longer active or authorized")
+		}
+		started, e := s.idem.Start(ctx, tx, s.ids.Next(), "admin", checker, method, path, key, idempotency.ResourceRequestHash("delivery.force_complete", id, req))
 		if e != nil {
 			return e
 		}
@@ -312,6 +325,9 @@ func (s *Service) ForceComplete(ctx context.Context, c *auth.Claims, method, pat
 		if e := tx.Model(&deliveryverification.Verification{}).Where("delivery_order_id=? AND stage='delivery' AND status<>'verified'", id).Updates(map[string]any{"status": "overridden", "verified_at": now, "verified_by_type": "admin", "verified_by_id": checker, "override_reason_code": approval.ReasonCode, "override_reason": approval.Reason}).Error; e != nil {
 			return e
 		}
+		if e := deliveryverification.Invalidate(ctx, tx, s.ids, id, "delivery_force_completed"); e != nil {
+			return e
+		}
 		approvalUpdate := tx.Model(&Approval{}).
 			Where("id=? AND status='pending'", approval.ID).
 			Updates(map[string]any{"status": "approved", "approved_at": now})
@@ -358,11 +374,32 @@ func (s *Service) Assignments(ctx context.Context, c *auth.Claims, idRaw string)
 	return out, nil
 }
 
-// checkerAllowed 返回checker 允许状态。
-func (s *Service) checkerAllowed(ctx context.Context, id uint64, perm string) (bool, error) {
-	var count int64
-	e := s.db.WithContext(ctx).Table("admin_users au").Joins("JOIN accounts a ON a.id=au.account_id AND a.status='active'").Joins("JOIN role_permissions rp ON rp.role_id=au.role_id AND rp.deleted_at IS NULL").Joins("JOIN permissions p ON p.id=rp.permission_id AND p.code=? AND p.status='active'", perm).Where("au.id=? AND au.status='active'", id).Count(&count).Error
-	return count > 0, e
+// activeAdminHasPermission is the transactional authority for high-risk admin
+// writes. FOR UPDATE keeps account, administrator, role, mapping, and permission
+// state stable until the protected business transaction commits.
+func activeAdminHasPermission(ctx context.Context, tx *gorm.DB, id uint64, permissionCode string) (bool, error) {
+	var row struct {
+		ID uint64
+	}
+	err := tx.WithContext(ctx).
+		Table("admin_users au").
+		Select("au.id").
+		Joins("JOIN accounts a ON a.id = au.account_id").
+		Joins("JOIN roles r ON r.id = au.role_id").
+		Joins("JOIN role_permissions rp ON rp.role_id = r.id").
+		Joins("JOIN permissions p ON p.id = rp.permission_id").
+		Where(`au.id = ?
+			AND au.status = 'active' AND au.deleted_at IS NULL
+			AND a.account_type = 'admin' AND a.status = 'active' AND a.deleted_at IS NULL
+			AND r.status = 'active' AND r.deleted_at IS NULL
+			AND rp.deleted_at IS NULL
+			AND p.code = ? AND p.status = 'active' AND p.deleted_at IS NULL`, id, permissionCode).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 // adminID 从认证声明中解析并返回管理员 ID。

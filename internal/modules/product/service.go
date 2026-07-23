@@ -18,13 +18,26 @@ import (
 
 const nullCacheValue = "__NULL__"
 
+const categoryCacheReadAttempts = 3
+
+const (
+	contextServiceShop     = "service_shop"
+	contextNoServiceShop   = "no_service_shop"
+	reasonLocationRequired = "location_required"
+	reasonOutOfService     = "out_of_service"
+	reasonShopClosed       = "shop_closed"
+	reasonNotOnSale        = "not_on_sale"
+	reasonOutOfStock       = "out_of_stock"
+)
+
 // Service 提供公共商品目录读取，并使用 Redis cache-aside。
 type Service struct {
-	repo      *Repository
-	redis     *goredis.Client
-	resolver  *servicearea.Service
-	lbsMode   string
-	locations *customerlocation.Service
+	repo               *Repository
+	redis              *goredis.Client
+	resolver           *servicearea.Service
+	lbsMode            string
+	locations          *customerlocation.Service
+	resolveShopForTest func(context.Context, *ListQuery) (*servicearea.DeliveryPromiseDTO, error)
 }
 
 func (s *Service) WithLocationContexts(mode string, locations *customerlocation.Service) *Service {
@@ -43,16 +56,59 @@ func NewService(db *gorm.DB, redisClient *goredis.Client, resolvers ...*servicea
 
 // ListCategories 使用较长缓存，因为 P0 阶段分类变化较少。
 func (s *Service) ListCategories(ctx context.Context) ([]CategoryDTO, error) {
-	const cacheKey = "category:list"
-	if s.redis != nil {
+	if s.redis == nil {
+		return s.listCategoriesFromDB(ctx)
+	}
+
+	// Recheck the revision before returning a hit or publishing a fill. This
+	// closes the race where a category transaction commits between the first
+	// revision read and Redis/DB access: an old revision key is never returned
+	// after the newer committed revision becomes visible.
+	for attempt := 0; attempt < categoryCacheReadAttempts; attempt++ {
+		revision, err := s.repo.CategoryCatalogRevision(ctx)
+		if err != nil {
+			return nil, err
+		}
+		cacheKey := categoryCacheKey(revision)
 		if cached, err := s.redis.Get(ctx, cacheKey).Result(); err == nil {
 			var items []CategoryDTO
 			if json.Unmarshal([]byte(cached), &items) == nil {
-				return items, nil
+				confirmedRevision, confirmErr := s.repo.CategoryCatalogRevision(ctx)
+				if confirmErr != nil {
+					return nil, confirmErr
+				}
+				if confirmedRevision == revision {
+					return items, nil
+				}
+				continue
 			}
 		}
+
+		items, err := s.listCategoriesFromDB(ctx)
+		if err != nil {
+			return nil, err
+		}
+		confirmedRevision, err := s.repo.CategoryCatalogRevision(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if confirmedRevision != revision {
+			continue
+		}
+		s.setJSONCache(ctx, cacheKey, items, 10*time.Minute)
+		return items, nil
 	}
 
+	// Under sustained category writes, favor a fresh DB snapshot over filling or
+	// returning a cache entry whose revision changed during the request.
+	return s.listCategoriesFromDB(ctx)
+}
+
+func categoryCacheKey(revision string) string {
+	return "category:list:" + revision
+}
+
+func (s *Service) listCategoriesFromDB(ctx context.Context) ([]CategoryDTO, error) {
 	categories, err := s.repo.ListCategories(ctx)
 	if err != nil {
 		return nil, err
@@ -72,14 +128,15 @@ func (s *Service) ListCategories(ctx context.Context) ([]CategoryDTO, error) {
 			AgeRestricted: category.AgeRestricted,
 		})
 	}
-
-	s.setJSONCache(ctx, cacheKey, items, 10*time.Minute)
 	return items, nil
 }
 
 // ListProducts 查询商品列表。
 func (s *Service) ListProducts(ctx context.Context, query ListQuery) ([]ProductDTO, string, error) {
-	promise, err := s.resolveShop(ctx, &query)
+	if query.OrderBy != "" || query.Filter != "" {
+		return nil, "", problem.InvalidArgument("VALIDATION_INVALID_QUERY", "product list has a fixed sort and filter contract")
+	}
+	promise, err := s.resolveProductShop(ctx, &query)
 	if err != nil {
 		return nil, "", err
 	}
@@ -98,16 +155,21 @@ func (s *Service) ListProducts(ctx context.Context, query ListQuery) ([]ProductD
 
 	nextPageToken := ""
 	if len(rows) > query.PageSize {
-		nextPageToken = pagination.NextPageToken(query.Query)
 		rows = rows[:query.PageSize]
+		last := rows[len(rows)-1]
+		switch {
+		case query.OrderBy != "":
+			nextPageToken = pagination.NextPageToken(query.Query)
+		case query.ShopID != "":
+			nextPageToken = pagination.NextPageTokenWithCursor(query.Query, strconv.Itoa(last.SortOrder), strconv.FormatUint(last.ShopProductID, 10))
+		default:
+			nextPageToken = pagination.NextPageTokenWithCursor(query.Query, strconv.FormatUint(last.ID, 10))
+		}
 	}
 
 	items := make([]ProductDTO, 0, len(rows))
 	for _, row := range rows {
-		item := productDTO(row)
-		if promise != nil {
-			item.DeliveryPromise = promise
-		}
+		item := productResponse(productDTO(row), query, promise)
 		items = append(items, item)
 	}
 	return items, nextPageToken, nil
@@ -120,11 +182,17 @@ func (s *Service) GetPublicProduct(ctx context.Context, id string, query ListQue
 		return ProductDTO{}, problem.InvalidArgument("VALIDATION_FAILED", "invalid product id")
 	}
 
-	promise, err := s.resolveShop(ctx, &query)
+	promise, err := s.resolveProductShop(ctx, &query)
 	if err != nil {
 		return ProductDTO{}, err
 	}
-	shopID, _ := strconv.ParseUint(query.ShopID, 10, 64)
+	shopID := uint64(0)
+	if query.ShopID != "" {
+		shopID, err = strconv.ParseUint(query.ShopID, 10, 64)
+		if err != nil || shopID == 0 {
+			return ProductDTO{}, problem.InvalidArgument("VALIDATION_INVALID_QUERY", "invalid shop_id")
+		}
+	}
 	cacheKey := "product:detail:" + id + ":" + query.ShopID
 	if s.redis != nil {
 		if cached, err := s.redis.Get(ctx, cacheKey).Result(); err == nil {
@@ -133,7 +201,7 @@ func (s *Service) GetPublicProduct(ctx context.Context, id string, query ListQue
 			}
 			var item ProductDTO
 			if json.Unmarshal([]byte(cached), &item) == nil {
-				return item, nil
+				return productResponse(item, query, promise), nil
 			}
 		}
 	}
@@ -147,20 +215,24 @@ func (s *Service) GetPublicProduct(ctx context.Context, id string, query ListQue
 	if err != nil {
 		return ProductDTO{}, err
 	}
-	if shopID != 0 && row.AvailableQty <= 0 {
-		return ProductDTO{}, problem.Conflict("PRODUCT_NOT_ON_SALE", "product is unavailable at the service shop")
-	}
-
 	item := productDTO(row)
-	if promise != nil {
-		item.DeliveryPromise = promise
-	}
+	// Only the shop-static product projection is cached. A delivery promise is
+	// location-specific and must be attached after every cache read.
+	item.DeliveryPromise = nil
 	s.setJSONCache(ctx, cacheKey, item, 5*time.Minute)
-	return item, nil
+	return productResponse(item, query, promise), nil
+}
+
+func (s *Service) resolveProductShop(ctx context.Context, query *ListQuery) (*servicearea.DeliveryPromiseDTO, error) {
+	if s.resolveShopForTest != nil {
+		return s.resolveShopForTest(ctx, query)
+	}
+	return s.resolveShop(ctx, query)
 }
 
 // resolveShop 返回resolve 门店。
 func (s *Service) resolveShop(ctx context.Context, query *ListQuery) (*servicearea.DeliveryPromiseDTO, error) {
+	query.locationlessReason = reasonLocationRequired
 	if s.lbsMode == "enforce" {
 		if query.LocationContextID == "" || s.locations == nil {
 			return nil, problem.New(422, "LOCATION_CONTEXT_REQUIRED", "Unprocessable Entity", "X-Location-Context is required")
@@ -180,6 +252,7 @@ func (s *Service) resolveShop(ctx context.Context, query *ListQuery) (*servicear
 				s.locations.ObserveReadComparison("products", query.CityCode, query.ShopID, location)
 			}
 			if location.LocationLevel == "city" {
+				query.locationlessReason = reasonLocationRequired
 				if query.ShopID != "" && s.lbsMode == "enforce" {
 					return nil, problem.New(422, "PRECISE_LOCATION_REQUIRED", "Unprocessable Entity", "a precise location is required for shop inventory")
 				}
@@ -187,6 +260,7 @@ func (s *Service) resolveShop(ctx context.Context, query *ListQuery) (*servicear
 				return nil, nil
 			}
 			if location.ServiceShop == nil {
+				query.locationlessReason = reasonOutOfService
 				if s.lbsMode == "enforce" {
 					return nil, problem.New(422, "OUT_OF_SERVICE_AREA", "Unprocessable Entity", "location is not serviceable")
 				}
@@ -244,23 +318,100 @@ func (s *Service) setStringCache(ctx context.Context, key string, value string, 
 
 // productDTO 返回商品DTO。
 func productDTO(row ProductRow) ProductDTO {
-	return ProductDTO{
-		ID:                  strconv.FormatUint(row.ID, 10),
-		CategoryID:          strconv.FormatUint(row.CategoryID, 10),
-		ShopID:              strconv.FormatUint(row.ShopID, 10),
-		ShopProductID:       strconv.FormatUint(row.ShopProductID, 10),
-		Name:                row.Name,
-		BrandName:           stringValue(row.BrandName),
-		Spec:                stringValue(row.Spec),
-		ImageURL:            stringValue(row.ImageURL),
-		Description:         stringValue(row.Description),
-		SalePriceAmount:     row.SalePriceAmount,
-		OriginalPriceAmount: row.OriginalPriceAmount,
-		Status:              row.Status,
-		AvailableQty:        row.AvailableQty,
-		AgeRestricted:       row.AgeRestricted,
+	item := ProductDTO{
+		ID:            strconv.FormatUint(row.ID, 10),
+		CategoryID:    strconv.FormatUint(row.CategoryID, 10),
+		Name:          row.Name,
+		BrandName:     stringValue(row.BrandName),
+		Spec:          stringValue(row.Spec),
+		ImageURL:      stringValue(row.ImageURL),
+		Description:   stringValue(row.Description),
+		Status:        row.Status,
+		AgeRestricted: row.AgeRestricted,
 	}
+	if row.ShopID == 0 || row.ShopProductID == 0 {
+		item.ContextType = contextNoServiceShop
+		item.Purchasable = false
+		item.UnavailableReason = stringPtr(reasonLocationRequired)
+		return item
+	}
+
+	availableQty := row.AvailableQty
+	if availableQty < 0 {
+		availableQty = 0
+	}
+	item.ContextType = contextServiceShop
+	item.ShopID = strconv.FormatUint(row.ShopID, 10)
+	item.ShopProductID = strconv.FormatUint(row.ShopProductID, 10)
+	item.SalePriceAmount = int64Ptr(row.SalePriceAmount)
+	item.OriginalPriceAmount = int64Ptr(row.OriginalPriceAmount)
+	item.AvailableQty = intPtr(availableQty)
+	if reason := serviceShopUnavailableReason(row); reason != "" {
+		item.UnavailableReason = stringPtr(reason)
+		return item
+	}
+	item.Purchasable = true
+	return item
 }
+
+func productResponse(item ProductDTO, query ListQuery, promise *servicearea.DeliveryPromiseDTO) ProductDTO {
+	// Old cache entries may still contain a location-specific promise. Always
+	// clear it before attaching the promise resolved for this request.
+	item.DeliveryPromise = nil
+	if query.ShopID == "" {
+		item.ContextType = contextNoServiceShop
+		item.ShopID = ""
+		item.ShopProductID = ""
+		item.SalePriceAmount = nil
+		item.OriginalPriceAmount = nil
+		item.AvailableQty = nil
+		item.Purchasable = false
+		reason := query.locationlessReason
+		if reason == "" {
+			reason = reasonLocationRequired
+		}
+		item.UnavailableReason = stringPtr(reason)
+		return item
+	}
+
+	item.ContextType = contextServiceShop
+	// Entries written before the contract change did not have the discriminator
+	// or availability fields. They only contained saleable products, so the
+	// static status and stock projection is sufficient to normalize them.
+	if item.UnavailableReason == nil && !item.Purchasable {
+		switch {
+		case item.Status != "on_sale":
+			item.UnavailableReason = stringPtr(reasonNotOnSale)
+		case item.AvailableQty != nil && *item.AvailableQty <= 0:
+			item.UnavailableReason = stringPtr(reasonOutOfStock)
+		default:
+			item.Purchasable = true
+		}
+	}
+	if promise != nil {
+		item.DeliveryPromise = promise
+	}
+	return item
+}
+
+func serviceShopUnavailableReason(row ProductRow) string {
+	if row.ShopStatus != "active" || row.BusinessStatus != "open" {
+		return reasonShopClosed
+	}
+	if row.Status != "on_sale" || row.ShopProductStatus != "on_sale" {
+		return reasonNotOnSale
+	}
+	if row.AvailableQty <= 0 {
+		return reasonOutOfStock
+	}
+	return ""
+}
+
+func stringPtr(value string) *string { return &value }
+
+func int64Ptr(value int64) *int64 { return &value }
+
+func intPtr(value int) *int { return &value }
 
 // stringValue 安全读取字符串指针的值。
 func stringValue(value *string) string {

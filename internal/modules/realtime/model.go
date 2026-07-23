@@ -7,11 +7,12 @@ import (
 )
 
 const (
-	recipientRider = "rider"
-	relayPending   = "pending"
-	relayRelayed   = "relayed"
-	relayExpired   = "expired"
-	relayDead      = "dead"
+	recipientRider    = "rider"
+	recipientMerchant = "merchant"
+	relayPending      = "pending"
+	relayRelayed      = "relayed"
+	relayExpired      = "expired"
+	relayDead         = "dead"
 )
 
 type Delivery struct {
@@ -60,4 +61,21 @@ type Wakeup struct {
 	DeliveryID uint64    `json:"delivery_id"`
 	RiderID    uint64    `json:"rider_id"`
 	ExpiresAt  time.Time `json:"expires_at"`
+}
+
+// StoreOrderPaidEvent is the complete client-visible payload for a merchant
+// new-order wakeup. Order details remain behind the scoped store order APIs.
+type StoreOrderPaidEvent struct {
+	EventID    string    `json:"event_id"`
+	OrderID    string    `json:"order_id"`
+	ShopID     string    `json:"shop_id"`
+	SoundKey   string    `json:"sound_key"`
+	OccurredAt time.Time `json:"occurred_at"`
+}
+
+// MerchantWakeup contains routing metadata used only between API instances.
+// MerchantEvent is the only portion forwarded to a WebSocket client.
+type MerchantWakeup struct {
+	AccountID uint64              `json:"account_id"`
+	Event     StoreOrderPaidEvent `json:"event"`
 }

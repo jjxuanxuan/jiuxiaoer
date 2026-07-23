@@ -25,16 +25,205 @@ import (
 )
 
 type Service struct {
-	cfg   config.CP1Config
-	db    *gorm.DB
-	ids   *snowflake.Generator
-	idem  *idempotency.Store
-	crypt string
+	cfg      config.CP1Config
+	db       *gorm.DB
+	ids      *snowflake.Generator
+	idem     idempotencyStore
+	crypt    string
+	provider Provider
+}
+
+type idempotencyStore interface {
+	Start(context.Context, *gorm.DB, uint64, string, uint64, string, string, string, string) (bool, error)
+	Succeed(context.Context, *gorm.DB, string, uint64, string, string, any) error
+	CachedResponse(context.Context, *gorm.DB, string, uint64, string, string, any) (bool, error)
 }
 
 // NewService 创建并初始化服务。
 func NewService(cfg config.CP1Config, db *gorm.DB, ids *snowflake.Generator) *Service {
-	return &Service{cfg: cfg, db: db, ids: ids, idem: idempotency.NewStore(db), crypt: cfg.DataEncryptionKey}
+	return &Service{cfg: cfg, db: db, ids: ids, idem: idempotency.NewStore(db), crypt: cfg.DataEncryptionKey, provider: &UnavailableProvider{}}
+}
+
+func (s *Service) WithProvider(provider Provider) *Service {
+	if provider != nil {
+		s.provider = provider
+	}
+	return s
+}
+
+// CreateSettings creates the one allowed print configuration for an
+// authorized shop. The device identifier is encrypted before persistence and
+// never returned by a read API.
+func (s *Service) CreateSettings(ctx context.Context, claims *auth.Claims, method, path, key string, req SettingCreateReq) (SettingDTO, error) {
+	actorID, err := merchantActor(claims, "print_setting:update_shop")
+	if err != nil {
+		return SettingDTO{}, err
+	}
+	shopID, err := parseID(req.ShopID)
+	if err != nil {
+		return SettingDTO{}, problem.InvalidArgument("VALIDATION_FAILED", "invalid shop id")
+	}
+	if !merchantShopAllowed(claims, shopID) {
+		return SettingDTO{}, problem.Forbidden("SHOP_SCOPE_FORBIDDEN", "shop is not authorized")
+	}
+	templateID, err := parseID(req.TemplateID)
+	if err != nil || req.Provider != s.cfg.PrintProvider || !validPrintEvents(req.AutoPrintEvents) {
+		return SettingDTO{}, problem.InvalidArgument("VALIDATION_FAILED", "invalid provider, template, or auto_print_events")
+	}
+	var result SettingDTO
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		started, err := s.idem.Start(ctx, tx, s.ids.Next(), "merchant", actorID, method, path, key, idempotency.RequestHash(req))
+		if err != nil {
+			return err
+		}
+		if !started {
+			return cached(ctx, s.idem, tx, "merchant", actorID, path, key, &result)
+		}
+		var template Template
+		if err := tx.Where("id=? AND status='published'", templateID).First(&template).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+			return problem.InvalidArgument("PRINT_TEMPLATE_INVALID", "published print template not found")
+		} else if err != nil {
+			return err
+		}
+		if !validReceiptTemplate(template) {
+			return problem.InvalidArgument("PRINT_TEMPLATE_INVALID", "print template is not compatible with receipt.v1")
+		}
+		ciphertext, err := securevalue.Seal(s.crypt, req.DeviceID)
+		if err != nil {
+			return err
+		}
+		events, _ := json.Marshal(req.AutoPrintEvents)
+		row := Setting{
+			ID: s.ids.Next(), ShopID: shopID, Provider: req.Provider,
+			DeviceIDCiphertext: ciphertext, DeviceIDMask: mask(req.DeviceID), DeviceStatus: "unknown",
+			TemplateID: template.ID, Copies: req.Copies, AutoPrintEvents: datatypes.JSON(events),
+			Enabled: req.Enabled, Version: 1, CreatedBy: actorID, UpdatedBy: actorID,
+		}
+		created := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row)
+		if created.Error != nil {
+			return created.Error
+		}
+		if created.RowsAffected != 1 {
+			return problem.Conflict("PRINT_SETTING_EXISTS", "print setting already exists for this shop")
+		}
+		result = settingDTO(row)
+		if err := audit(ctx, tx, s.ids.Next(), "merchant", actorID, "print_setting.create", "print_setting", row.ID, nil, result); err != nil {
+			return err
+		}
+		return s.idem.Succeed(ctx, tx, "merchant", actorID, path, key, result)
+	})
+	return result, err
+}
+
+// TestSettings performs a synchronous provider submission using a stable
+// provider request ID derived from the idempotency key. A provider-side retry
+// therefore cannot create a second physical test print.
+func (s *Service) TestSettings(ctx context.Context, claims *auth.Claims, method, path, key, idRaw string) (TestPrintDTO, error) {
+	actorID, err := merchantActor(claims, "print_setting:test_shop")
+	if err != nil {
+		return TestPrintDTO{}, err
+	}
+	id, err := parseID(idRaw)
+	if err != nil {
+		return TestPrintDTO{}, problem.NotFound("PRINT_SETTING_NOT_FOUND", "print setting not found")
+	}
+	if _, unavailable := s.provider.(*UnavailableProvider); unavailable {
+		return TestPrintDTO{}, problem.New(503, "PRINT_PROVIDER_UNAVAILABLE", "Service Unavailable", "print provider is not configured")
+	}
+	requestHash := idempotency.RequestHash(map[string]string{"setting_id": idRaw})
+	var result TestPrintDTO
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		started, err := s.idem.Start(ctx, tx, s.ids.Next(), "merchant", actorID, method, path, key, requestHash)
+		if err != nil {
+			return err
+		}
+		if !started {
+			return cached(ctx, s.idem, tx, "merchant", actorID, path, key, &result)
+		}
+		var setting Setting
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&setting, id).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+			return problem.NotFound("PRINT_SETTING_NOT_FOUND", "print setting not found")
+		} else if err != nil {
+			return err
+		}
+		if !merchantShopAllowed(claims, setting.ShopID) {
+			return problem.NotFound("PRINT_SETTING_NOT_FOUND", "print setting not found")
+		}
+		if setting.Provider != s.cfg.PrintProvider {
+			return problem.Conflict("PRINT_PROVIDER_MISMATCH", "print setting provider is not active")
+		}
+		var template Template
+		if err := tx.Where("id=? AND status='published'", setting.TemplateID).First(&template).Error; err != nil {
+			return problem.Conflict("PRINT_TEMPLATE_INVALID", "published print template not found")
+		}
+		deviceID, err := securevalue.Open(s.crypt, setting.DeviceIDCiphertext)
+		if err != nil {
+			return problem.New(503, "PRINT_DEVICE_DECRYPT_FAILED", "Service Unavailable", "print device configuration is unavailable")
+		}
+		payload, _ := json.Marshal(map[string]any{
+			"schema_version": "print.test.v1", "title": "酒小二打印测试页",
+			"shop_id": idString(setting.ShopID), "printed_at": time.Now().UTC().Format(time.RFC3339),
+			"paper_width_mm": template.PaperWidthMM,
+		})
+		taskID := s.ids.Next()
+		taskNo := fmt.Sprintf("PT%d", taskID)
+		var testSequence uint
+		if err := tx.Model(&Task{}).Where("shop_id=? AND order_id=0 AND event_type='test_print' AND template_version=?", setting.ShopID, template.Version).
+			Select("COALESCE(MAX(reprint_seq),0)").Scan(&testSequence).Error; err != nil {
+			return err
+		}
+		providerRequestID := testProviderRequestID(actorID, id, key)
+		startedAt := time.Now()
+		providerResult, callErr := s.provider.Submit(ctx, PrintRequest{TaskNo: taskNo, ProviderRequestID: providerRequestID, DeviceID: deviceID, Copies: 1, Payload: payload})
+		if callErr != nil {
+			return problem.New(503, "PRINT_PROVIDER_UNAVAILABLE", "Service Unavailable", "test print submission failed")
+		}
+		if providerResult.ProviderRequestID != "" {
+			providerRequestID = providerResult.ProviderRequestID
+		}
+		providerStatus := providerResult.Status
+		if providerStatus == "" {
+			providerStatus = "submitted"
+		}
+		taskStatus := "querying"
+		var confirmedAt *time.Time
+		if providerStatus == "succeeded" {
+			taskStatus = "succeeded"
+			confirmedAt = &startedAt
+		}
+		row := Task{
+			ID: taskID, TaskNo: taskNo, EventID: uuid.NewString(), OrderID: 0, ShopID: setting.ShopID,
+			EventType: "test_print", TemplateID: template.ID, TemplateVersion: template.Version,
+			RenderPayload: datatypes.JSON(payload), PayloadSchemaVersion: "print.test.v1",
+			ReprintSeq: testSequence + 1,
+			Provider:   setting.Provider, ProviderRequestID: &providerRequestID, ProviderStatus: &providerStatus,
+			Status: taskStatus, Attempts: 1, SubmittedAt: &startedAt, ConfirmedAt: confirmedAt,
+		}
+		if taskStatus == "succeeded" {
+			row.SucceededAt = &startedAt
+		}
+		if err := tx.Create(&row).Error; err != nil {
+			return err
+		}
+		if err := tx.Create(&Attempt{
+			ID: s.ids.Next(), PrintTaskID: taskID, AttemptNo: 1, Operation: "submit",
+			ProviderRequestID: &providerRequestID, RequestHash: securevalue.Digest(string(payload)),
+			Result: taskStatus, ProviderStatus: &providerStatus,
+			DurationMS: uint(time.Since(startedAt).Milliseconds()), StartedAt: startedAt, FinishedAt: time.Now(),
+			RequestID: requestctx.RequestIDPtr(ctx),
+		}).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&Setting{}).Where("id=?", id).Updates(map[string]any{"device_status": "online", "last_health_at": startedAt, "last_health_error_code": nil}).Error; err != nil {
+			return err
+		}
+		result = TestPrintDTO{TaskID: idString(taskID), ProviderRequestID: providerRequestID, Status: taskStatus, SubmittedAt: startedAt.Format(time.RFC3339)}
+		if err := audit(ctx, tx, s.ids.Next(), "merchant", actorID, "print_setting.test", "print_setting", id, nil, map[string]any{"task_id": result.TaskID, "status": result.Status}); err != nil {
+			return err
+		}
+		return s.idem.Succeed(ctx, tx, "merchant", actorID, path, key, result)
+	})
+	return result, err
 }
 
 // GetSettings 获取Settings。
@@ -65,13 +254,29 @@ func (s *Service) PatchSettings(ctx context.Context, claims *auth.Claims, method
 	if err != nil {
 		return SettingDTO{}, problem.InvalidArgument("VALIDATION_FAILED", "invalid print setting id")
 	}
-	templateID, err := parseID(req.TemplateID)
-	if err != nil || !validPrintEvents(req.AutoPrintEvents) || req.Provider != s.cfg.PrintProvider {
-		return SettingDTO{}, problem.InvalidArgument("VALIDATION_FAILED", "invalid template or auto_print_events")
+	if !hasSettingPatch(req) {
+		return SettingDTO{}, problem.InvalidArgument("PRINT_SETTING_NO_CHANGES", "at least one setting field is required")
 	}
+	var templateID uint64
+	if req.TemplateID != nil {
+		templateID, err = parseID(*req.TemplateID)
+		if err != nil {
+			return SettingDTO{}, problem.InvalidArgument("PRINT_TEMPLATE_INVALID", "invalid template id")
+		}
+	}
+	if req.AutoPrintEvents != nil && !validPrintEvents(*req.AutoPrintEvents) {
+		return SettingDTO{}, problem.InvalidArgument("VALIDATION_FAILED", "invalid auto_print_events")
+	}
+	if req.Provider != nil && *req.Provider != s.cfg.PrintProvider {
+		return SettingDTO{}, problem.InvalidArgument("VALIDATION_FAILED", "invalid print provider")
+	}
+	requestHash := idempotency.RequestHash(struct {
+		SettingID string          `json:"setting_id"`
+		Request   SettingPatchReq `json:"request"`
+	}{SettingID: idRaw, Request: req})
 	var result SettingDTO
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		started, err := s.idem.Start(ctx, tx, s.ids.Next(), "merchant", actorID, method, path, key, idempotency.RequestHash(req))
+		started, err := s.idem.Start(ctx, tx, s.ids.Next(), "merchant", actorID, method, path, key, requestHash)
 		if err != nil {
 			return err
 		}
@@ -85,21 +290,66 @@ func (s *Service) PatchSettings(ctx context.Context, claims *auth.Claims, method
 			return err
 		}
 		if !merchantShopAllowed(claims, row.ShopID) {
-			return problem.Forbidden("PERM_FORBIDDEN", "shop is not authorized")
+			return problem.NotFound("PRINT_SETTING_NOT_FOUND", "print setting not found")
 		}
 		if row.Version != req.Version {
 			return problem.Conflict("VERSION_CONFLICT", "print setting version changed")
 		}
-		ciphertext, err := securevalue.Seal(s.crypt, req.DeviceID)
-		if err != nil {
-			return err
+		updates := map[string]any{"updated_by": actorID, "version": gorm.Expr("version + 1")}
+		if req.Enabled != nil {
+			updates["enabled"] = *req.Enabled
+			row.Enabled = *req.Enabled
 		}
-		events, _ := json.Marshal(req.AutoPrintEvents)
-		updates := map[string]any{"enabled": req.Enabled, "provider": req.Provider, "device_id_ciphertext": ciphertext, "device_id_mask": mask(req.DeviceID), "template_id": templateID, "copies": req.Copies, "auto_print_events": datatypes.JSON(events), "updated_by": actorID, "version": gorm.Expr("version + 1")}
-		if err := tx.Model(&Setting{}).Where("id = ? AND version = ?", id, req.Version).Updates(updates).Error; err != nil {
-			return err
+		if req.Provider != nil {
+			updates["provider"] = *req.Provider
+			row.Provider = *req.Provider
 		}
-		row.Enabled, row.Provider, row.DeviceIDMask, row.TemplateID, row.Copies, row.AutoPrintEvents, row.UpdatedBy, row.Version = req.Enabled, req.Provider, mask(req.DeviceID), templateID, req.Copies, events, actorID, row.Version+1
+		if req.DeviceID != nil {
+			ciphertext, sealErr := securevalue.Seal(s.crypt, *req.DeviceID)
+			if sealErr != nil {
+				return sealErr
+			}
+			updates["device_id_ciphertext"] = ciphertext
+			updates["device_id_mask"] = mask(*req.DeviceID)
+			updates["device_status"] = "unknown"
+			updates["last_health_at"] = nil
+			updates["last_health_error_code"] = nil
+			row.DeviceIDCiphertext = ciphertext
+			row.DeviceIDMask = mask(*req.DeviceID)
+			row.DeviceStatus = "unknown"
+			row.LastHealthAt = nil
+			row.LastHealthErrorCode = nil
+		}
+		if req.TemplateID != nil {
+			var template Template
+			if err := tx.Where("id=? AND status='published'", templateID).First(&template).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+				return problem.InvalidArgument("PRINT_TEMPLATE_INVALID", "published print template not found")
+			} else if err != nil {
+				return err
+			}
+			if !validReceiptTemplate(template) {
+				return problem.InvalidArgument("PRINT_TEMPLATE_INVALID", "print template is not compatible with receipt.v1")
+			}
+			updates["template_id"] = templateID
+			row.TemplateID = templateID
+		}
+		if req.Copies != nil {
+			updates["copies"] = *req.Copies
+			row.Copies = *req.Copies
+		}
+		if req.AutoPrintEvents != nil {
+			events, _ := json.Marshal(*req.AutoPrintEvents)
+			updates["auto_print_events"] = datatypes.JSON(events)
+			row.AutoPrintEvents = datatypes.JSON(events)
+		}
+		updated := tx.Model(&Setting{}).Where("id = ? AND version = ?", id, req.Version).Updates(updates)
+		if updated.Error != nil {
+			return updated.Error
+		}
+		if updated.RowsAffected != 1 {
+			return problem.Conflict("VERSION_CONFLICT", "print setting version changed")
+		}
+		row.UpdatedBy, row.Version = actorID, row.Version+1
 		if err := audit(ctx, tx, s.ids.Next(), "merchant", actorID, "print_setting.update", "print_setting", id, map[string]any{"version": req.Version}, settingDTO(row)); err != nil {
 			return err
 		}
@@ -107,6 +357,10 @@ func (s *Service) PatchSettings(ctx context.Context, claims *auth.Claims, method
 		return s.idem.Succeed(ctx, tx, "merchant", actorID, path, key, result)
 	})
 	return result, err
+}
+
+func hasSettingPatch(req SettingPatchReq) bool {
+	return req.Enabled != nil || req.Provider != nil || req.DeviceID != nil || req.TemplateID != nil || req.Copies != nil || req.AutoPrintEvents != nil
 }
 
 // ListStoreTasks 查询门店 Tasks列表。
@@ -131,31 +385,52 @@ func (s *Service) ListAdminTasks(ctx context.Context, claims *auth.Claims, query
 
 // listTasks 查询Tasks列表。
 func (s *Service) listTasks(ctx context.Context, query pagination.Query, status string, shopIDs []uint64) ([]TaskDTO, string, error) {
+	if query.OrderBy != "" || query.Filter != "" {
+		return nil, "", problem.InvalidArgument("VALIDATION_INVALID_QUERY", "print task list has a fixed sort and filter contract")
+	}
 	db := s.db.WithContext(ctx).Model(&Task{})
-	if len(shopIDs) > 0 {
+	// nil is reserved for the explicitly authorized admin/global view. A
+	// non-nil empty slice is a merchant with no currently authorized shops and
+	// must never degrade into an unscoped query.
+	if shopIDs != nil && len(shopIDs) == 0 {
+		return []TaskDTO{}, "", nil
+	}
+	if shopIDs != nil {
 		db = db.Where("shop_id IN ?", shopIDs)
 	}
 	if status != "" {
 		db = db.Where("status = ?", status)
 	}
+	db, err := pagination.ApplyTimeIDCursor(db, query, "created_at", "id", "desc")
+	if err != nil {
+		return nil, "", err
+	}
 	var rows []Task
-	if err := db.Order("id DESC").Offset(query.Offset).Limit(query.PageSize + 1).Find(&rows).Error; err != nil {
+	if err := pagination.OffsetDB(db, query).Order("created_at DESC, id DESC").Limit(query.PageSize + 1).Find(&rows).Error; err != nil {
 		return nil, "", err
 	}
 	next := ""
 	if len(rows) > query.PageSize {
 		rows = rows[:query.PageSize]
-		next = pagination.NextPageToken(query)
+		last := rows[len(rows)-1]
+		next = pagination.NextPageTokenWithCursor(query, last.CreatedAt.Format(time.RFC3339Nano), idString(last.ID))
+	}
+	paperWidths, err := s.templatePaperWidths(ctx, s.db, rows)
+	if err != nil {
+		return nil, "", err
 	}
 	result := make([]TaskDTO, 0, len(rows))
 	for _, row := range rows {
-		result = append(result, taskDTO(row))
+		result = append(result, taskDTO(row, paperWidths[row.TemplateID]))
 	}
 	return result, next, nil
 }
 
 // GetTask 获取任务。
 func (s *Service) GetTask(ctx context.Context, claims *auth.Claims, idRaw string) (TaskDTO, error) {
+	if _, err := merchantActor(claims, "print_task:list_shop"); err != nil {
+		return TaskDTO{}, err
+	}
 	id, err := parseID(idRaw)
 	if err != nil {
 		return TaskDTO{}, problem.NotFound("PRINT_TASK_NOT_FOUND", "print task not found")
@@ -167,7 +442,11 @@ func (s *Service) GetTask(ctx context.Context, claims *auth.Claims, idRaw string
 	if !merchantShopAllowed(claims, row.ShopID) {
 		return TaskDTO{}, problem.NotFound("PRINT_TASK_NOT_FOUND", "print task not found")
 	}
-	return taskDTO(row), nil
+	paperWidth, err := s.templatePaperWidth(ctx, s.db, row.TemplateID)
+	if err != nil {
+		return TaskDTO{}, err
+	}
+	return taskDTO(row, paperWidth), nil
 }
 
 // Reprint 返回Reprint。
@@ -191,7 +470,7 @@ func (s *Service) Retry(ctx context.Context, claims *auth.Claims, method, path, 
 	}
 	var result TaskDTO
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		started, err := s.idem.Start(ctx, tx, s.ids.Next(), "admin", actorID, method, path, key, idempotency.RequestHash(req))
+		started, err := s.idem.Start(ctx, tx, s.ids.Next(), "admin", actorID, method, path, key, idempotency.ResourceRequestHash("print_task.retry", id, req))
 		if err != nil {
 			return err
 		}
@@ -217,7 +496,11 @@ func (s *Service) Retry(ctx context.Context, claims *auth.Claims, method, path, 
 		if err := audit(ctx, tx, s.ids.Next(), "admin", actorID, "print_task.retry", "print_task", id, nil, map[string]any{"reason": req.Reason}); err != nil {
 			return err
 		}
-		result = taskDTO(row)
+		paperWidth, widthErr := s.templatePaperWidth(ctx, tx, row.TemplateID)
+		if widthErr != nil {
+			return widthErr
+		}
+		result = taskDTO(row, paperWidth)
 		return s.idem.Succeed(ctx, tx, "admin", actorID, path, key, result)
 	})
 	return result, err
@@ -245,6 +528,9 @@ func (s *Service) cloneTask(ctx context.Context, claims *auth.Claims, actorID ui
 		if actorType == "merchant" && !merchantShopAllowed(claims, source.ShopID) {
 			return problem.Forbidden("PERM_FORBIDDEN", "shop is not authorized")
 		}
+		if source.Status == "processing" || source.Status == "querying" {
+			return problem.Conflict("PRINT_TASK_INVALID_STATUS", "an in-flight task cannot be reprinted")
+		}
 		var maxSeq uint
 		if err := tx.Model(&Task{}).Where("shop_id=? AND order_id=? AND event_type=? AND template_version=?", source.ShopID, source.OrderID, source.EventType, source.TemplateVersion).Select("COALESCE(MAX(reprint_seq),0)").Scan(&maxSeq).Error; err != nil {
 			return err
@@ -254,7 +540,12 @@ func (s *Service) cloneTask(ctx context.Context, claims *auth.Claims, actorID ui
 		row.TaskNo = fmt.Sprintf("PT%d", row.ID)
 		row.EventID = uuid.NewString()
 		row.ReprintSeq = maxSeq + 1
+		row.SourceTaskID = &source.ID
 		row.ProviderRequestID = nil
+		row.ProviderStatus = nil
+		row.SubmittedAt = nil
+		row.ConfirmedAt = nil
+		row.CallbackDeadlineAt = nil
 		row.Status = "pending"
 		row.Attempts = 0
 		row.NextRetryAt = nil
@@ -274,7 +565,11 @@ func (s *Service) cloneTask(ctx context.Context, claims *auth.Claims, actorID ui
 		if err := audit(ctx, tx, s.ids.Next(), actorType, actorID, "print_task.reprint", "print_task", row.ID, nil, map[string]any{"source_task_id": idRaw, "reason": reason}); err != nil {
 			return err
 		}
-		result = taskDTO(row)
+		paperWidth, widthErr := s.templatePaperWidth(ctx, tx, row.TemplateID)
+		if widthErr != nil {
+			return widthErr
+		}
+		result = taskDTO(row, paperWidth)
 		return s.idem.Succeed(ctx, tx, actorType, actorID, path, key, result)
 	})
 	return result, err
@@ -284,6 +579,7 @@ func (s *Service) cloneTask(ctx context.Context, claims *auth.Claims, actorID ui
 // EnqueueAuto is called inside the order transaction. It creates a unique
 // task only when an enabled shop setting subscribes to the event.
 func EnqueueAuto(ctx context.Context, tx *gorm.DB, ids *snowflake.Generator, shopID, orderID uint64, eventID, eventType string, payload any) error {
+	_ = payload // event payload is not trusted as the printable business snapshot
 	var setting Setting
 	if err := tx.WithContext(ctx).Where("shop_id = ? AND enabled = 1", shopID).First(&setting).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil
@@ -295,14 +591,29 @@ func EnqueueAuto(ctx context.Context, tx *gorm.DB, ids *snowflake.Generator, sho
 	if !contains(events, eventType) {
 		return nil
 	}
-	raw, _ := json.Marshal(payload)
+	var template Template
+	if err := tx.WithContext(ctx).Where("id=? AND status='published'", setting.TemplateID).First(&template).Error; err != nil {
+		return err
+	}
+	if !validReceiptTemplate(template) {
+		return problem.InvalidArgument("PRINT_TEMPLATE_INVALID", "print template is not compatible with receipt.v1")
+	}
+	raw, err := renderReceiptV1(tx.WithContext(ctx), orderID, shopID, template)
+	if err != nil {
+		return err
+	}
 	id := ids.Next()
-	row := Task{ID: id, TaskNo: fmt.Sprintf("PT%d", id), EventID: eventID, OrderID: orderID, ShopID: shopID, EventType: eventType, TemplateID: setting.TemplateID, TemplateVersion: "v1", RenderPayload: raw, Provider: setting.Provider, Status: "pending"}
+	row := Task{ID: id, TaskNo: fmt.Sprintf("PT%d", id), EventID: eventID, OrderID: orderID, ShopID: shopID, EventType: eventType, TemplateID: setting.TemplateID, TemplateVersion: template.Version, RenderPayload: raw, PayloadSchemaVersion: template.PayloadSchemaVersion, Provider: setting.Provider, Status: "pending"}
 	result := tx.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&row)
 	if result.Error != nil || result.RowsAffected == 0 {
 		return result.Error
 	}
-	return enqueueWakeup(ctx, tx, ids, "print.task.ready", row)
+	if err := enqueueWakeup(ctx, tx, ids, "print.task.ready", row); err != nil {
+		return err
+	}
+	return audit(ctx, tx, ids.Next(), "system", 0, "print_task.enqueued", "print_task", row.ID, nil, map[string]any{
+		"shop_id": shopID, "order_id": orderID, "event_type": eventType, "status": row.Status,
+	})
 }
 
 // enqueueWakeup 返回enqueue Wakeup。
@@ -322,12 +633,84 @@ func enqueueWakeup(ctx context.Context, tx *gorm.DB, ids *snowflake.Generator, e
 func settingDTO(row Setting) SettingDTO {
 	var events []string
 	_ = json.Unmarshal(row.AutoPrintEvents, &events)
-	return SettingDTO{ID: idString(row.ID), ShopID: idString(row.ShopID), Provider: row.Provider, DeviceIDMask: row.DeviceIDMask, TemplateID: idString(row.TemplateID), Copies: row.Copies, AutoPrintEvents: events, Enabled: row.Enabled, Version: row.Version}
+	return SettingDTO{ID: idString(row.ID), ShopID: idString(row.ShopID), Provider: row.Provider, DeviceIDMask: row.DeviceIDMask, TemplateID: idString(row.TemplateID), Copies: row.Copies, AutoPrintEvents: events, Enabled: row.Enabled, Version: row.Version, DeviceStatus: row.DeviceStatus, LastHealthAt: ts(row.LastHealthAt), LastHealthErrorCode: str(row.LastHealthErrorCode)}
 }
 
-// taskDTO 返回任务DTO。
-func taskDTO(row Task) TaskDTO {
-	return TaskDTO{ID: idString(row.ID), TaskNo: row.TaskNo, OrderID: idString(row.OrderID), ShopID: idString(row.ShopID), EventType: row.EventType, TemplateID: idString(row.TemplateID), TemplateVersion: row.TemplateVersion, ReprintSeq: row.ReprintSeq, Provider: row.Provider, ProviderRequestID: str(row.ProviderRequestID), Status: row.Status, Attempts: row.Attempts, NextRetryAt: ts(row.NextRetryAt), LastErrorCode: str(row.LastErrorCode), SucceededAt: ts(row.SucceededAt), CreatedAt: row.CreatedAt.Format(time.RFC3339)}
+// taskDTO returns a closed, non-sensitive task projection. RenderPayload stays
+// server-side; merchants receive only aggregate counts and its SHA-256 digest.
+func taskDTO(row Task, paperWidth uint16) TaskDTO {
+	sourceTaskID := ""
+	if row.SourceTaskID != nil {
+		sourceTaskID = idString(*row.SourceTaskID)
+	}
+	return TaskDTO{
+		ID: idString(row.ID), TaskNo: row.TaskNo, OrderID: idString(row.OrderID), ShopID: idString(row.ShopID),
+		EventType: row.EventType, TemplateID: idString(row.TemplateID), TemplateVersion: row.TemplateVersion,
+		PayloadSchemaVersion: row.PayloadSchemaVersion, SourceTaskID: sourceTaskID, ReprintSeq: row.ReprintSeq,
+		Provider: row.Provider, ProviderRequestID: str(row.ProviderRequestID), ProviderStatus: str(row.ProviderStatus),
+		Status: row.Status, Attempts: row.Attempts, NextRetryAt: ts(row.NextRetryAt), LastErrorCode: str(row.LastErrorCode),
+		SucceededAt: ts(row.SucceededAt), RenderSummary: printRenderSummary(row, paperWidth), CreatedAt: row.CreatedAt.Format(time.RFC3339),
+	}
+}
+
+func printRenderSummary(row Task, paperWidth uint16) *PrintRenderSummaryDTO {
+	if row.PayloadSchemaVersion != "receipt.v1" || (paperWidth != 58 && paperWidth != 80) || len(row.RenderPayload) == 0 {
+		return nil
+	}
+	var payload struct {
+		Items []struct {
+			Quantity int `json:"quantity"`
+		} `json:"items"`
+		Amounts struct {
+			Payable int64 `json:"payable"`
+		} `json:"amounts"`
+	}
+	if err := json.Unmarshal(row.RenderPayload, &payload); err != nil || len(payload.Items) == 0 || payload.Amounts.Payable < 0 {
+		return nil
+	}
+	totalQuantity := 0
+	for _, item := range payload.Items {
+		if item.Quantity <= 0 {
+			return nil
+		}
+		totalQuantity += item.Quantity
+	}
+	return &PrintRenderSummaryDTO{
+		ItemKindCount: len(payload.Items), TotalQuantity: totalQuantity, PayableAmount: payload.Amounts.Payable,
+		PaperWidthMM: paperWidth, ContentHash: securevalue.Digest(string(row.RenderPayload)),
+	}
+}
+
+func (s *Service) templatePaperWidths(ctx context.Context, db *gorm.DB, tasks []Task) (map[uint64]uint16, error) {
+	ids := make([]uint64, 0, len(tasks))
+	seen := make(map[uint64]struct{}, len(tasks))
+	for _, task := range tasks {
+		if _, ok := seen[task.TemplateID]; ok {
+			continue
+		}
+		seen[task.TemplateID] = struct{}{}
+		ids = append(ids, task.TemplateID)
+	}
+	result := make(map[uint64]uint16, len(ids))
+	if len(ids) == 0 {
+		return result, nil
+	}
+	var templates []Template
+	if err := db.WithContext(ctx).Select("id", "paper_width_mm").Where("id IN ?", ids).Find(&templates).Error; err != nil {
+		return nil, err
+	}
+	for _, template := range templates {
+		result[template.ID] = template.PaperWidthMM
+	}
+	return result, nil
+}
+
+func (s *Service) templatePaperWidth(ctx context.Context, db *gorm.DB, templateID uint64) (uint16, error) {
+	var template Template
+	if err := db.WithContext(ctx).Select("id", "paper_width_mm").First(&template, templateID).Error; err != nil {
+		return 0, err
+	}
+	return template.PaperWidthMM, nil
 }
 
 // validPrintEvents 判断有效打印 Events。
@@ -341,6 +724,10 @@ func validPrintEvents(values []string) bool {
 		}
 	}
 	return true
+}
+
+func validReceiptTemplate(template Template) bool {
+	return template.TemplateCode == "store_receipt" && template.PayloadSchemaVersion == "receipt.v1"
 }
 
 // merchantActor 返回商户 Actor。
@@ -436,7 +823,7 @@ func mask(v string) string {
 }
 
 // cached 返回缓存。
-func cached(ctx context.Context, store *idempotency.Store, tx *gorm.DB, actorType string, actorID uint64, path, key string, target any) error {
+func cached(ctx context.Context, store idempotencyStore, tx *gorm.DB, actorType string, actorID uint64, path, key string, target any) error {
 	ok, e := store.CachedResponse(ctx, tx, actorType, actorID, path, key, target)
 	if e != nil {
 		return e
@@ -447,9 +834,22 @@ func cached(ctx context.Context, store *idempotency.Store, tx *gorm.DB, actorTyp
 	return nil
 }
 
+// testProviderRequestID is stable for one test-print operation while remaining
+// unique across actors and settings even when clients reuse an idempotency key.
+func testProviderRequestID(actorID, settingID uint64, key string) string {
+	scope := fmt.Sprintf("%d:%d:%s", actorID, settingID, key)
+	return "print-test-" + securevalue.Digest(scope)[:32]
+}
+
 // audit 返回审计。
 func audit(ctx context.Context, tx *gorm.DB, id uint64, actorType string, actorID uint64, action, resource string, resourceID uint64, before, after any) error {
+	return auditWithResult(ctx, tx, id, actorType, actorID, action, resource, resourceID, before, after, "success")
+}
+
+// auditWithResult persists a bounded business outcome. Provider payloads and
+// raw error messages must never be passed to this helper.
+func auditWithResult(ctx context.Context, tx *gorm.DB, id uint64, actorType string, actorID uint64, action, resource string, resourceID uint64, before, after any, result string) error {
 	b, _ := json.Marshal(before)
 	a, _ := json.Marshal(after)
-	return tx.WithContext(ctx).Table("audit_logs").Create(map[string]any{"id": id, "actor_type": actorType, "actor_id": actorID, "action": action, "resource_type": resource, "resource_id": resourceID, "before_data": datatypes.JSON(b), "after_data": datatypes.JSON(a), "result": "success", "request_id": requestctx.RequestIDPtr(ctx)}).Error
+	return tx.WithContext(ctx).Table("audit_logs").Create(map[string]any{"id": id, "actor_type": actorType, "actor_id": actorID, "action": action, "resource_type": resource, "resource_id": resourceID, "before_data": datatypes.JSON(b), "after_data": datatypes.JSON(a), "result": result, "request_id": requestctx.RequestIDPtr(ctx)}).Error
 }

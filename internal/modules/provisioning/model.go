@@ -1,8 +1,15 @@
 package provisioning
 
 import (
-	"gorm.io/datatypes"
 	"time"
+
+	"gorm.io/datatypes"
+)
+
+const (
+	MerchantRoleOwner          = "merchant_owner"
+	MerchantRoleOrderOperator  = "merchant_order_operator"
+	MerchantRoleInventoryClerk = "merchant_inventory_clerk"
 )
 
 type Operation struct {
@@ -31,6 +38,7 @@ type MerchantProvisionReq struct {
 	Shop             ShopInput     `json:"shop" binding:"required"`
 	Account          AccountInput  `json:"account" binding:"required"`
 	MerchantUserName string        `json:"merchant_user_name" binding:"required,max=64"`
+	RoleCode         string        `json:"role_code" binding:"omitempty,oneof=merchant_owner merchant_order_operator merchant_inventory_clerk"`
 }
 type MerchantInput struct {
 	Code         string `json:"code" binding:"required,max=64"`
@@ -56,12 +64,16 @@ type AccountInput struct {
 	Phone    string `json:"phone" binding:"max=32"`
 }
 type MerchantUserReq struct {
-	Account AccountInput `json:"account" binding:"required"`
-	Name    string       `json:"name" binding:"required,max=64"`
-	ShopIDs []string     `json:"shop_ids" binding:"required,min=1"`
+	Account  AccountInput `json:"account" binding:"required"`
+	Name     string       `json:"name" binding:"required,max=64"`
+	ShopIDs  []string     `json:"shop_ids" binding:"required,min=1"`
+	RoleCode string       `json:"role_code" binding:"required,oneof=merchant_owner merchant_order_operator merchant_inventory_clerk"`
 }
 type ShopAuthorizationReq struct {
 	ShopIDs []string `json:"shop_ids" binding:"required"`
+}
+type MerchantUserRoleReq struct {
+	RoleCode string `json:"role_code" binding:"required,oneof=merchant_owner merchant_order_operator merchant_inventory_clerk"`
 }
 type AccountStatusReq struct {
 	Status string `json:"status" binding:"required,oneof=active disabled"`

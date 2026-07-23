@@ -13,6 +13,7 @@ import (
 	gormlogger "gorm.io/gorm/logger"
 
 	"jiuxiaoer-admin/backend-go/internal/config"
+	"jiuxiaoer-admin/backend-go/internal/pkg/auditlog"
 )
 
 // Open 解密并返回数据库。
@@ -71,6 +72,9 @@ func Open(ctx context.Context, cfg config.MySQLConfig, log *slog.Logger) (*gorm.
 		}
 		log.Warn("mysql schema verification failed; continuing because mysql is optional", slog.Any("error", err))
 		return nil, nil
+	}
+	if err := auditlog.Register(db); err != nil {
+		return nil, fmt.Errorf("register audit invariant: %w", err)
 	}
 
 	return db, nil
@@ -136,6 +140,9 @@ var requiredSchemaColumns = []schemaColumn{
 	{table: "rider_application_reviews", column: "application_snapshot"},
 	{table: "customer_search_histories", column: "normalized_keyword"},
 	{table: "search_keyword_daily_stats", column: "normalized_keyword"},
+	{table: "audit_logs", column: "event_id"},
+	{table: "audit_logs", column: "account_id"},
+	{table: "audit_logs", column: "ip_hash"},
 }
 
 // verifySchema 核验Schema是否有效。
@@ -149,7 +156,7 @@ func verifySchema(ctx context.Context, db *gorm.DB) error {
 			SELECT table_name, column_name
 			FROM information_schema.columns
 			WHERE table_schema = DATABASE()
-			  AND table_name IN ('products', 'product_stocks', 'orders', 'payments', 'outbox_events', 'mq_consumer_receipts', 'mq_dead_letters', 'mq_dead_letter_replays', 'customer_identities', 'payment_callbacks', 'wechat_bill_reconciliation_runs', 'wechat_bill_observations', 'wechat_bill_discrepancies', 'customer_addresses', 'shops', 'service_cities', 'service_city_adcodes', 'delivery_promise_policies', 'rider_runtime_states', 'shop_business_hours', 'home_slots', 'after_sales', 'refunds', 'asset_accounts', 'asset_transactions', 'asset_entries', 'member_profiles', 'compensation_ledger', 'delivery_orders', 'print_tasks', 'notification_deliveries', 'delivery_verifications', 'admin_override_approvals', 'provisioning_operations', 'identity_verification_requests', 'identity_verification_callbacks', 'customer_realname_verifications', 'rider_applications', 'rider_application_reviews', 'customer_search_histories', 'search_keyword_daily_stats')`).Scan(&rows).Error
+			  AND table_name IN ('products', 'product_stocks', 'orders', 'payments', 'outbox_events', 'mq_consumer_receipts', 'mq_dead_letters', 'mq_dead_letter_replays', 'customer_identities', 'payment_callbacks', 'wechat_bill_reconciliation_runs', 'wechat_bill_observations', 'wechat_bill_discrepancies', 'customer_addresses', 'shops', 'service_cities', 'service_city_adcodes', 'delivery_promise_policies', 'rider_runtime_states', 'shop_business_hours', 'home_slots', 'after_sales', 'refunds', 'asset_accounts', 'asset_transactions', 'asset_entries', 'member_profiles', 'compensation_ledger', 'delivery_orders', 'print_tasks', 'notification_deliveries', 'delivery_verifications', 'admin_override_approvals', 'provisioning_operations', 'identity_verification_requests', 'identity_verification_callbacks', 'customer_realname_verifications', 'rider_applications', 'rider_application_reviews', 'customer_search_histories', 'search_keyword_daily_stats', 'audit_logs')`).Scan(&rows).Error
 	if err != nil {
 		return fmt.Errorf("verify database schema: %w", err)
 	}

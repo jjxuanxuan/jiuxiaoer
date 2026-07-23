@@ -62,6 +62,8 @@ type TicketResponse struct {
 }
 
 type TicketInfo struct {
+	RecipientType   string    `json:"recipient_type"`
+	RecipientID     uint64    `json:"recipient_id"`
 	RiderID         uint64    `json:"rider_id"`
 	AccountType     string    `json:"account_type"`
 	AccountID       string    `json:"account_id"`
@@ -92,6 +94,7 @@ type ServerFrame struct {
 	ServerTime               time.Time       `json:"server_time"`
 	ConnectionID             string          `json:"connection_id,omitempty"`
 	DeliveryID               string          `json:"delivery_id,omitempty"`
+	EventID                  string          `json:"event_id,omitempty"`
 	SourceEventID            string          `json:"source_event_id,omitempty"`
 	EventType                string          `json:"event_type,omitempty"`
 	OccurredAt               *time.Time      `json:"occurred_at,omitempty"`
@@ -127,6 +130,31 @@ func deliveryFrame(row Delivery) ServerFrame {
 		frame.SoundKey = *row.SoundKey
 	}
 	return frame
+}
+
+// storeOrderPaidFrame keeps the merchant event payload deliberately small.
+// The client uses event_id for de-duplication, then reloads the scoped order
+// list/detail API as the source of truth.
+func storeOrderPaidFrame(event StoreOrderPaidEvent) ServerFrame {
+	data, _ := json.Marshal(event)
+	frame := frameNow(FrameEvent)
+	frame.EventID = event.EventID
+	frame.EventType = "store.order.paid"
+	frame.OccurredAt = &event.OccurredAt
+	frame.SoundKey = event.SoundKey
+	frame.Data = data
+	return frame
+}
+
+func (i TicketInfo) recipient() (string, uint64) {
+	if i.RecipientType != "" && i.RecipientID != 0 {
+		return i.RecipientType, i.RecipientID
+	}
+	// Compatibility for rider tickets issued before recipient_type was added.
+	if i.RiderID != 0 {
+		return recipientRider, i.RiderID
+	}
+	return "", 0
 }
 
 // parseID 解析并校验字符串形式的 ID。

@@ -3,6 +3,7 @@ package order
 import (
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -52,12 +53,12 @@ func (h *Handler) Create(c *gin.Context) {
 	}
 	var req OrderCreateReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, problem.InvalidArgument("VALIDATION_FAILED", err.Error()))
+		h.actionError(c, claims, "order_create", "", problem.InvalidArgument("VALIDATION_FAILED", err.Error()))
 		return
 	}
 	resp, err := h.service.Create(c.Request.Context(), claims, c.Request.Method, c.FullPath(), c.GetHeader("Idempotency-Key"), req)
 	if err != nil {
-		response.Error(c, err)
+		h.actionError(c, claims, "order_create", "", err)
 		return
 	}
 	response.OK(c, resp)
@@ -70,17 +71,39 @@ func (h *Handler) List(c *gin.Context) {
 		response.Error(c, problem.Unauthorized("AUTH_UNAUTHORIZED", "unauthorized"))
 		return
 	}
-	query, err := pagination.FromGin(c)
+	filters, err := customerOrderListFiltersFromGin(c)
 	if err != nil {
 		response.Error(c, err)
 		return
 	}
-	items, nextPageToken, err := h.service.List(c.Request.Context(), claims, query)
+	query, err := pagination.FromGin(c, "customer", claims.CustomerID)
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	items, nextPageToken, err := h.service.List(c.Request.Context(), claims, query, filters)
 	if err != nil {
 		response.Error(c, err)
 		return
 	}
 	response.Page(c, items, nextPageToken)
+}
+
+func customerOrderListFiltersFromGin(c *gin.Context) (CustomerOrderListFilters, error) {
+	allowed := map[string]struct{}{"page_size": {}, "page_token": {}, "status": {}, "order_by": {}}
+	for key := range c.Request.URL.Query() {
+		if _, ok := allowed[key]; !ok {
+			return CustomerOrderListFilters{}, problem.InvalidArgument("VALIDATION_INVALID_QUERY", "unknown query parameter: "+key)
+		}
+	}
+	if raw := strings.TrimSpace(c.Query("order_by")); raw != "" && strings.ToLower(raw) != "created_at desc,id desc" {
+		return CustomerOrderListFilters{}, problem.InvalidArgument("VALIDATION_INVALID_QUERY", "order_by must be created_at desc,id desc")
+	}
+	status := strings.TrimSpace(c.Query("status"))
+	if len(status) > 32 {
+		return CustomerOrderListFilters{}, problem.InvalidArgument("VALIDATION_INVALID_QUERY", "status is too long")
+	}
+	return CustomerOrderListFilters{Status: status}, nil
 }
 
 // Detail 处理Detail相关逻辑。
@@ -107,12 +130,12 @@ func (h *Handler) Cancel(c *gin.Context) {
 	}
 	var req OrderCancelReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, problem.InvalidArgument("VALIDATION_FAILED", err.Error()))
+		h.actionError(c, claims, "order_cancel", c.Param("id"), problem.InvalidArgument("VALIDATION_FAILED", err.Error()))
 		return
 	}
 	item, err := h.service.Cancel(c.Request.Context(), claims, c.Request.Method, c.FullPath(), c.GetHeader("Idempotency-Key"), c.Param("id"), req)
 	if err != nil {
-		response.Error(c, err)
+		h.actionError(c, claims, "order_cancel", c.Param("id"), err)
 		return
 	}
 	response.OK(c, item)
@@ -127,12 +150,12 @@ func (h *Handler) MockPay(c *gin.Context) {
 	}
 	var req MockPayReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, problem.InvalidArgument("VALIDATION_FAILED", err.Error()))
+		h.actionError(c, claims, "payment_mock", c.Param("id"), problem.InvalidArgument("VALIDATION_FAILED", err.Error()))
 		return
 	}
 	item, err := h.service.MockPay(c.Request.Context(), claims, c.Request.Method, c.FullPath(), c.GetHeader("Idempotency-Key"), c.Param("id"), req)
 	if err != nil {
-		response.Error(c, err)
+		h.actionError(c, claims, "payment_mock", c.Param("id"), err)
 		return
 	}
 	response.OK(c, item)
@@ -147,12 +170,12 @@ func (h *Handler) CreatePayment(c *gin.Context) {
 	}
 	var req PaymentCreateReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, problem.InvalidArgument("VALIDATION_FAILED", err.Error()))
+		h.actionError(c, claims, "payment_create", c.Param("id"), problem.InvalidArgument("VALIDATION_FAILED", err.Error()))
 		return
 	}
 	item, err := h.service.CreatePayment(c.Request.Context(), claims, c.Request.Method, c.FullPath(), c.GetHeader("Idempotency-Key"), c.Param("id"), req)
 	if err != nil {
-		response.Error(c, err)
+		h.actionError(c, claims, "payment_create", c.Param("id"), err)
 		return
 	}
 	response.OK(c, item)
@@ -167,10 +190,18 @@ func (h *Handler) GetPayment(c *gin.Context) {
 	}
 	item, err := h.service.GetPayment(c.Request.Context(), claims, c.Param("id"))
 	if err != nil {
-		response.Error(c, err)
+		h.actionError(c, claims, "payment_confirm", c.Param("id"), err)
 		return
 	}
 	response.OK(c, item)
+}
+
+func (h *Handler) actionError(c *gin.Context, claims *auth.Claims, action, orderID string, cause error) {
+	if err := h.service.AuditFailure(c.Request.Context(), claims, action, orderID, cause); err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.Error(c, cause)
 }
 
 // ConfirmPayment queries WeChat Pay and returns the backend-confirmed payment
@@ -181,7 +212,7 @@ func (h *Handler) ConfirmPayment(c *gin.Context) {
 		response.Error(c, problem.Unauthorized("AUTH_UNAUTHORIZED", "unauthorized"))
 		return
 	}
-	item, err := h.service.ConfirmPayment(c.Request.Context(), claims, c.Param("id"))
+	item, err := h.service.ConfirmPaymentIdempotent(c.Request.Context(), claims, c.Request.Method, c.FullPath(), c.GetHeader("Idempotency-Key"), c.Param("id"))
 	if err != nil {
 		response.Error(c, err)
 		return

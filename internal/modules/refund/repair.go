@@ -201,7 +201,7 @@ func (s *Service) RepairStored(ctx context.Context, claims *auth.Claims, method,
 		}
 
 		applyErr := s.applyState(ctx, tx, current, state)
-		if applyErr != nil && isStateMismatch(applyErr) {
+		if applyErr != nil && isStateMismatch(applyErr) && !isTerminalRefundRow(current) {
 			detail := applyErr.Error()
 			if len(detail) > 500 {
 				detail = detail[:500]
@@ -332,7 +332,7 @@ func (s *Service) auditResult(ctx context.Context, tx *gorm.DB, actorID uint64, 
 	}
 	beforeJSON, _ := jsonMarshal(before)
 	afterJSON, _ := jsonMarshal(after)
-	return tx.WithContext(ctx).Create(&Audit{ID: s.ids.Next(), ActorType: "admin", ActorID: actorID, Action: action, ResourceType: "refund", ResourceID: before.ID, BeforeData: datatypes.JSON(beforeJSON), AfterData: datatypes.JSON(afterJSON), Result: result, RequestID: requestctx.RequestIDPtr(ctx), IP: requestctx.IPPtr(ctx), UserAgent: requestctx.UserAgentPtr(ctx)}).Error
+	return tx.WithContext(ctx).Create(&Audit{ID: s.ids.Next(), ActorType: "admin", ActorID: actorID, Action: action, ResourceType: "refund", ResourceID: before.ID, BeforeData: datatypes.JSON(beforeJSON), AfterData: datatypes.JSON(afterJSON), Result: result, RequestID: requestctx.RequestIDPtr(ctx), IPHash: requestctx.IPHashPtr(ctx), UserAgent: requestctx.UserAgentPtr(ctx)}).Error
 }
 
 func jsonMarshal(value any) ([]byte, error) { return json.Marshal(value) }

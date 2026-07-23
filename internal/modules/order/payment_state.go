@@ -11,6 +11,7 @@ import (
 	"gorm.io/gorm"
 
 	"jiuxiaoer-admin/backend-go/internal/modules/auth"
+	"jiuxiaoer-admin/backend-go/internal/pkg/idempotency"
 	"jiuxiaoer-admin/backend-go/internal/pkg/paygateway"
 	"jiuxiaoer-admin/backend-go/internal/pkg/problem"
 )
@@ -21,7 +22,7 @@ func (s *Service) ConfirmPayment(ctx context.Context, claims *auth.Claims, order
 	if s.payment == nil || !s.cfg.WeChat.PayEnabled {
 		return PaymentDTO{}, problem.New(http.StatusServiceUnavailable, "PAYMENT_PROVIDER_UNAVAILABLE", "Service Unavailable", "payment provider is unavailable")
 	}
-	customerID, err := customerIDFromClaims(claims)
+	customerID, err := customerIDFromClaims(claims, "payment:view")
 	if err != nil {
 		return PaymentDTO{}, err
 	}
@@ -29,12 +30,108 @@ func (s *Service) ConfirmPayment(ctx context.Context, claims *auth.Claims, order
 	if err != nil {
 		return PaymentDTO{}, problem.InvalidArgument("VALIDATION_FAILED", "invalid order id")
 	}
-	payment, err := s.repo.GetCustomerPayment(ctx, customerID, orderID)
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return PaymentDTO{}, problem.NotFound("PAYMENT_NOT_FOUND", "payment not found")
-	}
+	payment, err := s.customerPaymentForConfirmation(ctx, customerID, orderID)
 	if err != nil {
 		return PaymentDTO{}, err
+	}
+	return s.confirmCustomerPayment(ctx, customerID, payment)
+}
+
+// ConfirmPaymentIdempotent is the HTTP command variant of ConfirmPayment. A
+// completed response is persisted before it is returned, so a client retry
+// with the same key never issues another provider query. Provider and storage
+// failures release the claim; the store's bounded processing lease remains a
+// final crash-safety fallback.
+func (s *Service) ConfirmPaymentIdempotent(ctx context.Context, claims *auth.Claims, method, path, key, orderIDRaw string) (PaymentDTO, error) {
+	customerID, err := customerIDFromClaims(claims, "payment:view")
+	if err != nil {
+		return PaymentDTO{}, err
+	}
+	if err := validatePaymentConfirmIdempotencyKey(key); err != nil {
+		return PaymentDTO{}, err
+	}
+	orderID, err := parseID(orderIDRaw)
+	if err != nil {
+		return PaymentDTO{}, problem.InvalidArgument("VALIDATION_FAILED", "invalid order id")
+	}
+
+	requestHash := idempotency.RequestHash(map[string]any{"order_id": orderID})
+	var result PaymentDTO
+	if replayed, replayErr := s.idStore.ReplayCompleted(ctx, s.repo.DB(), claims.AccountType, customerID, path, key, requestHash, &result); replayErr != nil {
+		return PaymentDTO{}, replayErr
+	} else if replayed {
+		return result, nil
+	}
+
+	payment, err := s.customerPaymentForConfirmation(ctx, customerID, orderID)
+	if err != nil {
+		return PaymentDTO{}, err
+	}
+
+	started := false
+	err = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		claimed, startErr := s.idStore.Start(ctx, tx, s.idGen.Next(), claims.AccountType, customerID, method, path, key, requestHash)
+		if startErr != nil {
+			return startErr
+		}
+		started = claimed
+		if claimed {
+			return nil
+		}
+		cached, cacheErr := s.idStore.CachedResponse(ctx, tx, claims.AccountType, customerID, path, key, &result)
+		if cacheErr != nil {
+			return cacheErr
+		}
+		if !cached {
+			return problem.Conflict("IDEMPOTENCY_CONFLICT", "idempotency response missing")
+		}
+		return nil
+	})
+	if err != nil {
+		return PaymentDTO{}, err
+	}
+	if !started {
+		return result, nil
+	}
+
+	result, err = s.confirmCustomerPayment(ctx, customerID, payment)
+	if err != nil {
+		s.releasePaymentConfirmClaim(ctx, claims.AccountType, customerID, path, key)
+		return PaymentDTO{}, err
+	}
+	if err := s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return s.idStore.Succeed(ctx, tx, claims.AccountType, customerID, path, key, result)
+	}); err != nil {
+		s.releasePaymentConfirmClaim(ctx, claims.AccountType, customerID, path, key)
+		return PaymentDTO{}, err
+	}
+	return result, nil
+}
+
+func validatePaymentConfirmIdempotencyKey(key string) error {
+	if key == "" {
+		return problem.InvalidArgument("IDEMPOTENCY_KEY_REQUIRED", "Idempotency-Key is required")
+	}
+	if len(key) < 8 || len(key) > 128 {
+		return problem.InvalidArgument("IDEMPOTENCY_KEY_INVALID", "Idempotency-Key must be between 8 and 128 characters")
+	}
+	return nil
+}
+
+func (s *Service) customerPaymentForConfirmation(ctx context.Context, customerID, orderID uint64) (Payment, error) {
+	payment, err := s.repo.GetCustomerPayment(ctx, customerID, orderID)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return Payment{}, problem.NotFound("PAYMENT_NOT_FOUND", "payment not found")
+	}
+	if err != nil {
+		return Payment{}, err
+	}
+	return payment, nil
+}
+
+func (s *Service) confirmCustomerPayment(ctx context.Context, customerID uint64, payment Payment) (PaymentDTO, error) {
+	if s.payment == nil || !s.cfg.WeChat.PayEnabled {
+		return PaymentDTO{}, problem.New(http.StatusServiceUnavailable, "PAYMENT_PROVIDER_UNAVAILABLE", "Service Unavailable", "payment provider is unavailable")
 	}
 	if payment.Provider != s.payment.Code() {
 		return PaymentDTO{}, problem.Conflict("PAYMENT_PROVIDER_MISMATCH", "payment provider does not match configured provider")
@@ -61,6 +158,16 @@ func (s *Service) ConfirmPayment(ctx context.Context, claims *auth.Claims, order
 	}
 	s.metrics.IncPayment(payment.Provider, "confirm_succeeded")
 	return result, nil
+}
+
+func (s *Service) releasePaymentConfirmClaim(ctx context.Context, actorType string, actorID uint64, path, key string) {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	if err := s.repo.DB().WithContext(cleanupCtx).Transaction(func(tx *gorm.DB) error {
+		return s.idStore.Fail(cleanupCtx, tx, actorType, actorID, path, key)
+	}); err != nil {
+		s.log.Warn("failed to release payment confirmation idempotency claim", slog.String("path", path), slog.String("error", err.Error()))
+	}
 }
 
 func (s *Service) logPaymentProviderFailure(paymentNo string, err error, decision string) {

@@ -65,6 +65,7 @@ type MerchantUser struct {
 	ID         uint64
 	AccountID  uint64
 	MerchantID uint64
+	RoleID     uint64
 	Name       string
 	Status     string
 }
@@ -94,16 +95,27 @@ func (Cart) TableName() string { return "carts" }
 
 type AuditLog struct {
 	ID           uint64
+	EventID      *string
 	ActorType    string
 	ActorID      uint64
+	AccountID    *uint64
 	Action       string
 	ResourceType string
 	ResourceID   uint64
+	ShopID       *uint64
+	OrderID      *uint64
+	DeliveryID   *uint64
 	BeforeData   datatypes.JSON
 	AfterData    datatypes.JSON
 	Result       string
+	ErrorCode    *string
+	ReasonCode   *string
+	BeforeStatus *string
+	AfterStatus  *string
+	Version      *uint64
 	RequestID    *string
 	IP           *string
+	IPHash       *string
 	UserAgent    *string
 }
 

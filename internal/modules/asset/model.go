@@ -187,7 +187,12 @@ type AuditLog struct {
 	ID, ActorID, ResourceID                 uint64
 	ActorType, Action, ResourceType, Result string
 	BeforeData, AfterData                   datatypes.JSON
-	RequestID, IP, UserAgent                *string
+	EventID                                 *string
+	AccountID, ShopID, OrderID, DeliveryID  *uint64
+	Version                                 *uint64
+	ErrorCode, ReasonCode                   *string
+	BeforeStatus, AfterStatus               *string
+	RequestID, IP, IPHash, UserAgent        *string
 }
 
 // TableName 返回当前数据模型对应的数据库表名。

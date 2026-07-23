@@ -93,3 +93,24 @@ func TestSendCustomerCodeRemovesCodeWhenProviderFails(t *testing.T) {
 		t.Fatal("failed delivery left a usable verification code")
 	}
 }
+
+func TestCustomerPermissionsCoverPhaseOneProtectedCapabilities(t *testing.T) {
+	permissions := customerPermissions()
+	for _, required := range []string{
+		"cart:view", "cart:update",
+		"order:create", "order:list", "order:view", "order:cancel",
+		"payment:create", "payment:view",
+		"delivery_verification:view_customer",
+	} {
+		found := false
+		for _, permission := range permissions {
+			if permission == required {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("customer token permissions missing %q", required)
+		}
+	}
+}

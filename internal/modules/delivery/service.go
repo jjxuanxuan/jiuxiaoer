@@ -68,8 +68,11 @@ func NewService(db *gorm.DB, idGen *snowflake.Generator) *Service {
 }
 
 // List 只暴露待接单任务以及已经分配给当前骑手的任务。
-func (s *Service) List(ctx context.Context, claims *auth.Claims, query pagination.Query, status string) ([]DeliveryOrderDTO, string, error) {
-	riderID, err := riderIDFromClaims(claims)
+func (s *Service) List(ctx context.Context, claims *auth.Claims, query pagination.Query, status string) ([]any, string, error) {
+	if query.OrderBy != "" || query.Filter != "" {
+		return nil, "", problem.InvalidArgument("VALIDATION_INVALID_QUERY", "delivery list has a fixed sort and filter contract")
+	}
+	riderID, err := riderIDFromClaims(claims, "delivery:list", false)
 	if err != nil {
 		return nil, "", err
 	}
@@ -79,19 +82,51 @@ func (s *Service) List(ctx context.Context, claims *auth.Claims, query paginatio
 	}
 	nextPageToken := ""
 	if len(rows) > query.PageSize {
-		nextPageToken = pagination.NextPageToken(query)
 		rows = rows[:query.PageSize]
+		last := rows[len(rows)-1]
+		nextPageToken = pagination.NextPageTokenWithCursor(query, last.CreatedAt.UTC().Format(time.RFC3339Nano), idString(last.ID))
 	}
-	items := make([]DeliveryOrderDTO, 0, len(rows))
+	items := make([]any, 0, len(rows))
 	for _, row := range rows {
-		item := deliveryOrderDTO(row)
 		if row.RiderID == nil {
-			item.PickupSnapshot = nil
-			item.RecipientSnapshot = nil
+			items = append(items, candidateDeliverySummaryDTO(row))
+			continue
 		}
-		items = append(items, item)
+		items = append(items, assignedDeliverySummaryDTO(row))
 	}
 	return items, nextPageToken, nil
+}
+
+func candidateDeliverySummaryDTO(row DeliveryOrder) CandidateDeliverySummaryDTO {
+	distance := uint(0)
+	if row.PickupDistanceM != nil {
+		distance = *row.PickupDistanceM
+	}
+	return CandidateDeliverySummaryDTO{
+		ViewType: "candidate", ID: idString(row.ID), OrderID: idString(row.OrderID), ShopID: idString(row.ShopID),
+		ShopName: row.ShopName, DestinationDistrict: row.DestinationDistrict, ItemCount: row.ItemCount,
+		PickupDistanceM: distance, GrabExpiresAt: optionalTimeString(row.GrabExpiresAt), AssignmentVersion: row.AssignmentVersion,
+	}
+}
+
+func assignedDeliverySummaryDTO(row DeliveryOrder) AssignedDeliverySummaryDTO {
+	pickup := deliveryPickupSnapshotDTO(jsonMap(row.PickupSnapshot))
+	if pickup == nil {
+		pickup = &DeliveryPickupSnapshotDTO{}
+	}
+	recipient := deliveryRecipientSnapshotDTO(jsonMap(row.RecipientSnapshot))
+	if recipient == nil {
+		recipient = &DeliveryRecipientSnapshotDTO{}
+	}
+	return AssignedDeliverySummaryDTO{
+		ViewType: "assigned", ID: idString(row.ID), OrderID: idString(row.OrderID), ShopID: idString(row.ShopID),
+		RiderID: riderIDString(row.RiderID), Status: row.Status, AssignmentVersion: row.AssignmentVersion,
+		DispatchStatus: row.DispatchStatus, PickupReadyStatus: row.PickupReadyStatus,
+		PickupSnapshot: *pickup, RecipientSnapshot: *recipient,
+		PickupReadyAt: optionalTimeString(row.PickupReadyAt), AcceptedAt: optionalTimeString(row.AcceptedAt),
+		PickedUpAt: optionalTimeString(row.PickedUpAt), StartedAt: optionalTimeString(row.StartedAt),
+		CompletedAt: optionalTimeString(row.CompletedAt), CreatedAt: timeString(row.CreatedAt),
+	}
 }
 
 // Accept 接受并处理配送订单DTO。
@@ -102,14 +137,22 @@ func (s *Service) Accept(ctx context.Context, claims *auth.Claims, method string
 // AcceptWithVersion 接受并处理With 版本。
 func (s *Service) AcceptWithVersion(ctx context.Context, claims *auth.Claims, method string, path string, key string, deliveryIDRaw string, expectedVersion uint) (DeliveryOrderDTO, error) {
 	if s.dispatch != nil {
-		result, err := s.dispatch.Grab(ctx, claims, method, path, key, deliveryIDRaw, expectedVersion)
+		_, err := s.dispatch.Grab(ctx, claims, method, path, key, deliveryIDRaw, expectedVersion)
 		if err != nil {
 			return DeliveryOrderDTO{}, err
 		}
-		return deliveryDTOFromAssignment(result), nil
+		riderID, riderErr := riderIDFromClaims(claims, "delivery:accept", false)
+		deliveryID, deliveryErr := parseID(deliveryIDRaw)
+		if riderErr == nil && deliveryErr == nil {
+			if row, reloadErr := s.repo.AssignedSummary(ctx, riderID, deliveryID); reloadErr == nil {
+				return deliveryOrderDTO(row), nil
+			}
+		}
+		return DeliveryOrderDTO{}, problem.Internal("assigned delivery reload failed")
 	}
 	return s.transition(ctx, claims, method, path, key, deliveryIDRaw, "", transitionSpec{
 		Action:             "delivery_accept",
+		Permission:         "delivery:accept",
 		EventType:          "delivery.accepted",
 		FromDeliveryStatus: "pending_assign",
 		ToDeliveryStatus:   "accepted",
@@ -131,6 +174,8 @@ func (s *Service) Pickup(ctx context.Context, claims *auth.Claims, method string
 func (s *Service) PickupWithCode(ctx context.Context, claims *auth.Claims, method string, path string, key string, deliveryIDRaw string, code string) (DeliveryOrderDTO, error) {
 	return s.transition(ctx, claims, method, path, key, deliveryIDRaw, code, transitionSpec{
 		Action:             "delivery_pickup",
+		Permission:         "delivery:pickup",
+		AllowLegacyUpdate:  true,
 		EventType:          "delivery.picked_up",
 		FromDeliveryStatus: "accepted",
 		ToDeliveryStatus:   "delivering",
@@ -144,22 +189,6 @@ func (s *Service) PickupWithCode(ctx context.Context, claims *auth.Claims, metho
 	})
 }
 
-// Start 启动当前实例的后台处理流程。
-func (s *Service) Start(ctx context.Context, claims *auth.Claims, method string, path string, key string, deliveryIDRaw string) (DeliveryOrderDTO, error) {
-	return s.transition(ctx, claims, method, path, key, deliveryIDRaw, "", transitionSpec{
-		Action:             "delivery_start",
-		EventType:          "delivery.started",
-		FromDeliveryStatus: "delivering",
-		ToDeliveryStatus:   "delivering",
-		OrderValues: func(now time.Time) map[string]any {
-			return map[string]any{"status": "delivering", "delivery_status": "delivering"}
-		},
-		DeliveryValues: func(riderID uint64, now time.Time) map[string]any {
-			return map[string]any{"status": "delivering", "started_at": &now}
-		},
-	})
-}
-
 // Complete 返回Complete。
 func (s *Service) Complete(ctx context.Context, claims *auth.Claims, method string, path string, key string, deliveryIDRaw string) (DeliveryOrderDTO, error) {
 	return s.CompleteWithCode(ctx, claims, method, path, key, deliveryIDRaw, "")
@@ -169,6 +198,8 @@ func (s *Service) Complete(ctx context.Context, claims *auth.Claims, method stri
 func (s *Service) CompleteWithCode(ctx context.Context, claims *auth.Claims, method string, path string, key string, deliveryIDRaw string, code string) (DeliveryOrderDTO, error) {
 	return s.transition(ctx, claims, method, path, key, deliveryIDRaw, code, transitionSpec{
 		Action:             "delivery_complete",
+		Permission:         "delivery:complete",
+		AllowLegacyUpdate:  true,
 		EventType:          "delivery.completed",
 		FromDeliveryStatus: "delivering",
 		ToDeliveryStatus:   "completed",
@@ -185,6 +216,8 @@ func (s *Service) CompleteWithCode(ctx context.Context, claims *auth.Claims, met
 // transitionSpec 描述一次合法配送状态变更，以及需要同步更新的订单字段。
 type transitionSpec struct {
 	Action             string
+	Permission         string
+	AllowLegacyUpdate  bool
 	EventType          string
 	FromDeliveryStatus string
 	ToDeliveryStatus   string
@@ -196,7 +229,7 @@ type transitionSpec struct {
 // transition 集中处理骑手归属、幂等、配送状态和订单状态更新。
 // 只有 pending_assign 可以在未归属时被接单；后续每个动作都必须校验骑手归属。
 func (s *Service) transition(ctx context.Context, claims *auth.Claims, method string, path string, key string, deliveryIDRaw string, code string, spec transitionSpec) (DeliveryOrderDTO, error) {
-	riderID, err := riderIDFromClaims(claims)
+	riderID, err := riderIDFromClaims(claims, spec.Permission, spec.AllowLegacyUpdate)
 	if err != nil {
 		return DeliveryOrderDTO{}, err
 	}
@@ -249,13 +282,7 @@ func (s *Service) transition(ctx context.Context, claims *auth.Claims, method st
 		} else {
 			// 接单后，只有已分配骑手可以继续修改配送任务。
 			if deliveryRow.RiderID == nil || *deliveryRow.RiderID != riderID {
-				return problem.Forbidden("PERM_FORBIDDEN", "delivery order is not yours")
-			}
-			// start became a compatibility no-op after pickup began atomically
-			// advancing the delivery to delivering.
-			if spec.Action == "delivery_start" && deliveryRow.Status == "delivering" {
-				resp = deliveryOrderDTO(deliveryRow)
-				return s.idStore.Succeed(ctx, tx, claims.AccountType, riderID, path, key, resp)
+				return problem.NotFound("DELIVERY_NOT_FOUND", "delivery order not found")
 			}
 			if deliveryRow.Status != spec.FromDeliveryStatus {
 				return problem.Conflict("DELIVERY_INVALID_STATUS", "delivery order status cannot transition")
@@ -265,13 +292,19 @@ func (s *Service) transition(ctx context.Context, claims *auth.Claims, method st
 			if spec.Action == "delivery_pickup" && deliveryRow.PickupReadyStatus != "ready" {
 				return problem.Conflict("DELIVERY_PICKUP_NOT_READY", "store has not finished preparing this order")
 			}
-			blocked, verifyErr := deliveryverification.VerifyLocked(ctx, tx, s.cp1, s.idGen, deliveryID, spec.VerificationStage, code, riderID)
+			accountID, _ := strconv.ParseUint(claims.AccountID, 10, 64)
+			blocked, verifyErr := deliveryverification.VerifyLocked(ctx, tx, s.cp1, s.idGen, deliveryID, spec.VerificationStage, code, riderID, accountID, claims.SessionID)
 			if verifyErr != nil {
 				return verifyErr
 			}
 			if blocked != nil {
 				rejection = blocked
 				return s.idStore.Fail(ctx, tx, claims.AccountType, riderID, path, key)
+			}
+			if spec.Action == "delivery_pickup" {
+				if err := deliveryverification.ActivateDelivery(ctx, tx, s.cp1, s.idGen, deliveryID); err != nil {
+					return err
+				}
 			}
 		}
 		orderRow, err := s.repo.LockOrder(ctx, tx, deliveryRow.OrderID)
@@ -322,6 +355,14 @@ func (s *Service) transition(ctx context.Context, claims *auth.Claims, method st
 				return problem.Conflict("INVALID_RETURN_STATE", "delivery order has an active return and cannot be completed")
 			}
 		}
+		if spec.Action == "delivery_complete" {
+			// In observe mode an invalid/missing code is audited but does not block
+			// completion. The terminal boundary must still make any credential that
+			// remained active permanently unusable.
+			if err := deliveryverification.Invalidate(ctx, tx, s.idGen, deliveryID, "delivery_completed"); err != nil {
+				return err
+			}
+		}
 		if err := s.repo.CreateOrderLog(ctx, tx, OrderLog{
 			ID:         s.idGen.Next(),
 			OrderID:    deliveryRow.OrderID,
@@ -347,15 +388,16 @@ func (s *Service) transition(ctx context.Context, claims *auth.Claims, method st
 		}
 		deliveryRow.RiderID = &riderID
 		deliveryRow.Status = spec.ToDeliveryStatus
-		switch spec.ToDeliveryStatus {
-		case "accepted":
+		switch spec.Action {
+		case "delivery_accept":
 			deliveryRow.AcceptedAt = &now
-		case "picked_up":
+		case "delivery_pickup":
 			deliveryRow.PickedUpAt = &now
-		case "delivering":
+			deliveryRow.PickedUpVerifiedAt = &now
 			deliveryRow.StartedAt = &now
-		case "completed":
+		case "delivery_complete":
 			deliveryRow.CompletedAt = &now
+			deliveryRow.CompletedVerifiedAt = &now
 		}
 		resp = deliveryOrderDTO(deliveryRow)
 		return s.idStore.Succeed(ctx, tx, claims.AccountType, riderID, path, key, resp)
@@ -394,43 +436,86 @@ func (s *Service) createAudit(ctx context.Context, tx *gorm.DB, actorID uint64, 
 		AfterData:    jsonData(after),
 		Result:       "success",
 		RequestID:    requestctx.RequestIDPtr(ctx),
-		IP:           requestctx.IPPtr(ctx),
+		IPHash:       requestctx.IPHashPtr(ctx),
 		UserAgent:    requestctx.UserAgentPtr(ctx),
 	})
 }
 
+// AuditFailure persists rejected fulfillment actions outside the business
+// transaction. This keeps permission, ownership, state and version failures
+// traceable without accidentally committing a partial delivery transition.
+func (s *Service) AuditFailure(ctx context.Context, claims *auth.Claims, action, deliveryIDRaw string, cause error) error {
+	actorID := uint64(0)
+	if claims != nil {
+		actorID, _ = strconv.ParseUint(claims.RiderID, 10, 64)
+	}
+	deliveryID, _ := strconv.ParseUint(deliveryIDRaw, 10, 64)
+	detail := problem.FromError(cause)
+	return s.repo.CreateAuditLog(ctx, s.repo.DB(), AuditLog{
+		ID: s.idGen.Next(), ActorType: "rider", ActorID: actorID, Action: action,
+		ResourceType: "delivery_order", ResourceID: deliveryID,
+		AfterData: jsonData(map[string]any{"error_code": detail.ErrorCode, "status": detail.Status}),
+		Result:    "failed", RequestID: requestctx.RequestIDPtr(ctx), IPHash: requestctx.IPHashPtr(ctx), UserAgent: requestctx.UserAgentPtr(ctx),
+	})
+}
+
 // riderIDFromClaims 返回骑手ID From 认证声明。
-func riderIDFromClaims(claims *auth.Claims) (uint64, error) {
+func riderIDFromClaims(claims *auth.Claims, permission string, allowLegacyUpdate bool) (uint64, error) {
 	if claims == nil || claims.AccountType != "rider" {
 		return 0, problem.Forbidden("PERM_FORBIDDEN", "rider account required")
+	}
+	allowed := permission == ""
+	for _, candidate := range claims.Permissions {
+		if candidate == permission || (allowLegacyUpdate && candidate == "delivery:update_status") {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return 0, problem.Forbidden("PERM_FORBIDDEN", "rider permission required")
 	}
 	return parseID(claims.RiderID)
 }
 
 // deliveryOrderDTO 返回配送订单DTO。
 func deliveryOrderDTO(row DeliveryOrder) DeliveryOrderDTO {
+	viewType := "candidate"
+	if row.RiderID != nil {
+		viewType = "assigned"
+	}
 	distance := uint(0)
 	if row.PickupDistanceM != nil {
 		distance = *row.PickupDistanceM
 	}
+	pickup := DeliveryPickupSnapshotDTO{}
+	if value := deliveryPickupSnapshotDTO(jsonMap(row.PickupSnapshot)); value != nil {
+		pickup = *value
+	}
+	recipient := DeliveryRecipientSnapshotDTO{}
+	if value := deliveryRecipientSnapshotDTO(jsonMap(row.RecipientSnapshot)); value != nil {
+		recipient = *value
+	}
 	return DeliveryOrderDTO{
-		ID:                idString(row.ID),
-		OrderID:           idString(row.OrderID),
-		ShopID:            idString(row.ShopID),
-		RiderID:           riderIDString(row.RiderID),
-		Status:            row.Status,
-		AssignmentVersion: row.AssignmentVersion,
-		DispatchStatus:    row.DispatchStatus,
-		PickupReadyStatus: row.PickupReadyStatus,
-		PickupReadyAt:     optionalTimeString(row.PickupReadyAt),
-		PickupSnapshot:    jsonMap(row.PickupSnapshot),
-		RecipientSnapshot: jsonMap(row.RecipientSnapshot),
-		CreatedAt:         timeString(row.CreatedAt),
-		AcceptedAt:        optionalTimeString(row.AcceptedAt),
-		PickedUpAt:        optionalTimeString(row.PickedUpAt),
-		StartedAt:         optionalTimeString(row.StartedAt),
-		CompletedAt:       optionalTimeString(row.CompletedAt),
-		ShopName:          row.ShopName, DestinationDistrict: row.DestinationDistrict,
+		ViewType:            viewType,
+		ID:                  idString(row.ID),
+		OrderID:             idString(row.OrderID),
+		ShopID:              idString(row.ShopID),
+		RiderID:             riderIDString(row.RiderID),
+		Status:              row.Status,
+		AssignmentVersion:   row.AssignmentVersion,
+		DispatchStatus:      row.DispatchStatus,
+		PickupReadyStatus:   row.PickupReadyStatus,
+		PickupReadyAt:       optionalTimeString(row.PickupReadyAt),
+		PickupSnapshot:      pickup,
+		RecipientSnapshot:   recipient,
+		CreatedAt:           timeString(row.CreatedAt),
+		AcceptedAt:          optionalTimeString(row.AcceptedAt),
+		PickedUpAt:          optionalTimeString(row.PickedUpAt),
+		PickedUpVerifiedAt:  optionalTimeString(row.PickedUpVerifiedAt),
+		StartedAt:           optionalTimeString(row.StartedAt),
+		CompletedAt:         optionalTimeString(row.CompletedAt),
+		CompletedVerifiedAt: optionalTimeString(row.CompletedVerifiedAt),
+		ShopName:            row.ShopName, DestinationDistrict: row.DestinationDistrict,
 		ItemCount: row.ItemCount, PickupDistanceM: distance, GrabExpiresAt: optionalTimeString(row.GrabExpiresAt),
 	}
 }
@@ -438,7 +523,7 @@ func deliveryOrderDTO(row DeliveryOrder) DeliveryOrderDTO {
 // deliveryDTOFromAssignment 返回配送DTO From 分配。
 func deliveryDTOFromAssignment(row dispatch.AssignmentResult) DeliveryOrderDTO {
 	return DeliveryOrderDTO{
-		ID: row.DeliveryOrderID, OrderID: row.OrderID, ShopID: row.ShopID,
+		ViewType: "assigned", ID: row.DeliveryOrderID, OrderID: row.OrderID, ShopID: row.ShopID,
 		RiderID: row.RiderID, Status: row.Status, DispatchStatus: row.DispatchStatus,
 		AssignmentVersion: row.AssignmentVersion, PickupReadyStatus: row.PickupReadyStatus,
 		PickupReadyAt: row.PickupReadyAt, AcceptedAt: row.AcceptedAt,

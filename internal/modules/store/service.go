@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"strings"
 	"time"
 
 	mysqlerr "github.com/go-sql-driver/mysql"
@@ -26,12 +27,13 @@ import (
 )
 
 type Service struct {
-	repo     *Repository
-	redis    *goredis.Client
-	idStore  *idempotency.Store
-	idGen    *snowflake.Generator
-	cp1      config.CP1Config
-	dispatch *dispatch.Service
+	repo                   *Repository
+	redis                  *goredis.Client
+	idStore                *idempotency.Store
+	idGen                  *snowflake.Generator
+	cp1                    config.CP1Config
+	dispatch               *dispatch.Service
+	generatePickupVerifier func(context.Context, *gorm.DB, config.CP1Config, *snowflake.Generator, uint64) error
 }
 
 // WithCP1 设置CP 1并返回更新后的值。
@@ -43,46 +45,139 @@ func (s *Service) WithDispatch(service *dispatch.Service) *Service { s.dispatch 
 // NewService 负责商户侧订单履约、门店商品和库存操作。
 func NewService(db *gorm.DB, redisClient *goredis.Client, idGen *snowflake.Generator) *Service {
 	return &Service{
-		repo:    NewRepository(db),
-		redis:   redisClient,
-		idStore: idempotency.NewStore(db),
-		idGen:   idGen,
+		repo:                   NewRepository(db),
+		redis:                  redisClient,
+		idStore:                idempotency.NewStore(db),
+		idGen:                  idGen,
+		generatePickupVerifier: deliveryverification.GeneratePair,
 	}
 }
 
 // ListOrders 只返回当前商户账号授权门店下的订单。
-func (s *Service) ListOrders(ctx context.Context, claims *auth.Claims, query pagination.Query, status string) ([]StoreOrderDTO, string, error) {
-	identity, err := merchantIdentityFromClaims(claims)
+func (s *Service) ListOrders(ctx context.Context, claims *auth.Claims, query pagination.Query, filters StoreOrderListFilters) ([]StoreOrderSummaryDTO, string, error) {
+	identity, err := merchantIdentityWithPermission(claims, "store_order:list")
 	if err != nil {
 		return nil, "", err
 	}
-	rows, err := s.repo.ListOrders(ctx, identity.MerchantID, identity.ShopIDs, status, query)
+	if filters.ShopID != 0 && !containsID(identity.ShopIDs, filters.ShopID) {
+		return nil, "", problem.Forbidden("SHOP_SCOPE_FORBIDDEN", "shop is not authorized")
+	}
+	rows, err := s.repo.ListOrders(ctx, identity.MerchantID, identity.ShopIDs, filters, query)
 	if err != nil {
 		return nil, "", err
 	}
 	nextPageToken := ""
 	if len(rows) > query.PageSize {
-		nextPageToken = pagination.NextPageToken(query)
 		rows = rows[:query.PageSize]
+		if storeOrderUsesKeyset(query.OrderBy) {
+			last := rows[len(rows)-1]
+			nextPageToken = pagination.NextPageTokenWithCursor(query, last.CreatedAt.Format(time.RFC3339Nano), strconv.FormatUint(last.ID, 10))
+		} else {
+			nextPageToken = pagination.NextPageToken(query)
+		}
 	}
-	items := make([]StoreOrderDTO, 0, len(rows))
+	orderIDs := make([]uint64, 0, len(rows))
+	shopIDs := make([]uint64, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, storeOrderDTO(row, nil))
+		orderIDs = append(orderIDs, row.ID)
+		shopIDs = append(shopIDs, row.ShopID)
+	}
+	orderItems, err := s.repo.OrderItemsForOrders(ctx, orderIDs)
+	if err != nil {
+		return nil, "", err
+	}
+	shops, err := s.repo.AuthorizedShops(ctx, identity.MerchantID, shopIDs)
+	if err != nil {
+		return nil, "", err
+	}
+	itemsByOrder := make(map[uint64][]OrderItem, len(rows))
+	for _, item := range orderItems {
+		itemsByOrder[item.OrderID] = append(itemsByOrder[item.OrderID], item)
+	}
+	shopsByID := make(map[uint64]Shop, len(shops))
+	for _, shop := range shops {
+		shopsByID[shop.ID] = shop
+	}
+	items := make([]StoreOrderSummaryDTO, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, storeOrderSummaryDTO(row, shopsByID[row.ShopID], itemsByOrder[row.ID]))
 	}
 	return items, nextPageToken, nil
 }
 
+// DetailOrder 返回商家专用订单详情。功能权限在读取订单前检查，对象范围
+// 直接进入订单查询条件，范围外与不存在订单统一返回 404。
+func (s *Service) DetailOrder(ctx context.Context, claims *auth.Claims, orderIDRaw string) (StoreOrderDetailDTO, error) {
+	identity, err := merchantIdentityWithPermission(claims, "store_order:view")
+	if err != nil {
+		return StoreOrderDetailDTO{}, err
+	}
+	orderID, err := parseID(orderIDRaw)
+	if err != nil {
+		return StoreOrderDetailDTO{}, problem.InvalidArgument("VALIDATION_FAILED", "invalid order id")
+	}
+
+	var result StoreOrderDetailDTO
+	err = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var loadErr error
+		result, loadErr = s.loadStoreOrderDetail(ctx, tx, identity, orderID)
+		return loadErr
+	})
+	return result, err
+}
+
+// loadStoreOrderDetail reloads the complete merchant-safe projection from the
+// current transaction. Action responses use it after every mutation so the
+// returned status, version, logs and delivery facts are all post-action facts.
+func (s *Service) loadStoreOrderDetail(ctx context.Context, db *gorm.DB, identity merchantIdentity, orderID uint64) (StoreOrderDetailDTO, error) {
+	row, err := s.repo.AuthorizedOrder(ctx, db, identity.MerchantID, identity.ShopIDs, orderID)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return StoreOrderDetailDTO{}, problem.NotFound("ORDER_NOT_FOUND", "order not found")
+	}
+	if err != nil {
+		return StoreOrderDetailDTO{}, err
+	}
+	shop, err := s.repo.OrderShop(ctx, db, identity.MerchantID, row.ShopID)
+	if err != nil {
+		return StoreOrderDetailDTO{}, err
+	}
+	items, err := s.repo.OrderItems(ctx, db, orderID)
+	if err != nil {
+		return StoreOrderDetailDTO{}, err
+	}
+	payment, paymentErr := s.repo.PaymentByOrder(ctx, db, orderID)
+	if paymentErr != nil && !errors.Is(paymentErr, gorm.ErrRecordNotFound) {
+		return StoreOrderDetailDTO{}, paymentErr
+	}
+	delivery, deliveryErr := s.repo.DeliveryByOrder(ctx, db, orderID)
+	if deliveryErr != nil && !errors.Is(deliveryErr, gorm.ErrRecordNotFound) {
+		return StoreOrderDetailDTO{}, deliveryErr
+	}
+	logs, err := s.repo.RecentOrderLogs(ctx, db, orderID, 20)
+	if err != nil {
+		return StoreOrderDetailDTO{}, err
+	}
+	return storeOrderDetailDTO(row, shop, items, payment, paymentErr == nil, delivery, deliveryErr == nil, logs), nil
+}
+
 // AcceptOrder 将已支付订单推进到商户已接单状态。
 // 带授权范围的订单锁可防止商户接到其他商户的订单。
-func (s *Service) AcceptOrder(ctx context.Context, claims *auth.Claims, method string, path string, key string, orderIDRaw string) (StoreOrderDTO, error) {
-	identity, orderID, err := s.merchantOrderActionInput(claims, orderIDRaw)
+func (s *Service) AcceptOrder(ctx context.Context, claims *auth.Claims, method string, path string, key string, orderIDRaw string, req StoreOrderActionReq) (resp StoreOrderDetailDTO, resultErr error) {
+	var failureVersion *int
+	defer func() {
+		s.auditStoreOrderActionFailure(ctx, claims, method, path, "store.order.accept", orderIDRaw, failureVersion, resultErr)
+	}()
+	identity, orderID, err := s.merchantOrderActionInput(claims, orderIDRaw, "store_order:accept")
 	if err != nil {
-		return StoreOrderDTO{}, err
+		return StoreOrderDetailDTO{}, err
 	}
-	reqHash := idempotency.RequestHash(map[string]string{"order_id": orderIDRaw, "action": "accept"})
+	expectedVersion, err := storeOrderExpectedVersion(req)
+	if err != nil {
+		return StoreOrderDetailDTO{}, err
+	}
+	reqHash := storeOrderActionRequestHash(orderID, "accept", req)
 
-	var resp StoreOrderDTO
-	err = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	resultErr = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		started, err := s.idStore.Start(ctx, tx, s.idGen.Next(), claims.AccountType, identity.MerchantUserID, method, path, key, reqHash)
 		if err != nil {
 			return err
@@ -98,11 +193,23 @@ func (s *Service) AcceptOrder(ctx context.Context, claims *auth.Claims, method s
 		if err != nil {
 			return err
 		}
+		observedVersion := row.Version
+		failureVersion = &observedVersion
+		if row.Version < 0 || uint(row.Version) != expectedVersion {
+			return problem.Conflict("VERSION_CONFLICT", "order version changed")
+		}
 		if row.Status != "paid" {
 			return problem.Conflict("ORDER_INVALID_STATUS", "only paid orders can be accepted")
 		}
-		if err := s.repo.UpdateOrder(ctx, tx, orderID, map[string]any{"status": "accepted"}); err != nil {
+		if _, err := s.lockRequiredDelivery(ctx, tx, orderID); err != nil {
 			return err
+		}
+		updated, err := s.repo.TransitionOrder(ctx, tx, orderID, row.Status, row.Version, map[string]any{"status": "accepted"})
+		if err != nil {
+			return err
+		}
+		if !updated {
+			return problem.Conflict("VERSION_CONFLICT", "order changed concurrently")
 		}
 		if err := s.repo.CreateOrderLog(ctx, tx, OrderLog{
 			ID:         s.idGen.Next(),
@@ -116,11 +223,11 @@ func (s *Service) AcceptOrder(ctx context.Context, claims *auth.Claims, method s
 		}); err != nil {
 			return err
 		}
-		if err := s.createAudit(ctx, tx, identity.MerchantUserID, "store.order.accept", "order", orderID, row, map[string]string{"status": "accepted"}); err != nil {
+		if err := s.createAudit(ctx, tx, identity.MerchantUserID, "store.order.accept", "order", orderID, row, map[string]any{"status": "accepted", "version": row.Version + 1}); err != nil {
 			return err
 		}
 		eventID := uuid.NewString()
-		payload := map[string]any{"order_id": idString(orderID), "shop_id": idString(row.ShopID), "order_no": row.OrderNo}
+		payload := map[string]any{"order_id": idString(orderID), "shop_id": idString(row.ShopID), "order_no": row.OrderNo, "version": row.Version + 1}
 		if err := s.createOutboxWithID(ctx, tx, eventID, "store.order.accepted", "order", orderID, payload); err != nil {
 			return err
 		}
@@ -129,26 +236,31 @@ func (s *Service) AcceptOrder(ctx context.Context, claims *auth.Claims, method s
 				return err
 			}
 		}
-		row.Status = "accepted"
-		items, err := s.repo.OrderItems(ctx, tx, orderID)
+		resp, err = s.loadStoreOrderDetail(ctx, tx, identity, orderID)
 		if err != nil {
 			return err
 		}
-		resp = storeOrderDTO(row, items)
 		return s.idStore.Succeed(ctx, tx, claims.AccountType, identity.MerchantUserID, path, key, resp)
 	})
-	return resp, err
+	return resp, resultErr
 }
 
 // StartPreparingOrder 将商户已接订单推进到备货中状态。
-func (s *Service) StartPreparingOrder(ctx context.Context, claims *auth.Claims, method string, path string, key string, orderIDRaw string) (StoreOrderDTO, error) {
-	identity, orderID, err := s.merchantOrderActionInput(claims, orderIDRaw)
+func (s *Service) StartPreparingOrder(ctx context.Context, claims *auth.Claims, method string, path string, key string, orderIDRaw string, req StoreOrderActionReq) (resp StoreOrderDetailDTO, resultErr error) {
+	var failureVersion *int
+	defer func() {
+		s.auditStoreOrderActionFailure(ctx, claims, method, path, "store.order.start_preparing", orderIDRaw, failureVersion, resultErr)
+	}()
+	identity, orderID, err := s.merchantOrderActionInput(claims, orderIDRaw, "store_order:prepare")
 	if err != nil {
-		return StoreOrderDTO{}, err
+		return StoreOrderDetailDTO{}, err
 	}
-	var resp StoreOrderDTO
-	err = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		started, err := s.idStore.Start(ctx, tx, s.idGen.Next(), claims.AccountType, identity.MerchantUserID, method, path, key, idempotency.RequestHash(map[string]string{"order_id": orderIDRaw, "action": "start_preparing"}))
+	expectedVersion, err := storeOrderExpectedVersion(req)
+	if err != nil {
+		return StoreOrderDetailDTO{}, err
+	}
+	resultErr = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		started, err := s.idStore.Start(ctx, tx, s.idGen.Next(), claims.AccountType, identity.MerchantUserID, method, path, key, storeOrderActionRequestHash(orderID, "start_preparing", req))
 		if err != nil {
 			return err
 		}
@@ -162,43 +274,60 @@ func (s *Service) StartPreparingOrder(ctx context.Context, claims *auth.Claims, 
 		if err != nil {
 			return err
 		}
+		observedVersion := row.Version
+		failureVersion = &observedVersion
+		if row.Version < 0 || uint(row.Version) != expectedVersion {
+			return problem.Conflict("VERSION_CONFLICT", "order version changed")
+		}
 		if row.Status != "accepted" {
 			return problem.Conflict("ORDER_INVALID_STATUS", "only accepted orders can start preparing")
 		}
-		if err := s.repo.UpdateOrder(ctx, tx, orderID, map[string]any{"status": "preparing"}); err != nil {
+		if _, err := s.lockRequiredDelivery(ctx, tx, orderID); err != nil {
 			return err
+		}
+		updated, err := s.repo.TransitionOrder(ctx, tx, orderID, row.Status, row.Version, map[string]any{"status": "preparing"})
+		if err != nil {
+			return err
+		}
+		if !updated {
+			return problem.Conflict("VERSION_CONFLICT", "order changed concurrently")
 		}
 		if err := s.repo.CreateOrderLog(ctx, tx, OrderLog{ID: s.idGen.Next(), OrderID: orderID, ActorType: claims.AccountType, ActorID: identity.MerchantUserID, Action: "store_start_preparing", FromStatus: stringPtr(row.Status), ToStatus: stringPtr("preparing"), RequestID: requestctx.RequestIDPtr(ctx)}); err != nil {
 			return err
 		}
-		if err := s.createAudit(ctx, tx, identity.MerchantUserID, "store.order.start_preparing", "order", orderID, row, map[string]string{"status": "preparing"}); err != nil {
+		if err := s.createAudit(ctx, tx, identity.MerchantUserID, "store.order.start_preparing", "order", orderID, row, map[string]any{"status": "preparing", "version": row.Version + 1}); err != nil {
 			return err
 		}
-		if err := s.createOutbox(ctx, tx, "store.order.preparing", "order", orderID, map[string]any{"order_id": idString(orderID)}); err != nil {
+		if err := s.createOutbox(ctx, tx, "store.order.preparing", "order", orderID, map[string]any{"order_id": idString(orderID), "shop_id": idString(row.ShopID), "order_no": row.OrderNo, "version": row.Version + 1}); err != nil {
 			return err
 		}
-		row.Status = "preparing"
-		items, err := s.repo.OrderItems(ctx, tx, orderID)
+		resp, err = s.loadStoreOrderDetail(ctx, tx, identity, orderID)
 		if err != nil {
 			return err
 		}
-		resp = storeOrderDTO(row, items)
 		return s.idStore.Succeed(ctx, tx, claims.AccountType, identity.MerchantUserID, path, key, resp)
 	})
-	return resp, err
+	return resp, resultErr
 }
 
 // PrepareOrder 只打开取货门禁。配送单和调度任务已在支付成功事务创建，
 // 因此骑手可以在门店备货期间接受邀约或抢单。
-func (s *Service) PrepareOrder(ctx context.Context, claims *auth.Claims, method string, path string, key string, orderIDRaw string) (StoreOrderDTO, error) {
-	identity, orderID, err := s.merchantOrderActionInput(claims, orderIDRaw)
+func (s *Service) PrepareOrder(ctx context.Context, claims *auth.Claims, method string, path string, key string, orderIDRaw string, req StoreOrderActionReq) (resp StoreOrderDetailDTO, resultErr error) {
+	var failureVersion *int
+	defer func() {
+		s.auditStoreOrderActionFailure(ctx, claims, method, path, "store.order.prepare", orderIDRaw, failureVersion, resultErr)
+	}()
+	identity, orderID, err := s.merchantOrderActionInput(claims, orderIDRaw, "store_order:prepare")
 	if err != nil {
-		return StoreOrderDTO{}, err
+		return StoreOrderDetailDTO{}, err
 	}
-	reqHash := idempotency.RequestHash(map[string]string{"order_id": orderIDRaw, "action": "prepare"})
+	expectedVersion, err := storeOrderExpectedVersion(req)
+	if err != nil {
+		return StoreOrderDetailDTO{}, err
+	}
+	reqHash := storeOrderActionRequestHash(orderID, "prepare", req)
 
-	var resp StoreOrderDTO
-	err = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	resultErr = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		started, err := s.idStore.Start(ctx, tx, s.idGen.Next(), claims.AccountType, identity.MerchantUserID, method, path, key, reqHash)
 		if err != nil {
 			return err
@@ -214,8 +343,13 @@ func (s *Service) PrepareOrder(ctx context.Context, claims *auth.Claims, method 
 		if err != nil {
 			return err
 		}
-		if row.Status != "accepted" && row.Status != "preparing" {
-			return problem.Conflict("ORDER_INVALID_STATUS", "only accepted or preparing orders can be prepared")
+		observedVersion := row.Version
+		failureVersion = &observedVersion
+		if row.Version < 0 || uint(row.Version) != expectedVersion {
+			return problem.Conflict("VERSION_CONFLICT", "order version changed")
+		}
+		if row.Status != "preparing" {
+			return problem.Conflict("ORDER_INVALID_STATUS", "only preparing orders can be marked ready")
 		}
 		shop, err := s.repo.LockAuthorizedShop(ctx, tx, identity.MerchantID, identity.ShopIDs, row.ShopID)
 		if err != nil {
@@ -249,7 +383,11 @@ func (s *Service) PrepareOrder(ctx context.Context, claims *auth.Claims, method 
 			return err
 		}
 		if s.cp1.PickupVerificationMode != "" || s.cp1.DeliveryVerificationMode != "" {
-			if err := deliveryverification.GeneratePair(ctx, tx, s.cp1, s.idGen, delivery.ID); err != nil {
+			generate := s.generatePickupVerifier
+			if generate == nil {
+				generate = deliveryverification.GeneratePair
+			}
+			if err := generate(ctx, tx, s.cp1, s.idGen, delivery.ID); err != nil {
 				return err
 			}
 		}
@@ -257,11 +395,15 @@ func (s *Service) PrepareOrder(ctx context.Context, claims *auth.Claims, method 
 		if delivery.RiderID != nil {
 			deliveryStatus = "accepted"
 		}
-		if err := s.repo.UpdateOrder(ctx, tx, orderID, map[string]any{
+		updated, err := s.repo.TransitionOrder(ctx, tx, orderID, row.Status, row.Version, map[string]any{
 			"status":          "ready_for_pickup",
 			"delivery_status": deliveryStatus,
-		}); err != nil {
+		})
+		if err != nil {
 			return err
+		}
+		if !updated {
+			return problem.Conflict("VERSION_CONFLICT", "order changed concurrently")
 		}
 		if err := s.repo.CreateOrderLog(ctx, tx, OrderLog{
 			ID:         s.idGen.Next(),
@@ -275,11 +417,11 @@ func (s *Service) PrepareOrder(ctx context.Context, claims *auth.Claims, method 
 		}); err != nil {
 			return err
 		}
-		if err := s.createAudit(ctx, tx, identity.MerchantUserID, "store.order.prepare", "order", orderID, row, map[string]string{"status": "ready_for_pickup"}); err != nil {
+		if err := s.createAudit(ctx, tx, identity.MerchantUserID, "store.order.prepare", "order", orderID, row, map[string]any{"status": "ready_for_pickup", "delivery_status": deliveryStatus, "version": row.Version + 1}); err != nil {
 			return err
 		}
 		eventID := uuid.NewString()
-		payload := map[string]any{"order_id": idString(orderID), "shop_id": idString(row.ShopID), "order_no": row.OrderNo}
+		payload := map[string]any{"order_id": idString(orderID), "shop_id": idString(row.ShopID), "order_no": row.OrderNo, "version": row.Version + 1}
 		if err := s.createOutboxWithID(ctx, tx, eventID, "store.order.prepared", "order", orderID, payload); err != nil {
 			return err
 		}
@@ -288,22 +430,19 @@ func (s *Service) PrepareOrder(ctx context.Context, claims *auth.Claims, method 
 				return err
 			}
 		}
-		row.Status = "ready_for_pickup"
-		row.DeliveryStatus = deliveryStatus
-		items, err := s.repo.OrderItems(ctx, tx, orderID)
+		resp, err = s.loadStoreOrderDetail(ctx, tx, identity, orderID)
 		if err != nil {
 			return err
 		}
-		resp = storeOrderDTO(row, items)
 		return s.idStore.Succeed(ctx, tx, claims.AccountType, identity.MerchantUserID, path, key, resp)
 	})
-	return resp, err
+	return resp, resultErr
 }
 
 // UpdateBusinessStatus 修改门店是否对外营业。
 // 商品列表依赖 shops.business_status，因此这里需要审计并发出事件。
 func (s *Service) UpdateBusinessStatus(ctx context.Context, claims *auth.Claims, method string, path string, key string, shopIDRaw string, req BusinessStatusReq) (map[string]string, error) {
-	identity, err := merchantIdentityFromClaims(claims)
+	identity, err := merchantIdentityWithPermission(claims, "shop:business_status")
 	if err != nil {
 		return nil, err
 	}
@@ -316,7 +455,7 @@ func (s *Service) UpdateBusinessStatus(ctx context.Context, claims *auth.Claims,
 	var productIDsForCache []uint64
 	var serviceCityCode string
 	err = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		started, err := s.idStore.Start(ctx, tx, s.idGen.Next(), claims.AccountType, identity.MerchantUserID, method, path, key, idempotency.RequestHash(req))
+		started, err := s.idStore.Start(ctx, tx, s.idGen.Next(), claims.AccountType, identity.MerchantUserID, method, path, key, idempotency.ResourceRequestHash("shop.business_status.update", shopID, req))
 		if err != nil {
 			return err
 		}
@@ -361,29 +500,27 @@ func (s *Service) UpdateBusinessStatus(ctx context.Context, claims *auth.Claims,
 }
 
 // ListShopProducts 暴露商户范围内的上架商品和库存数量。
-func (s *Service) ListShopProducts(ctx context.Context, claims *auth.Claims, query pagination.Query, shopIDRaw string) ([]ShopProductDTO, string, error) {
-	identity, err := merchantIdentityFromClaims(claims)
+func (s *Service) ListShopProducts(ctx context.Context, claims *auth.Claims, query pagination.Query, filters StoreInventoryFilters) ([]ShopProductDTO, string, error) {
+	identity, err := merchantIdentityWithPermission(claims, "inventory:view")
 	if err != nil {
 		return nil, "", err
 	}
-	var shopID uint64
-	if shopIDRaw != "" {
-		shopID, err = parseID(shopIDRaw)
-		if err != nil {
-			return nil, "", problem.InvalidArgument("VALIDATION_FAILED", "invalid shop_id")
-		}
-		if !containsID(identity.ShopIDs, shopID) {
-			return nil, "", problem.Forbidden("PERM_FORBIDDEN", "shop is not authorized")
-		}
+	if filters.ShopID != 0 && !containsID(identity.ShopIDs, filters.ShopID) {
+		return nil, "", problem.Forbidden("SHOP_SCOPE_FORBIDDEN", "shop is not authorized")
 	}
-	rows, err := s.repo.ListShopProducts(ctx, identity.MerchantID, identity.ShopIDs, shopID, query)
+	rows, err := s.repo.ListShopProducts(ctx, identity.MerchantID, identity.ShopIDs, filters, query)
 	if err != nil {
 		return nil, "", err
 	}
 	nextPageToken := ""
 	if len(rows) > query.PageSize {
-		nextPageToken = pagination.NextPageToken(query)
 		rows = rows[:query.PageSize]
+		if storeInventoryUsesKeyset(query.OrderBy) {
+			last := rows[len(rows)-1]
+			nextPageToken = pagination.NextPageTokenWithCursor(query, last.UpdatedAt.Format(time.RFC3339Nano), strconv.FormatUint(last.ID, 10))
+		} else {
+			nextPageToken = pagination.NextPageToken(query)
+		}
 	}
 	items := make([]ShopProductDTO, 0, len(rows))
 	for _, row := range rows {
@@ -394,7 +531,7 @@ func (s *Service) ListShopProducts(ctx context.Context, claims *auth.Claims, que
 
 // CreateShopProduct 将平台商品加入授权门店，并初始化库存行。
 func (s *Service) CreateShopProduct(ctx context.Context, claims *auth.Claims, method string, path string, key string, req ShopProductCreateReq) (ShopProductDTO, error) {
-	identity, err := merchantIdentityFromClaims(claims)
+	identity, err := merchantIdentityWithPermission(claims, "shop_product:create")
 	if err != nil {
 		return ShopProductDTO{}, err
 	}
@@ -486,6 +623,9 @@ func (s *Service) CreateShopProduct(ctx context.Context, claims *auth.Claims, me
 			Status:              shopProduct.Status,
 			SortOrder:           shopProduct.SortOrder,
 			AvailableQty:        stock.AvailableQty,
+			LowStockThreshold:   stock.LowStockThreshold,
+			Version:             stock.Version,
+			UpdatedAt:           time.Now().UTC(),
 		})
 		return s.idStore.Succeed(ctx, tx, claims.AccountType, identity.MerchantUserID, path, key, resp)
 	})
@@ -498,7 +638,7 @@ func (s *Service) CreateShopProduct(ctx context.Context, claims *auth.Claims, me
 
 // UpdateShopProduct 只修改商户可控的门店售卖字段，不修改平台商品目录字段。
 func (s *Service) UpdateShopProduct(ctx context.Context, claims *auth.Claims, method string, path string, key string, shopProductIDRaw string, req ShopProductUpdateReq) (map[string]string, error) {
-	identity, shopProductID, err := s.merchantShopProductActionInput(claims, shopProductIDRaw)
+	identity, shopProductID, err := s.merchantShopProductActionInput(claims, shopProductIDRaw, "shop_product:update")
 	if err != nil {
 		return nil, err
 	}
@@ -519,7 +659,7 @@ func (s *Service) UpdateShopProduct(ctx context.Context, claims *auth.Claims, me
 	var resp map[string]string
 	var productIDForCache uint64
 	err = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		started, err := s.idStore.Start(ctx, tx, s.idGen.Next(), claims.AccountType, identity.MerchantUserID, method, path, key, idempotency.RequestHash(req))
+		started, err := s.idStore.Start(ctx, tx, s.idGen.Next(), claims.AccountType, identity.MerchantUserID, method, path, key, idempotency.ResourceRequestHash("shop_product.update", shopProductID, req))
 		if err != nil {
 			return err
 		}
@@ -561,7 +701,7 @@ func (s *Service) AdjustStock(ctx context.Context, claims *auth.Claims, method s
 	if req.QuantityDelta == 0 {
 		return ShopProductDTO{}, problem.InvalidArgument("VALIDATION_FAILED", "quantity_delta cannot be zero")
 	}
-	identity, shopProductID, err := s.merchantShopProductActionInput(claims, shopProductIDRaw)
+	identity, shopProductID, err := s.merchantShopProductActionInput(claims, shopProductIDRaw, "inventory:adjust")
 	if err != nil {
 		return ShopProductDTO{}, err
 	}
@@ -569,7 +709,7 @@ func (s *Service) AdjustStock(ctx context.Context, claims *auth.Claims, method s
 	var resp ShopProductDTO
 	var productIDForCache uint64
 	err = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		started, err := s.idStore.Start(ctx, tx, s.idGen.Next(), claims.AccountType, identity.MerchantUserID, method, path, key, idempotency.RequestHash(req))
+		started, err := s.idStore.Start(ctx, tx, s.idGen.Next(), claims.AccountType, identity.MerchantUserID, method, path, key, idempotency.ResourceRequestHash("shop_product.stock.adjust", shopProductID, req))
 		if err != nil {
 			return err
 		}
@@ -589,6 +729,7 @@ func (s *Service) AdjustStock(ctx context.Context, claims *auth.Claims, method s
 			return err
 		}
 		afterAvailable := stock.AvailableQty + req.QuantityDelta
+		beforeTotal := stock.AvailableQty + stock.ReservedQty + stock.LockedQty
 		if afterAvailable < 0 {
 			return problem.Conflict("STOCK_NOT_ENOUGH", "available stock cannot be negative")
 		}
@@ -604,6 +745,9 @@ func (s *Service) AdjustStock(ctx context.Context, claims *auth.Claims, method s
 			QuantityDelta:      req.QuantityDelta,
 			BeforeAvailableQty: stock.AvailableQty,
 			AfterAvailableQty:  afterAvailable,
+			TotalQuantityDelta: req.QuantityDelta,
+			BeforeTotalQty:     beforeTotal,
+			AfterTotalQty:      beforeTotal + req.QuantityDelta,
 			SourceType:         "merchant_adjust",
 			SourceID:           shopProduct.ID,
 			IdempotencyKey:     stringPtr(key),
@@ -641,6 +785,9 @@ func (s *Service) AdjustStock(ctx context.Context, claims *auth.Claims, method s
 			AvailableQty:        afterAvailable,
 			ReservedQty:         stock.ReservedQty,
 			LockedQty:           stock.LockedQty,
+			LowStockThreshold:   stock.LowStockThreshold,
+			Version:             stock.Version + 1,
+			UpdatedAt:           time.Now().UTC(),
 		})
 		return s.idStore.Succeed(ctx, tx, claims.AccountType, identity.MerchantUserID, path, key, resp)
 	})
@@ -651,8 +798,8 @@ func (s *Service) AdjustStock(ctx context.Context, claims *auth.Claims, method s
 }
 
 // merchantOrderActionInput 返回商户订单操作输入。
-func (s *Service) merchantOrderActionInput(claims *auth.Claims, orderIDRaw string) (merchantIdentity, uint64, error) {
-	identity, err := merchantIdentityFromClaims(claims)
+func (s *Service) merchantOrderActionInput(claims *auth.Claims, orderIDRaw, permission string) (merchantIdentity, uint64, error) {
+	identity, err := merchantIdentityWithPermission(claims, permission)
 	if err != nil {
 		return merchantIdentity{}, 0, err
 	}
@@ -663,9 +810,37 @@ func (s *Service) merchantOrderActionInput(claims *auth.Claims, orderIDRaw strin
 	return identity, orderID, nil
 }
 
+func storeOrderExpectedVersion(req StoreOrderActionReq) (uint, error) {
+	if req.ExpectedVersion == nil {
+		return 0, problem.InvalidArgument("VALIDATION_FAILED", "expected_version is required")
+	}
+	return *req.ExpectedVersion, nil
+}
+
+func storeOrderActionRequestHash(orderID uint64, action string, req StoreOrderActionReq) string {
+	return idempotency.RequestHash(struct {
+		OrderID         string `json:"order_id"`
+		Action          string `json:"action"`
+		ExpectedVersion *uint  `json:"expected_version"`
+	}{
+		OrderID: idString(orderID), Action: action, ExpectedVersion: req.ExpectedVersion,
+	})
+}
+
+// lockRequiredDelivery enforces the paid-order invariant used by merchant
+// fulfilment transitions: every successful action holds both the order and its
+// delivery row lock before changing state.
+func (s *Service) lockRequiredDelivery(ctx context.Context, tx *gorm.DB, orderID uint64) (DeliveryOrder, error) {
+	delivery, err := s.repo.LockDeliveryByOrder(ctx, tx, orderID)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return DeliveryOrder{}, problem.Conflict("DELIVERY_NOT_CREATED", "paid order has no delivery task")
+	}
+	return delivery, err
+}
+
 // merchantShopProductActionInput 返回商户门店商品操作输入。
-func (s *Service) merchantShopProductActionInput(claims *auth.Claims, shopProductIDRaw string) (merchantIdentity, uint64, error) {
-	identity, err := merchantIdentityFromClaims(claims)
+func (s *Service) merchantShopProductActionInput(claims *auth.Claims, shopProductIDRaw, permission string) (merchantIdentity, uint64, error) {
+	identity, err := merchantIdentityWithPermission(claims, permission)
 	if err != nil {
 		return merchantIdentity{}, 0, err
 	}
@@ -726,8 +901,56 @@ func (s *Service) createAudit(ctx context.Context, tx *gorm.DB, actorID uint64, 
 		AfterData:    jsonData(after),
 		Result:       "success",
 		RequestID:    requestctx.RequestIDPtr(ctx),
-		IP:           requestctx.IPPtr(ctx),
+		IPHash:       requestctx.IPHashPtr(ctx),
 		UserAgent:    requestctx.UserAgentPtr(ctx),
+	})
+}
+
+// auditStoreOrderActionFailure persists rejected merchant actions outside the
+// rolled-back business transaction. It deliberately records only coarse
+// request metadata and the stable error code; request bodies, order snapshots
+// and customer data never enter a failure audit.
+func (s *Service) auditStoreOrderActionFailure(ctx context.Context, claims *auth.Claims, method, path, action, orderIDRaw string, observedVersion *int, requestErr error) {
+	if requestErr == nil || s == nil || s.repo == nil || s.repo.DB() == nil || s.idGen == nil {
+		return
+	}
+	actorType, actorID := "unknown", uint64(0)
+	if claims != nil {
+		actorType = claims.AccountType
+		switch claims.AccountType {
+		case "merchant":
+			actorID, _ = parseID(claims.MerchantUserID)
+		case "admin":
+			actorID, _ = parseID(claims.AdminUserID)
+		case "rider":
+			actorID, _ = parseID(claims.RiderID)
+		case "customer":
+			actorID, _ = parseID(claims.CustomerID)
+		}
+	}
+	orderID, _ := parseID(orderIDRaw)
+	details := problem.FromError(requestErr)
+	auditCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	safe := map[string]string{
+		"route":      strings.TrimSpace(method + " " + path),
+		"error_code": details.ErrorCode,
+	}
+	if observedVersion != nil {
+		safe["order_version"] = strconv.Itoa(*observedVersion)
+	}
+	_ = s.repo.CreateAuditLog(auditCtx, s.repo.DB(), AuditLog{
+		ID:           s.idGen.Next(),
+		ActorType:    actorType,
+		ActorID:      actorID,
+		Action:       action,
+		ResourceType: "order",
+		ResourceID:   orderID,
+		AfterData:    jsonData(safe),
+		Result:       "failed",
+		RequestID:    requestctx.RequestIDPtr(auditCtx),
+		IPHash:       requestctx.IPHashPtr(auditCtx),
+		UserAgent:    requestctx.UserAgentPtr(auditCtx),
 	})
 }
 
@@ -801,6 +1024,19 @@ type merchantIdentity struct {
 	ShopIDs        []uint64
 }
 
+func merchantIdentityWithPermission(claims *auth.Claims, permission string) (merchantIdentity, error) {
+	identity, err := merchantIdentityFromClaims(claims)
+	if err != nil {
+		return merchantIdentity{}, err
+	}
+	for _, granted := range claims.Permissions {
+		if granted == permission {
+			return identity, nil
+		}
+	}
+	return merchantIdentity{}, problem.Forbidden("PERM_FORBIDDEN", "merchant permission required")
+}
+
 // merchantIdentityFromClaims 是登录 claims 和商户对象范围之间的边界。
 // 所有 store 操作在接触门店/订单/商品行之前都要先经过这里。
 func merchantIdentityFromClaims(claims *auth.Claims) (merchantIdentity, error) {
@@ -829,51 +1065,324 @@ func merchantIdentityFromClaims(claims *auth.Claims) (merchantIdentity, error) {
 	return merchantIdentity{MerchantUserID: merchantUserID, MerchantID: merchantID, ShopIDs: shopIDs}, nil
 }
 
-// storeOrderDTO 返回门店订单DTO。
-func storeOrderDTO(row Order, items []OrderItem) StoreOrderDTO {
-	dto := StoreOrderDTO{
-		ID:                idString(row.ID),
-		OrderNo:           row.OrderNo,
-		CustomerID:        idString(row.CustomerID),
-		MerchantID:        idString(row.MerchantID),
-		ShopID:            idString(row.ShopID),
-		Status:            row.Status,
-		PayStatus:         row.PayStatus,
-		DeliveryStatus:    row.DeliveryStatus,
-		GoodsAmount:       row.GoodsAmount,
-		DiscountAmount:    row.DiscountAmount,
-		DeliveryFeeAmount: row.DeliveryFeeAmount,
-		PayableAmount:     row.PayableAmount,
-		PaidAmount:        row.PaidAmount,
-		CreatedAt:         row.CreatedAt.Format(time.RFC3339),
+func storeOrderSummaryDTO(row Order, shop Shop, rows []OrderItem) StoreOrderSummaryDTO {
+	var itemSummary StoreOrderItemSummaryDTO
+	totalQuantity := 0
+	for index, row := range rows {
+		item := orderItemDTO(row)
+		totalQuantity += item.Quantity
+		if index == 0 {
+			itemSummary = StoreOrderItemSummaryDTO{
+				ProductID: item.ProductID,
+				Name:      item.Name,
+				Spec:      item.Spec,
+				ImageURL:  item.ImageURL,
+				Quantity:  item.Quantity,
+			}
+		}
 	}
-	for _, item := range items {
-		dto.Items = append(dto.Items, orderItemDTO(item))
+	address, contactMask := storedAddressSummary(row.AddressSnapshot)
+	shopName := strings.TrimSpace(shop.Name)
+	if shopName == "" {
+		shopName = "历史门店"
 	}
-	return dto
+	return StoreOrderSummaryDTO{
+		ID: idString(row.ID), OrderNo: row.OrderNo, ShopID: idString(row.ShopID),
+		Status: row.Status, PayStatus: row.PayStatus, DeliveryStatus: row.DeliveryStatus,
+		PayableAmount: row.PayableAmount,
+		ShopSummary:   StoreShopSummaryDTO{ID: idString(row.ShopID), Name: shopName},
+		ItemSummary:   itemSummary, ItemKindCount: len(rows), TotalQuantity: totalQuantity,
+		AddressSummary: address, CustomerContactMask: contactMask,
+		HasRemark: strings.TrimSpace(stringValue(row.Remark)) != "", Version: row.Version,
+		CreatedAt: row.CreatedAt.Format(time.RFC3339), UpdatedAt: row.UpdatedAt.Format(time.RFC3339), PaidAt: timeString(row.PaidAt),
+	}
 }
 
 // orderItemDTO 返回订单明细DTO。
 func orderItemDTO(row OrderItem) OrderItemDTO {
-	var snapshot map[string]string
-	_ = json.Unmarshal(row.ProductSnapshot, &snapshot)
+	snapshot := decodeOrderProductSnapshot(row.ProductSnapshot)
 	return OrderItemDTO{
 		ID:              idString(row.ID),
 		ShopProductID:   idString(row.ShopProductID),
 		ProductID:       idString(row.ProductID),
-		Name:            snapshot["name"],
-		BrandName:       snapshot["brand_name"],
-		Spec:            snapshot["spec"],
+		Name:            snapshot.Name,
+		BrandName:       snapshot.BrandName,
+		Spec:            snapshot.Spec,
+		ImageURL:        snapshot.ImageURL,
 		Quantity:        row.Quantity,
 		SalePriceAmount: row.SalePriceAmount,
 		TotalAmount:     row.TotalAmount,
 	}
 }
 
+type orderProductSnapshot struct {
+	Name          string `json:"name"`
+	BrandName     string `json:"brand_name"`
+	Spec          string `json:"spec"`
+	ImageURL      string `json:"image_url"`
+	AgeRestricted bool   `json:"age_restricted"`
+}
+
+func decodeOrderProductSnapshot(raw datatypes.JSON) orderProductSnapshot {
+	var snapshot orderProductSnapshot
+	_ = json.Unmarshal(raw, &snapshot)
+	return snapshot
+}
+
+func storeOrderDetailDTO(row Order, shop Shop, orderItems []OrderItem, payment Payment, hasPayment bool, delivery DeliveryOrder, hasDelivery bool, logs []OrderLog) StoreOrderDetailDTO {
+	items := make([]OrderItemDTO, 0, len(orderItems))
+	totalQuantity := 0
+	var itemSummary StoreOrderItemSummaryDTO
+	for index, orderItem := range orderItems {
+		item := orderItemDTO(orderItem)
+		items = append(items, item)
+		totalQuantity += item.Quantity
+		if index == 0 {
+			itemSummary = StoreOrderItemSummaryDTO{
+				ProductID: item.ProductID,
+				Name:      item.Name,
+				Spec:      item.Spec,
+				ImageURL:  item.ImageURL,
+				Quantity:  item.Quantity,
+			}
+		}
+	}
+	address, contactMask := storeAddressProjection(row.AddressSnapshot)
+	result := StoreOrderDetailDTO{
+		ID:                  idString(row.ID),
+		OrderNo:             row.OrderNo,
+		ShopID:              idString(row.ShopID),
+		Status:              row.Status,
+		PayStatus:           row.PayStatus,
+		DeliveryStatus:      row.DeliveryStatus,
+		PayableAmount:       row.PayableAmount,
+		ShopSummary:         StoreShopSummaryDTO{ID: idString(shop.ID), Name: shop.Name},
+		ItemSummary:         itemSummary,
+		ItemKindCount:       len(items),
+		TotalQuantity:       totalQuantity,
+		CreatedAt:           row.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:           row.UpdatedAt.Format(time.RFC3339),
+		Items:               items,
+		AddressSnapshot:     address,
+		Remark:              stringValue(row.Remark),
+		DeliveryPromise:     storeDeliveryPromiseProjection(row.DeliveryPromiseSnapshot),
+		ComplianceSummary:   storeComplianceProjection(row.ComplianceSnapshot, orderItems),
+		GoodsAmount:         row.GoodsAmount,
+		DiscountAmount:      row.DiscountAmount,
+		DeliveryFeeAmount:   row.DeliveryFeeAmount,
+		PaidAmount:          row.PaidAmount,
+		CancelSource:        stringValue(row.CancelSource),
+		CancelReasonCode:    stringValue(row.CancelReasonCode),
+		Version:             row.Version,
+		ExpiresAt:           timeString(row.ExpiresAt),
+		PaidAt:              timeString(row.PaidAt),
+		CancelledAt:         timeString(row.CancelledAt),
+		CompletedAt:         timeString(row.CompletedAt),
+		CustomerContactMask: contactMask,
+		RecentLogs:          storeOrderLogSummaries(logs),
+	}
+	if hasPayment {
+		result.PaymentSummary = &StorePaymentSummaryDTO{
+			PaymentNo: payment.PaymentNo, Status: payment.Status, Amount: payment.Amount,
+			Currency: payment.Currency, RefundedAmount: payment.RefundedAmount,
+			Channel: payment.Channel, Provider: payment.Provider,
+			ExpiresAt: timeString(payment.ExpiresAt), PaidAt: timeString(payment.PaidAt),
+		}
+	}
+	if hasDelivery {
+		pickupReadyStatus := delivery.PickupReadyStatus
+		if pickupReadyStatus == "" {
+			pickupReadyStatus = "waiting_store"
+			if row.Status == "ready_for_pickup" || row.Status == "delivering" || row.Status == "completed" {
+				pickupReadyStatus = "ready"
+			}
+		}
+		result.DeliverySummary = &StoreDeliverySummaryDTO{
+			DeliveryOrderID: idString(delivery.ID), RiderID: optionalIDString(delivery.RiderID),
+			Status: delivery.Status, PickupReadyStatus: pickupReadyStatus, AssignmentVersion: delivery.AssignmentVersion,
+		}
+	}
+	return result
+}
+
+type storedOrderAddressSnapshot struct {
+	ContactName      string `json:"contact_name"`
+	ContactPhone     string `json:"contact_phone"`
+	Province         string `json:"province"`
+	City             string `json:"city"`
+	CityCode         string `json:"city_code"`
+	District         string `json:"district"`
+	DistrictCode     string `json:"district_code"`
+	AddressDetail    string `json:"address_detail"`
+	Doorplate        string `json:"doorplate"`
+	FormattedAddress string `json:"formatted_address"`
+	AddressVersion   uint32 `json:"address_version"`
+}
+
+func storeAddressProjection(raw datatypes.JSON) (StoreOrderAddressSnapshotDTO, string) {
+	var stored storedOrderAddressSnapshot
+	_ = json.Unmarshal(raw, &stored)
+	quality := "legacy_incomplete"
+	if strings.TrimSpace(stored.CityCode) != "" && strings.TrimSpace(stored.FormattedAddress) != "" {
+		quality = "complete"
+	}
+	version := stored.AddressVersion
+	if version == 0 {
+		version = 1
+	}
+	return StoreOrderAddressSnapshotDTO{
+		SnapshotQuality: quality, ContactNameMask: maskContactName(stored.ContactName),
+		Province: stored.Province, City: stored.City, CityCode: optionalTrimmedString(stored.CityCode),
+		District: stored.District, DistrictCode: optionalTrimmedString(stored.DistrictCode),
+		AddressDetail: stored.AddressDetail, Doorplate: optionalTrimmedString(stored.Doorplate),
+		FormattedAddress: optionalTrimmedString(stored.FormattedAddress), AddressVersion: version,
+	}, maskContactPhone(stored.ContactPhone)
+}
+
+type storedDeliveryPromiseEnvelope struct {
+	SchemaVersion      uint32          `json:"schema_version"`
+	ServiceAreaVersion uint32          `json:"service_area_version"`
+	SelectionSource    string          `json:"selection_source"`
+	ResolvedAt         string          `json:"resolved_at"`
+	DeliveryPromise    json.RawMessage `json:"delivery_promise"`
+}
+
+func storeDeliveryPromiseProjection(raw datatypes.JSON) *StoreDeliveryPromiseDTO {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var envelope storedDeliveryPromiseEnvelope
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return nil
+	}
+	payload := []byte(raw)
+	if len(envelope.DeliveryPromise) > 0 && string(envelope.DeliveryPromise) != "null" {
+		payload = envelope.DeliveryPromise
+	}
+	var result StoreDeliveryPromiseDTO
+	if err := json.Unmarshal(payload, &result); err != nil {
+		return nil
+	}
+	if result.SchemaVersion == 0 {
+		result.SchemaVersion = envelope.SchemaVersion
+	}
+	if result.ServiceAreaVersion == 0 {
+		result.ServiceAreaVersion = envelope.ServiceAreaVersion
+	}
+	if result.SelectionSource == "" {
+		result.SelectionSource = envelope.SelectionSource
+	}
+	if result.ResolvedAt == "" {
+		result.ResolvedAt = envelope.ResolvedAt
+	}
+	switch result.RouteSource {
+	case "", "amap", "cache", "local_distance":
+	default:
+		result.RouteSource = ""
+	}
+	return &result
+}
+
+type storedComplianceSnapshot struct {
+	PolicyVersion               string            `json:"policy_version"`
+	Status                      string            `json:"status"`
+	AdultResult                 string            `json:"adult_result"`
+	VerificationLevel           string            `json:"verification_level"`
+	CheckedAt                   string            `json:"checked_at"`
+	WouldAllow                  bool              `json:"would_allow"`
+	AgeRestrictedShopProductIDs []json.RawMessage `json:"age_restricted_shop_product_ids"`
+}
+
+func storeComplianceProjection(raw datatypes.JSON, items []OrderItem) StoreComplianceSummaryDTO {
+	ageRestricted := false
+	for _, item := range items {
+		if decodeOrderProductSnapshot(item.ProductSnapshot).AgeRestricted {
+			ageRestricted = true
+			break
+		}
+	}
+	var stored storedComplianceSnapshot
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &stored)
+		ageRestricted = ageRestricted || len(stored.AgeRestrictedShopProductIDs) > 0
+	}
+	status := "not_required"
+	if ageRestricted {
+		status = "legacy_unknown"
+		if stored.Status == "verified" && stored.AdultResult == "adult" && stored.WouldAllow {
+			status = "verified"
+		}
+	}
+	return StoreComplianceSummaryDTO{
+		AgeRestricted: ageRestricted, Status: status, PolicyVersion: stored.PolicyVersion,
+		VerificationLevel: stored.VerificationLevel, CheckedAt: stored.CheckedAt,
+	}
+}
+
+func storeOrderLogSummaries(rows []OrderLog) []StoreOrderLogSummaryDTO {
+	result := make([]StoreOrderLogSummaryDTO, 0, len(rows))
+	for _, row := range rows {
+		result = append(result, StoreOrderLogSummaryDTO{
+			ID: idString(row.ID), Action: row.Action, ActorType: row.ActorType,
+			FromStatus: stringValue(row.FromStatus), ToStatus: stringValue(row.ToStatus),
+			CreatedAt: row.CreatedAt.Format(time.RFC3339),
+		})
+	}
+	return result
+}
+
+func maskContactName(value string) string {
+	runes := []rune(strings.TrimSpace(value))
+	if len(runes) == 0 {
+		return "*"
+	}
+	if len(runes) == 1 {
+		return "*"
+	}
+	return string(runes[0]) + strings.Repeat("*", len(runes)-1)
+}
+
+func maskContactPhone(value string) string {
+	runes := []rune(strings.TrimSpace(value))
+	switch {
+	case len(runes) >= 11:
+		return string(runes[:3]) + "****" + string(runes[len(runes)-4:])
+	case len(runes) >= 7:
+		return string(runes[:2]) + "****" + string(runes[len(runes)-2:])
+	case len(runes) >= 3:
+		return string(runes[:1]) + "*****" + string(runes[len(runes)-1:])
+	default:
+		return "*******"
+	}
+}
+
+func optionalTrimmedString(value string) *string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
+func optionalIDString(value *uint64) string {
+	if value == nil || *value == 0 {
+		return ""
+	}
+	return idString(*value)
+}
+
+func timeString(value *time.Time) string {
+	if value == nil {
+		return ""
+	}
+	return value.Format(time.RFC3339)
+}
+
 // shopProductDTO 返回门店商品DTO。
 func shopProductDTO(row ShopProductRow) ShopProductDTO {
 	return ShopProductDTO{
 		ID:                  idString(row.ID),
+		ShopProductID:       idString(row.ID),
 		MerchantID:          idString(row.MerchantID),
 		ShopID:              idString(row.ShopID),
 		ProductID:           idString(row.ProductID),
@@ -889,8 +1398,32 @@ func shopProductDTO(row ShopProductRow) ShopProductDTO {
 		AvailableQty:        row.AvailableQty,
 		ReservedQty:         row.ReservedQty,
 		LockedQty:           row.LockedQty,
+		TotalQty:            row.AvailableQty + row.ReservedQty + row.LockedQty,
+		LowStockThreshold:   row.LowStockThreshold,
+		LowStock:            row.AvailableQty <= row.LowStockThreshold,
+		Version:             row.Version,
+		UpdatedAt:           row.UpdatedAt.Format(time.RFC3339),
 		AgeRestricted:       row.AgeRestricted,
 	}
+}
+
+func storedAddressSummary(raw datatypes.JSON) (string, string) {
+	var stored storedOrderAddressSnapshot
+	_ = json.Unmarshal(raw, &stored)
+	address := strings.TrimSpace(stored.FormattedAddress)
+	if address == "" {
+		address = strings.TrimSpace(stored.AddressDetail)
+	}
+	runes := []rune(address)
+	if len(runes) > 8 {
+		address = string(runes[:8]) + "***"
+	} else if address != "" {
+		address += "***"
+	}
+	if district := strings.TrimSpace(stored.District); district != "" && !strings.HasPrefix(address, district) {
+		address = district + " " + address
+	}
+	return strings.TrimSpace(address), maskContactPhone(stored.ContactPhone)
 }
 
 // pickupSnapshot 返回pickup 快照。

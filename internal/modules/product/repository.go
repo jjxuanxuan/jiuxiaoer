@@ -2,6 +2,11 @@ package product
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
+	"hash"
+	"time"
 
 	"gorm.io/gorm"
 
@@ -15,6 +20,73 @@ type Repository struct {
 // NewRepository 创建并初始化数据仓储。
 func NewRepository(db *gorm.DB) *Repository {
 	return &Repository{db: db}
+}
+
+// CategoryCatalogRevision derives a stable revision from every category fact
+// that can affect the public response. It deliberately includes inactive and
+// soft-deleted rows, so INSERT/UPDATE/status/soft-delete/hard-delete mutations
+// switch the cache key even when the writer is an operational job that cannot
+// call application-level cache invalidation.
+func (r *Repository) CategoryCatalogRevision(ctx context.Context) (string, error) {
+	type revisionRow struct {
+		ID            uint64
+		ParentID      *uint64
+		Name          string
+		SortOrder     int64
+		Status        string
+		AgeRestricted bool
+		DeletedAt     *time.Time
+	}
+	var rows []revisionRow
+	err := r.db.WithContext(ctx).
+		Table("categories").
+		Select("id, parent_id, name, sort_order, status, age_restricted, deleted_at").
+		Order("id ASC").
+		Scan(&rows).Error
+	if err != nil {
+		return "", err
+	}
+
+	digest := sha256.New()
+	for _, row := range rows {
+		writeRevisionUint64(digest, row.ID)
+		writeRevisionOptionalUint64(digest, row.ParentID)
+		writeRevisionString(digest, row.Name)
+		writeRevisionUint64(digest, uint64(row.SortOrder))
+		writeRevisionString(digest, row.Status)
+		if row.AgeRestricted {
+			writeRevisionUint64(digest, 1)
+		} else {
+			writeRevisionUint64(digest, 0)
+		}
+		if row.DeletedAt == nil {
+			writeRevisionUint64(digest, 0)
+		} else {
+			writeRevisionUint64(digest, 1)
+			writeRevisionUint64(digest, uint64(row.DeletedAt.UTC().UnixMicro()))
+		}
+	}
+	return hex.EncodeToString(digest.Sum(nil)), nil
+}
+
+func writeRevisionOptionalUint64(target hash.Hash, value *uint64) {
+	if value == nil {
+		writeRevisionUint64(target, 0)
+		return
+	}
+	writeRevisionUint64(target, 1)
+	writeRevisionUint64(target, *value)
+}
+
+func writeRevisionString(target hash.Hash, value string) {
+	writeRevisionUint64(target, uint64(len(value)))
+	_, _ = target.Write([]byte(value))
+}
+
+func writeRevisionUint64(target hash.Hash, value uint64) {
+	var data [8]byte
+	binary.BigEndian.PutUint64(data[:], value)
+	_, _ = target.Write(data[:])
 }
 
 // ListCategories 查询Categories列表。
@@ -39,6 +111,7 @@ func (r *Repository) ListProducts(ctx context.Context, query ListQuery) ([]Produ
 			p.category_id,
 			sp.shop_id,
 			sp.id AS shop_product_id,
+			sp.sort_order,
 			p.name,
 			p.brand_name,
 			p.spec,
@@ -47,11 +120,14 @@ func (r *Repository) ListProducts(ctx context.Context, query ListQuery) ([]Produ
 			sp.sale_price_amount,
 			p.original_price_amount,
 			(p.age_restricted OR c.age_restricted) AS age_restricted,
-			sp.status,
-			ps.available_qty
+			p.status,
+			sp.status AS shop_product_status,
+			s.status AS shop_status,
+			s.business_status,
+			COALESCE(ps.available_qty, 0) AS available_qty
 		`).
 		Joins("JOIN products p ON p.id = sp.product_id AND p.deleted_at IS NULL").
-		Joins("JOIN categories c ON c.id = p.category_id AND c.deleted_at IS NULL").
+		Joins("JOIN categories c ON c.id = p.category_id AND c.status = 'active' AND c.deleted_at IS NULL").
 		Joins("JOIN shops s ON s.id = sp.shop_id AND s.deleted_at IS NULL").
 		Joins("LEFT JOIN product_stocks ps ON ps.shop_product_id = sp.id AND ps.deleted_at IS NULL").
 		Where("sp.deleted_at IS NULL AND sp.status = 'on_sale' AND p.status = 'on_sale' AND s.status = 'active' AND s.business_status = 'open'")
@@ -63,6 +139,13 @@ func (r *Repository) ListProducts(ctx context.Context, query ListQuery) ([]Produ
 	if query.Keyword != "" {
 		db = db.Where("p.name LIKE ? OR p.brand_name LIKE ?", "%"+query.Keyword+"%", "%"+query.Keyword+"%")
 	}
+	if query.OrderBy == "" {
+		var err error
+		db, err = pagination.ApplyIntIDCursor(db, query.Query, "sp.sort_order", "sp.id", "asc")
+		if err != nil {
+			return nil, err
+		}
+	}
 	db, err := pagination.ApplyFilter(db, query.Filter, productFilterColumns)
 	if err != nil {
 		return nil, err
@@ -73,7 +156,7 @@ func (r *Repository) ListProducts(ctx context.Context, query ListQuery) ([]Produ
 	}
 
 	var rows []ProductRow
-	err = db.Offset(query.Offset).Limit(query.PageSize + 1).Scan(&rows).Error
+	err = pagination.OffsetDB(db, query.Query).Limit(query.PageSize + 1).Scan(&rows).Error
 	return rows, err
 }
 
@@ -83,12 +166,19 @@ func (r *Repository) listGenericProducts(ctx context.Context, query ListQuery) (
 		p.id, p.category_id, p.name, p.brand_name, p.spec, p.image_url,
 		p.description, p.original_price_amount, p.status,
 		(p.age_restricted OR c.age_restricted) AS age_restricted
-	`).Joins("JOIN categories c ON c.id = p.category_id AND c.deleted_at IS NULL").Where("p.status = 'on_sale' AND p.deleted_at IS NULL")
+	`).Joins("JOIN categories c ON c.id = p.category_id AND c.status = 'active' AND c.deleted_at IS NULL").Where("p.status = 'on_sale' AND p.deleted_at IS NULL")
 	if query.CategoryID != "" {
 		db = db.Where("p.category_id = ?", query.CategoryID)
 	}
 	if query.Keyword != "" {
 		db = db.Where("p.name LIKE ? OR p.brand_name LIKE ?", "%"+query.Keyword+"%", "%"+query.Keyword+"%")
+	}
+	if query.OrderBy == "" {
+		var err error
+		db, err = pagination.ApplyIDCursor(db, query.Query, "p.id", "asc")
+		if err != nil {
+			return nil, err
+		}
 	}
 	db, err := pagination.ApplyFilter(db, query.Filter, genericProductFilterColumns)
 	if err != nil {
@@ -99,19 +189,39 @@ func (r *Repository) listGenericProducts(ctx context.Context, query ListQuery) (
 		return nil, err
 	}
 	var rows []ProductRow
-	err = db.Offset(query.Offset).Limit(query.PageSize + 1).Scan(&rows).Error
+	err = pagination.OffsetDB(db, query.Query).Limit(query.PageSize + 1).Scan(&rows).Error
 	return rows, err
 }
 
 // GetPublicProduct 获取公开数据商品。
 func (r *Repository) GetPublicProduct(ctx context.Context, productID, shopID uint64) (ProductRow, error) {
 	if shopID == 0 {
-		var product Product
-		err := r.db.WithContext(ctx).Where("id = ? AND status = 'on_sale' AND deleted_at IS NULL", productID).Take(&product).Error
+		var row ProductRow
+		err := r.db.WithContext(ctx).
+			Table("products p").
+			Select(`
+				p.id,
+				p.category_id,
+				p.name,
+				p.brand_name,
+				p.spec,
+				p.image_url,
+				p.description,
+				p.original_price_amount,
+				p.status,
+				(p.age_restricted OR c.age_restricted) AS age_restricted
+			`).
+			Joins("JOIN categories c ON c.id = p.category_id AND c.status = 'active' AND c.deleted_at IS NULL").
+			Where("p.id = ? AND p.status = 'on_sale' AND p.deleted_at IS NULL", productID).
+			Limit(1).
+			Scan(&row).Error
 		if err != nil {
 			return ProductRow{}, err
 		}
-		return ProductRow{ID: product.ID, CategoryID: product.CategoryID, Name: product.Name, BrandName: product.BrandName, Spec: product.Spec, ImageURL: product.ImageURL, Description: product.Description, OriginalPriceAmount: product.OriginalPriceAmount, Status: product.Status}, nil
+		if row.ID == 0 {
+			return ProductRow{}, gorm.ErrRecordNotFound
+		}
+		return row, nil
 	}
 	var row ProductRow
 	err := r.db.WithContext(ctx).
@@ -128,13 +238,18 @@ func (r *Repository) GetPublicProduct(ctx context.Context, productID, shopID uin
 			p.description,
 			sp.sale_price_amount,
 			p.original_price_amount,
-			sp.status,
-			ps.available_qty
+			p.status,
+			sp.status AS shop_product_status,
+			s.status AS shop_status,
+			s.business_status,
+			COALESCE(ps.available_qty, 0) AS available_qty,
+			(p.age_restricted OR c.age_restricted) AS age_restricted
 		`).
 		Joins("JOIN products p ON p.id = sp.product_id AND p.deleted_at IS NULL").
+		Joins("JOIN categories c ON c.id = p.category_id AND c.status = 'active' AND c.deleted_at IS NULL").
 		Joins("JOIN shops s ON s.id = sp.shop_id AND s.deleted_at IS NULL").
 		Joins("LEFT JOIN product_stocks ps ON ps.shop_product_id = sp.id AND ps.deleted_at IS NULL").
-		Where("p.id = ? AND sp.shop_id = ? AND sp.deleted_at IS NULL AND sp.status = 'on_sale' AND p.status = 'on_sale' AND s.status = 'active' AND s.business_status = 'open'", productID, shopID).
+		Where("p.id = ? AND sp.shop_id = ? AND sp.deleted_at IS NULL", productID, shopID).
 		Order("sp.sort_order ASC, sp.id ASC").
 		Limit(1).
 		Scan(&row).Error

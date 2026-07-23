@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"time"
 
@@ -17,6 +18,23 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/pkg/idempotency"
 	"jiuxiaoer-admin/backend-go/internal/pkg/problem"
 )
+
+const (
+	heartbeatLocationAnomalyAction = "rider.location.anomaly"
+	heartbeatRateLimitedAction     = "rider.heartbeat.rate_limited"
+	heartbeatRejectedAction        = "rider.heartbeat.rejected"
+)
+
+// heartbeatAuditSpec is deliberately made only from server-owned constants.
+// Never add raw request values to it: heartbeat requests contain precise
+// coordinates and a device identifier that are forbidden in audit_logs.
+type heartbeatAuditSpec struct {
+	Action             string
+	ErrorCode          string
+	ReasonCode         string
+	RequestStage       string
+	RateLimitDimension string
+}
 
 // UpdateWorkStatus 更新Work 状态。
 func (s *Service) UpdateWorkStatus(ctx context.Context, claims *auth.Claims, method, path, key string, req WorkStatusReq) (WorkStatusDTO, error) {
@@ -119,23 +137,55 @@ func (s *Service) UpdateWorkStatus(ctx context.Context, claims *auth.Claims, met
 func (s *Service) Heartbeat(ctx context.Context, claims *auth.Claims, req HeartbeatReq, clientIP string) (HeartbeatDTO, error) {
 	riderID, err := riderActor(claims, "rider_location:update")
 	if err != nil {
+		s.createHeartbeatFailureAudit(ctx, claims, heartbeatAuditSpec{
+			Action: heartbeatRejectedAction, ErrorCode: "PERM_FORBIDDEN",
+			ReasonCode: heartbeatAuthorizationReason(claims), RequestStage: "authorization",
+		})
 		return HeartbeatDTO{}, err
 	}
-	if req.Latitude == nil || req.Longitude == nil || req.AccuracyM == nil || *req.Latitude < -90 || *req.Latitude > 90 || *req.Longitude < -180 || *req.Longitude > 180 || *req.AccuracyM < 0 || *req.AccuracyM > 1000 {
-		return HeartbeatDTO{}, problem.InvalidArgument("VALIDATION_FAILED", "valid latitude, longitude, and accuracy_m are required")
+	if reasonCode := heartbeatLocationInputReason(req); reasonCode != "" {
+		requestErr := problem.InvalidArgument("VALIDATION_FAILED", "valid latitude, longitude, and accuracy_m are required")
+		s.createHeartbeatFailureAudit(ctx, claims, heartbeatAuditSpec{
+			Action: heartbeatLocationAnomalyAction, ErrorCode: requestErr.ErrorCode,
+			ReasonCode: reasonCode, RequestStage: "location_validation",
+		})
+		return HeartbeatDTO{}, requestErr
 	}
 	latitude, longitude, normalizeErr := coordinate.Normalize(*req.Latitude, *req.Longitude, req.CoordinateSystem)
 	if normalizeErr != nil {
-		return HeartbeatDTO{}, problem.InvalidArgument("COORDINATE_INVALID", "coordinate is invalid")
+		requestErr := problem.InvalidArgument("COORDINATE_INVALID", "coordinate is invalid")
+		s.createHeartbeatFailureAudit(ctx, claims, heartbeatAuditSpec{
+			Action: heartbeatLocationAnomalyAction, ErrorCode: requestErr.ErrorCode,
+			ReasonCode: "coordinate_normalization_failed", RequestStage: "location_validation",
+		})
+		return HeartbeatDTO{}, requestErr
 	}
 	req.Latitude, req.Longitude, req.CoordinateSystem = &latitude, &longitude, coordinate.GCJ02
 	capturedAt, err := time.Parse(time.RFC3339Nano, req.CapturedAt)
 	if err != nil {
-		return HeartbeatDTO{}, problem.InvalidArgument("VALIDATION_FAILED", "captured_at must be RFC3339")
+		requestErr := problem.InvalidArgument("VALIDATION_FAILED", "captured_at must be RFC3339")
+		s.createHeartbeatFailureAudit(ctx, claims, heartbeatAuditSpec{
+			Action: heartbeatLocationAnomalyAction, ErrorCode: requestErr.ErrorCode,
+			ReasonCode: "captured_at_invalid", RequestStage: "location_validation",
+		})
+		return HeartbeatDTO{}, requestErr
 	}
 	now := time.Now()
-	if capturedAt.Before(now.Add(-5*time.Minute)) || capturedAt.After(now.Add(5*time.Minute)) {
-		return HeartbeatDTO{}, problem.InvalidArgument("VALIDATION_FAILED", "captured_at differs from server time by more than five minutes")
+	if capturedAt.Before(now.Add(-5 * time.Minute)) {
+		requestErr := problem.InvalidArgument("VALIDATION_FAILED", "captured_at differs from server time by more than five minutes")
+		s.createHeartbeatFailureAudit(ctx, claims, heartbeatAuditSpec{
+			Action: heartbeatLocationAnomalyAction, ErrorCode: requestErr.ErrorCode,
+			ReasonCode: "captured_at_too_old", RequestStage: "location_validation",
+		})
+		return HeartbeatDTO{}, requestErr
+	}
+	if capturedAt.After(now.Add(5 * time.Minute)) {
+		requestErr := problem.InvalidArgument("VALIDATION_FAILED", "captured_at differs from server time by more than five minutes")
+		s.createHeartbeatFailureAudit(ctx, claims, heartbeatAuditSpec{
+			Action: heartbeatLocationAnomalyAction, ErrorCode: requestErr.ErrorCode,
+			ReasonCode: "captured_at_in_future", RequestStage: "location_validation",
+		})
+		return HeartbeatDTO{}, requestErr
 	}
 	deviceHash := fmt.Sprintf("%x", sha256.Sum256([]byte(req.DeviceID)))
 	cachedSequence := uint64(0)
@@ -152,15 +202,30 @@ func (s *Service) Heartbeat(ctx context.Context, claims *auth.Claims, req Heartb
 		}
 		if !(cachedSameDevice && cachedSequence >= req.Sequence) {
 			if allowed, rateErr := s.allowFixedWindow(ctx, fmt.Sprintf("dispatch:rider:heartbeat-limit:%d", riderID), 15*time.Second, 5); rateErr == nil && !allowed {
-				return HeartbeatDTO{}, rateLimited("heartbeat rate exceeds the allowed burst", 15*time.Second)
+				requestErr := rateLimited("heartbeat rate exceeds the allowed burst", 15*time.Second)
+				s.createHeartbeatFailureAudit(ctx, claims, heartbeatAuditSpec{
+					Action: heartbeatRateLimitedAction, ErrorCode: requestErr.ErrorCode,
+					ReasonCode: "rider_burst_limit", RequestStage: "abuse_protection", RateLimitDimension: "rider",
+				})
+				return HeartbeatDTO{}, requestErr
 			}
 			if allowed, rateErr := s.allowFixedWindow(ctx, "dispatch:device:heartbeat-limit:"+deviceHash, 15*time.Second, 5); rateErr == nil && !allowed {
-				return HeartbeatDTO{}, rateLimited("device heartbeat rate exceeds the allowed burst", 15*time.Second)
+				requestErr := rateLimited("device heartbeat rate exceeds the allowed burst", 15*time.Second)
+				s.createHeartbeatFailureAudit(ctx, claims, heartbeatAuditSpec{
+					Action: heartbeatRateLimitedAction, ErrorCode: requestErr.ErrorCode,
+					ReasonCode: "device_burst_limit", RequestStage: "abuse_protection", RateLimitDimension: "device",
+				})
+				return HeartbeatDTO{}, requestErr
 			}
 			if clientIP != "" {
 				ipHash := fmt.Sprintf("%x", sha256.Sum256([]byte(clientIP)))
 				if allowed, rateErr := s.allowFixedWindow(ctx, "dispatch:ip:heartbeat-limit:"+ipHash, time.Second, 200); rateErr == nil && !allowed {
-					return HeartbeatDTO{}, rateLimited("heartbeat source rate exceeds the allowed limit", time.Second)
+					requestErr := rateLimited("heartbeat source rate exceeds the allowed limit", time.Second)
+					s.createHeartbeatFailureAudit(ctx, claims, heartbeatAuditSpec{
+						Action: heartbeatRateLimitedAction, ErrorCode: requestErr.ErrorCode,
+						ReasonCode: "ip_source_limit", RequestStage: "abuse_protection", RateLimitDimension: "ip",
+					})
+					return HeartbeatDTO{}, requestErr
 				}
 			}
 		}
@@ -219,6 +284,15 @@ func (s *Service) Heartbeat(ctx context.Context, claims *auth.Claims, req Heartb
 		return nil
 	})
 	if err != nil {
+		details := problem.FromError(err)
+		reasonCode := "persistence_failed"
+		if details.ErrorCode == "RIDER_UNAVAILABLE" {
+			reasonCode = "rider_unavailable"
+		}
+		s.createHeartbeatFailureAudit(ctx, claims, heartbeatAuditSpec{
+			Action: heartbeatRejectedAction, ErrorCode: details.ErrorCode,
+			ReasonCode: reasonCode, RequestStage: "eligibility",
+		})
 		return HeartbeatDTO{}, err
 	}
 	ttl := 2 * time.Duration(defaultPolicySnapshot().HeartbeatFreshSeconds) * time.Second
@@ -226,6 +300,37 @@ func (s *Service) Heartbeat(ctx context.Context, claims *auth.Claims, req Heartb
 		s.syncHeartbeatCache(ctx, riderID, workStatus, req, capturedAt, ttl)
 	}
 	return HeartbeatDTO{ServerTime: now.Format(time.RFC3339Nano), AcceptedSequence: accepted, PresenceExpiresAt: now.Add(ttl).Format(time.RFC3339Nano), Persisted: persisted, CoordinateSystem: coordinate.GCJ02}, nil
+}
+
+func heartbeatLocationInputReason(req HeartbeatReq) string {
+	if req.Latitude == nil || req.Longitude == nil || req.AccuracyM == nil {
+		return "location_fields_missing"
+	}
+	if math.IsNaN(*req.Latitude) || math.IsInf(*req.Latitude, 0) || *req.Latitude < -90 || *req.Latitude > 90 {
+		return "latitude_out_of_range"
+	}
+	if math.IsNaN(*req.Longitude) || math.IsInf(*req.Longitude, 0) || *req.Longitude < -180 || *req.Longitude > 180 {
+		return "longitude_out_of_range"
+	}
+	if math.IsNaN(*req.AccuracyM) || math.IsInf(*req.AccuracyM, 0) || *req.AccuracyM < 0 || *req.AccuracyM > 1000 {
+		return "accuracy_out_of_range"
+	}
+	return ""
+}
+
+func heartbeatAuthorizationReason(claims *auth.Claims) string {
+	if claims == nil || claims.AccountType != "rider" {
+		return "rider_account_required"
+	}
+	for _, permission := range claims.Permissions {
+		if permission == "rider_location:update" {
+			if _, err := parseID(claims.RiderID); err != nil {
+				return "rider_identity_invalid"
+			}
+			return "authorization_rejected"
+		}
+	}
+	return "location_permission_missing"
 }
 
 // heartbeatSequence 返回heartbeat 序列。
@@ -325,7 +430,7 @@ func riderActor(claims *auth.Claims, permission string) (uint64, error) {
 	}
 	allowed := false
 	for _, item := range claims.Permissions {
-		if item == permission || item == "delivery:update_status" || item == "delivery:accept" || item == "delivery:list" {
+		if item == permission {
 			allowed = true
 			break
 		}

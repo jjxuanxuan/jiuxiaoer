@@ -1,13 +1,16 @@
 package pagination
 
 import (
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -65,15 +68,19 @@ type Query struct {
 	Filter    string
 	Offset    int
 	TokenHash string
+	Cursor    []string
 }
 
 type pageCursor struct {
-	Offset    int    `json:"offset"`
-	QueryHash string `json:"query_hash"`
+	Version   uint8    `json:"version"`
+	Offset    int      `json:"offset"`
+	QueryHash string   `json:"query_hash"`
+	After     []string `json:"after,omitempty"`
+	IssuedAt  int64    `json:"issued_at"`
 }
 
 // FromGin 解析列表接口统一使用的分页参数。
-func FromGin(c *gin.Context) (Query, error) {
+func FromGin(c *gin.Context, scope ...string) (Query, error) {
 	pageSize := DefaultPageSize
 	if raw := c.Query("page_size"); raw != "" {
 		value, err := strconv.Atoi(raw)
@@ -92,8 +99,8 @@ func FromGin(c *gin.Context) (Query, error) {
 		return Query{}, err
 	}
 
-	tokenHash := queryFingerprint(c)
-	offset, err := decodePageToken(c.Query("page_token"), tokenHash)
+	tokenHash := queryFingerprint(c, scope)
+	cursor, err := decodePageToken(c.Query("page_token"), tokenHash)
 	if err != nil {
 		return Query{}, err
 	}
@@ -102,39 +109,168 @@ func FromGin(c *gin.Context) (Query, error) {
 		PageToken: c.Query("page_token"),
 		OrderBy:   orderBy,
 		Filter:    filter,
-		Offset:    offset,
+		Offset:    cursor.Offset,
 		TokenHash: tokenHash,
+		Cursor:    cursor.After,
 	}, nil
 }
 
 // NextPageToken 返回绑定当前完整查询参数的分页游标。
 func NextPageToken(query Query) string {
-	payload, _ := json.Marshal(pageCursor{Offset: query.Offset + query.PageSize, QueryHash: query.TokenHash})
-	return base64.RawURLEncoding.EncodeToString(payload)
+	return nextPageToken(query, nil)
+}
+
+// NextPageTokenWithCursor creates a signed keyset cursor. Repositories using
+// this form must apply the matching cursor predicate instead of Offset.
+func NextPageTokenWithCursor(query Query, after ...string) string {
+	return nextPageToken(query, after)
+}
+
+func nextPageToken(query Query, after []string) string {
+	payload, _ := json.Marshal(pageCursor{Version: 1, Offset: query.Offset + query.PageSize, QueryHash: query.TokenHash, After: after, IssuedAt: time.Now().Unix()})
+	encoded := base64.RawURLEncoding.EncodeToString(payload)
+	signature := hmac.New(sha256.New, pageTokenSigningKey())
+	_, _ = signature.Write([]byte(encoded))
+	return encoded + "." + base64.RawURLEncoding.EncodeToString(signature.Sum(nil))
 }
 
 // queryFingerprint 查询指纹。
-func queryFingerprint(c *gin.Context) string {
+func queryFingerprint(c *gin.Context, scope []string) string {
 	values := c.Request.URL.Query()
 	values.Del("page_token")
-	sum := sha256.Sum256([]byte(values.Encode()))
+	path := c.FullPath()
+	if path == "" {
+		path = c.Request.URL.Path
+	}
+	value := strings.Join([]string{c.Request.Method, path, values.Encode(), strings.Join(scope, "\x00")}, "\n")
+	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])
 }
 
 // decodePageToken 解码分页令牌。
-func decodePageToken(raw string, expectedHash string) (int, error) {
+func decodePageToken(raw string, expectedHash string) (pageCursor, error) {
 	if raw == "" {
-		return 0, nil
+		return pageCursor{}, nil
 	}
-	payload, err := base64.RawURLEncoding.DecodeString(raw)
+	parts := strings.Split(raw, ".")
+	if len(parts) != 2 {
+		return pageCursor{}, invalidPageToken("invalid page_token")
+	}
+	wantMAC := hmac.New(sha256.New, pageTokenSigningKey())
+	_, _ = wantMAC.Write([]byte(parts[0]))
+	providedMAC, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil || !hmac.Equal(providedMAC, wantMAC.Sum(nil)) {
+		return pageCursor{}, invalidPageToken("invalid page_token signature")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
-		return 0, problem.InvalidArgument("VALIDATION_INVALID_QUERY", "invalid page_token")
+		return pageCursor{}, invalidPageToken("invalid page_token")
 	}
 	var cursor pageCursor
-	if err := json.Unmarshal(payload, &cursor); err != nil || cursor.Offset < 0 || cursor.QueryHash != expectedHash {
-		return 0, problem.InvalidArgument("VALIDATION_INVALID_QUERY", "page_token does not match query")
+	now := time.Now().Unix()
+	if err := json.Unmarshal(payload, &cursor); err != nil || cursor.Version != 1 || cursor.Offset < 0 || cursor.QueryHash != expectedHash || cursor.IssuedAt > now+300 || cursor.IssuedAt < now-24*60*60 {
+		return pageCursor{}, invalidPageToken("page_token does not match query or has expired")
 	}
-	return cursor.Offset, nil
+	return cursor, nil
+}
+
+func invalidPageToken(detail string) error {
+	return problem.InvalidArgument("PAGE_TOKEN_INVALID", detail)
+}
+
+func pageTokenSigningKey() []byte {
+	secret := os.Getenv("JXE_JWT_ACCESS_SECRET")
+	if secret == "" {
+		secret = "local_access_secret_change_me"
+	}
+	derived := sha256.Sum256([]byte("jiuxiaoer.pagination.v1\x00" + secret))
+	return derived[:]
+}
+
+// ApplyTimeIDCursor applies a stable two-column keyset boundary. The token is
+// generated from the final row's RFC3339Nano timestamp and unsigned ID.
+func ApplyTimeIDCursor(db *gorm.DB, query Query, timeColumn, idColumn, direction string) (*gorm.DB, error) {
+	if len(query.Cursor) == 0 {
+		return db, nil
+	}
+	if len(query.Cursor) != 2 {
+		return nil, invalidPageToken("invalid keyset cursor")
+	}
+	value, err := time.Parse(time.RFC3339Nano, query.Cursor[0])
+	if err != nil {
+		return nil, invalidPageToken("invalid cursor timestamp")
+	}
+	id, err := strconv.ParseUint(query.Cursor[1], 10, 64)
+	if err != nil || id == 0 {
+		return nil, invalidPageToken("invalid cursor id")
+	}
+	switch strings.ToLower(direction) {
+	case "desc":
+		return db.Where("("+timeColumn+" < ?) OR ("+timeColumn+" = ? AND "+idColumn+" < ?)", value, value, id), nil
+	case "asc":
+		return db.Where("("+timeColumn+" > ?) OR ("+timeColumn+" = ? AND "+idColumn+" > ?)", value, value, id), nil
+	default:
+		return nil, problem.Internal("invalid keyset direction")
+	}
+}
+
+// ApplyIntIDCursor applies a stable numeric business-sort plus ID boundary.
+func ApplyIntIDCursor(db *gorm.DB, query Query, valueColumn, idColumn, direction string) (*gorm.DB, error) {
+	if len(query.Cursor) == 0 {
+		return db, nil
+	}
+	if len(query.Cursor) != 2 {
+		return nil, invalidPageToken("invalid keyset cursor")
+	}
+	value, err := strconv.ParseInt(query.Cursor[0], 10, 64)
+	if err != nil {
+		return nil, invalidPageToken("invalid cursor value")
+	}
+	id, err := strconv.ParseUint(query.Cursor[1], 10, 64)
+	if err != nil || id == 0 {
+		return nil, invalidPageToken("invalid cursor id")
+	}
+	switch strings.ToLower(direction) {
+	case "desc":
+		return db.Where("("+valueColumn+" < ?) OR ("+valueColumn+" = ? AND "+idColumn+" < ?)", value, value, id), nil
+	case "asc":
+		return db.Where("("+valueColumn+" > ?) OR ("+valueColumn+" = ? AND "+idColumn+" > ?)", value, value, id), nil
+	default:
+		return nil, problem.Internal("invalid keyset direction")
+	}
+}
+
+// ApplyIDCursor applies a stable single-ID boundary for lists ordered only by
+// their immutable primary key.
+func ApplyIDCursor(db *gorm.DB, query Query, idColumn, direction string) (*gorm.DB, error) {
+	if len(query.Cursor) == 0 {
+		return db, nil
+	}
+	if len(query.Cursor) != 1 {
+		return nil, invalidPageToken("invalid id cursor")
+	}
+	id, err := strconv.ParseUint(query.Cursor[0], 10, 64)
+	if err != nil || id == 0 {
+		return nil, invalidPageToken("invalid cursor id")
+	}
+	switch strings.ToLower(direction) {
+	case "desc":
+		return db.Where(idColumn+" < ?", id), nil
+	case "asc":
+		return db.Where(idColumn+" > ?", id), nil
+	default:
+		return nil, problem.Internal("invalid keyset direction")
+	}
+}
+
+// OffsetDB preserves compatibility for custom sorts that have not yet been
+// migrated to keyset pagination. Keyset-backed queries deliberately ignore
+// the legacy offset embedded for old callers.
+func OffsetDB(db *gorm.DB, query Query) *gorm.DB {
+	if len(query.Cursor) != 0 {
+		return db
+	}
+	return db.Offset(query.Offset)
 }
 
 // validateOrderBy 校验订单 By是否合法。

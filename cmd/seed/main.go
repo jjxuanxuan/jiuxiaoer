@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -31,6 +32,16 @@ type permissionSeed struct {
 	Description string
 }
 
+type permissionCatalogRow struct {
+	ID   uint64
+	Code string
+}
+
+type rolePermissionAssignment struct {
+	roleID        uint64
+	permissionIDs []uint64
+}
+
 type categorySeed struct {
 	ID   uint64
 	Name string
@@ -52,6 +63,9 @@ const (
 	roleOperation       uint64 = 1003
 	roleFinance         uint64 = 1004
 	roleCustomerService uint64 = 1005
+	roleMerchantOwner   uint64 = 1006
+	roleMerchantOrder   uint64 = 1007
+	roleMerchantStock   uint64 = 1008
 
 	accountAdmin    uint64 = 3001
 	accountMerchant uint64 = 3002
@@ -71,6 +85,9 @@ var roles = []roleSeed{
 	{ID: roleOperation, Code: "operation", Name: "运营", Scope: "scoped"},
 	{ID: roleFinance, Code: "finance", Name: "财务", Scope: "readonly"},
 	{ID: roleCustomerService, Code: "customer_service", Name: "客服", Scope: "scoped"},
+	{ID: roleMerchantOwner, Code: "merchant_owner", Name: "商家负责人", Scope: "merchant"},
+	{ID: roleMerchantOrder, Code: "merchant_order_operator", Name: "商家接单员", Scope: "merchant"},
+	{ID: roleMerchantStock, Code: "merchant_inventory_clerk", Name: "商家库存员", Scope: "merchant"},
 }
 
 var permissions = []permissionSeed{
@@ -205,6 +222,20 @@ var permissions = []permissionSeed{
 	{2129, "delivery_return:approve", "delivery_return", "approve", "运营批准配送退回与退款"},
 	{2130, "delivery_return:cancel", "delivery_return", "cancel", "运营撤销配送退回"},
 	{2131, "delivery_return:audit", "delivery_return", "audit", "审计配送退回资金与库存动作"},
+	{2132, "cart:view", "cart", "view", "查看本人购物车"},
+	{2133, "cart:update", "cart", "update", "维护本人购物车"},
+	{2134, "order:create", "order", "create", "创建本人订单"},
+	{2135, "payment:create", "payment", "create", "创建本人订单支付"},
+	{2136, "payment:view", "payment", "view", "查看本人订单支付"},
+	{2137, "delivery_verification:view_customer", "delivery_verification", "view_customer", "查看本人订单送达码"},
+	{2138, "store_order:view", "store_order", "view", "查看授权门店订单详情"},
+	{2139, "print_setting:test_shop", "print_setting", "test_shop", "测试授权门店打印设备"},
+	{2140, "delivery:view_own", "delivery", "view_own", "查看本人配送详情"},
+	{2141, "delivery:pickup", "delivery", "pickup", "核销本人配送取货"},
+	{2142, "delivery:complete", "delivery", "complete", "核销本人配送送达"},
+	{2143, "delivery:force_complete_request", "delivery", "force_complete_request", "发起强制完成配送申请"},
+	{2144, "delivery:force_complete_approve", "delivery", "force_complete_approve", "复核强制完成配送申请"},
+	{2145, "merchant_user:update_role", "merchant_user", "update_role", "调整商家用户角色"},
 }
 
 var categories = []categorySeed{
@@ -295,6 +326,16 @@ func seedCP1(tx *gorm.DB, cfg config.Config) error {
 		return err
 	}
 	if err := tx.Exec(`
+		INSERT INTO print_templates
+			(id,template_code,version,paper_width_mm,payload_schema_version,template_body,status,created_by,published_by,published_at)
+		VALUES
+			(9001,'store_receipt','v1',58,'receipt.v1','{{order_no}}\n{{items}}\n合计 {{payable_amount}}','published',3101,3101,CURRENT_TIMESTAMP(3))
+		ON DUPLICATE KEY UPDATE
+			paper_width_mm=VALUES(paper_width_mm),payload_schema_version=VALUES(payload_schema_version),status='published',published_by=VALUES(published_by),published_at=COALESCE(published_at,CURRENT_TIMESTAMP(3))
+	`).Error; err != nil {
+		return err
+	}
+	if err := tx.Exec(`
 		INSERT INTO print_settings (id,shop_id,provider,device_id_ciphertext,device_id_mask,template_id,copies,auto_print_events,enabled,version,created_by,updated_by)
 		VALUES (9001,4201,'fake',?,'fa***01',9001,1,JSON_ARRAY('order_accepted','order_prepared'),0,1,3101,3101)
 		ON DUPLICATE KEY UPDATE provider=VALUES(provider),device_id_ciphertext=VALUES(device_id_ciphertext),device_id_mask=VALUES(device_id_mask),auto_print_events=VALUES(auto_print_events)
@@ -358,45 +399,111 @@ func seedRoles(tx *gorm.DB) error {
 
 // seedPermissions 写入权限种子数据。
 func seedPermissions(tx *gorm.DB) error {
+	if err := assertPermissionCatalog(tx); err != nil {
+		return err
+	}
 	for _, perm := range permissions {
 		if err := tx.Exec(`
 			INSERT INTO permissions (id, code, resource, action, description, status)
 			VALUES (?, ?, ?, ?, ?, 'active')
-			ON DUPLICATE KEY UPDATE resource = VALUES(resource), action = VALUES(action), description = VALUES(description), status = 'active'
+			ON DUPLICATE KEY UPDATE resource = VALUES(resource), action = VALUES(action), description = VALUES(description), status = 'active', deleted_at = NULL
 		`, perm.ID, perm.Code, perm.Resource, perm.Action, perm.Description).Error; err != nil {
 			return err
+		}
+	}
+	// Recheck inside the same transaction so a concurrent catalog writer cannot
+	// race the initial preflight and leave the seed bound to a different row.
+	return assertPermissionCatalog(tx)
+}
+
+// assertPermissionCatalog prevents a unique-key upsert from silently attaching
+// a seed permission ID to a different code (or the expected code to another ID).
+func assertPermissionCatalog(tx *gorm.DB) error {
+	var rows []permissionCatalogRow
+	if err := tx.Table("permissions").Select("id, code").Find(&rows).Error; err != nil {
+		return err
+	}
+	return validatePermissionCatalog(permissions, rows)
+}
+
+func validatePermissionCatalog(expected []permissionSeed, actual []permissionCatalogRow) error {
+	expectedByID := make(map[uint64]string, len(expected))
+	expectedByCode := make(map[string]uint64, len(expected))
+	for _, permission := range expected {
+		foldedCode := permissionCodeKey(permission.Code)
+		if existingCode, exists := expectedByID[permission.ID]; exists {
+			return fmt.Errorf("permission seed catalog has duplicate id %d for %q and %q", permission.ID, existingCode, permission.Code)
+		}
+		if existingID, exists := expectedByCode[foldedCode]; exists {
+			return fmt.Errorf("permission seed catalog has duplicate code %q for ids %d and %d", permission.Code, existingID, permission.ID)
+		}
+		expectedByID[permission.ID] = permission.Code
+		expectedByCode[foldedCode] = permission.ID
+	}
+
+	for _, row := range actual {
+		expectedCode, idReserved := expectedByID[row.ID]
+		expectedID, codeReserved := expectedByCode[permissionCodeKey(row.Code)]
+		if !idReserved && !codeReserved {
+			continue
+		}
+		if !idReserved || !codeReserved || expectedCode != row.Code || expectedID != row.ID {
+			return fmt.Errorf("permission seed catalog conflict: database row id=%d code=%q does not match the controlled id/code mapping", row.ID, row.Code)
 		}
 	}
 	return nil
 }
 
+// Permission codes are canonical ASCII identifiers. Fold case and trailing
+// spaces so visually equivalent variants cannot bypass the catalog preflight
+// when environments use different collation padding semantics.
+func permissionCodeKey(code string) string {
+	return strings.ToLower(strings.TrimRight(code, " "))
+}
+
 // seedRolePermissions 写入角色权限种子数据。
 func seedRolePermissions(tx *gorm.DB) error {
-	all := permissionIDs()
-	assignments := []struct {
-		roleID        uint64
-		permissionIDs []uint64
-	}{
-		{roleSuperAdmin, all},
-		{roleAdminManager, withoutPermissions(all, 2068, 2074, 2080, 2083, 2093)},
-		{roleOperation, []uint64{2001, 2002, 2003, 2004, 2005, 2007, 2008, 2010, 2023, 2024, 2025, 2026, 2032, 2033, 2041, 2042, 2043, 2044, 2045, 2057, 2059, 2061, 2062, 2065, 2066, 2067, 2069, 2070, 2071, 2072, 2073, 2075, 2076, 2077, 2078, 2090, 2091, 2092, 2094, 2095, 2096, 2097, 2103, 2104, 2105, 2106, 2107, 2108, 2109, 2115, 2116, 2117, 2118, 2119, 2120, 2127, 2128, 2129, 2130, 2131}},
-		{roleFinance, []uint64{2005, 2007, 2008, 2012, 2032, 2033, 2035, 2036, 2037, 2038, 2039, 2046, 2047, 2048, 2049, 2050, 2051, 2127, 2128, 2131}},
-		{roleCustomerService, []uint64{2007, 2008, 2009, 2012, 2032, 2033, 2034, 2035, 2036, 2039, 2040, 2115, 2116, 2117, 2119}},
+	// Keep the force-complete maker/checker split stable when seed is rerun
+	// after a previous catalog version granted every new permission broadly.
+	if err := tx.Exec(`
+		DELETE FROM role_permissions
+		WHERE (role_id = ? AND permission_id = ?)
+		   OR (role_id = ? AND permission_id = ?)
+	`, roleAdminManager, uint64(2143), roleOperation, uint64(2144)).Error; err != nil {
+		return err
 	}
-
-	for _, assignment := range assignments {
+	// Merchant roles are a controlled least-privilege matrix. Remove stale or
+	// manually broadened mappings before recreating the exact assignments below.
+	if err := tx.Exec(`DELETE FROM role_permissions WHERE role_id IN (?, ?, ?)`, roleMerchantOwner, roleMerchantOrder, roleMerchantStock).Error; err != nil {
+		return err
+	}
+	for _, assignment := range rolePermissionAssignments() {
 		for _, permissionID := range assignment.permissionIDs {
 			id := assignment.roleID*1000 + permissionID
 			if err := tx.Exec(`
-				INSERT INTO role_permissions (id, role_id, permission_id)
-				VALUES (?, ?, ?)
-				ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP(3)
+					INSERT INTO role_permissions (id, role_id, permission_id)
+					VALUES (?, ?, ?)
+					ON DUPLICATE KEY UPDATE deleted_at = NULL, updated_at = CURRENT_TIMESTAMP(3)
 			`, id, assignment.roleID, permissionID).Error; err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+func rolePermissionAssignments() []rolePermissionAssignment {
+	all := permissionIDs()
+	return []rolePermissionAssignment{
+		{roleSuperAdmin, all},
+		{roleAdminManager, withoutPermissions(all, 2068, 2074, 2080, 2083, 2093, 2143)},
+		{roleOperation, []uint64{2001, 2002, 2003, 2004, 2005, 2007, 2008, 2010, 2023, 2024, 2025, 2026, 2032, 2033, 2041, 2042, 2043, 2044, 2045, 2057, 2059, 2061, 2062, 2065, 2066, 2067, 2069, 2070, 2071, 2072, 2073, 2075, 2076, 2077, 2078, 2090, 2091, 2092, 2094, 2095, 2096, 2097, 2103, 2104, 2105, 2106, 2107, 2108, 2109, 2115, 2116, 2117, 2118, 2119, 2120, 2127, 2128, 2129, 2130, 2131, 2143, 2145}},
+		{roleFinance, []uint64{2005, 2007, 2008, 2012, 2032, 2033, 2035, 2036, 2037, 2038, 2039, 2046, 2047, 2048, 2049, 2050, 2051, 2127, 2128, 2131}},
+		{roleCustomerService, []uint64{2007, 2008, 2009, 2012, 2032, 2033, 2034, 2035, 2036, 2039, 2040, 2115, 2116, 2117, 2119}},
+		{roleMerchantOwner, []uint64{2013, 2138, 2014, 2015, 2016, 2017, 2018, 2019, 2005, 2006, 2027, 2028, 2029, 2030, 2031, 2053, 2054, 2139, 2055, 2056, 2064, 2114, 2124, 2125, 2126}},
+		{roleMerchantOrder, []uint64{2013, 2138, 2014, 2015, 2053, 2054, 2139, 2055, 2056, 2064}},
+		{roleMerchantStock, []uint64{2005, 2006}},
+	}
 }
 
 // withoutPermissions 返回without 权限。
@@ -450,8 +557,7 @@ func seedAccounts(tx *gorm.DB, cfg config.Config) error {
 	if err := upsertAccount(tx, accountRider, "rider", "", "13800000003", ""); err != nil {
 		return err
 	}
-
-	return nil
+	return tx.Exec("UPDATE accounts SET credential_version=1 WHERE credential_version=0").Error
 }
 
 // seedMerchantAndShop 写入商户 And 门店种子数据。
@@ -465,10 +571,10 @@ func seedMerchantAndShop(tx *gorm.DB) error {
 	}
 
 	if err := tx.Exec(`
-		INSERT INTO merchant_users (id, account_id, merchant_id, name, status)
-		VALUES (?, ?, ?, '示例商家账号', 'active')
-		ON DUPLICATE KEY UPDATE merchant_id = VALUES(merchant_id), name = VALUES(name), status = 'active'
-	`, merchantUserDemo, accountMerchant, merchantDemo).Error; err != nil {
+		INSERT INTO merchant_users (id, account_id, merchant_id, role_id, name, status)
+		VALUES (?, ?, ?, ?, '示例商家账号', 'active')
+		ON DUPLICATE KEY UPDATE merchant_id = VALUES(merchant_id), role_id = VALUES(role_id), name = VALUES(name), status = 'active'
+	`, merchantUserDemo, accountMerchant, merchantDemo, roleMerchantOwner).Error; err != nil {
 		return err
 	}
 

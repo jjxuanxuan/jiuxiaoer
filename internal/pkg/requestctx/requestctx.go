@@ -1,6 +1,11 @@
 package requestctx
 
-import "context"
+import (
+	"context"
+	"strconv"
+
+	"jiuxiaoer-admin/backend-go/internal/pkg/securevalue"
+)
 
 type contextKey string
 
@@ -8,6 +13,7 @@ const (
 	requestIDKey contextKey = "request_id"
 	ipKey        contextKey = "ip"
 	userAgentKey contextKey = "user_agent"
+	accountIDKey contextKey = "account_id"
 )
 
 // WithRequestID 把请求 ID 写入标准 context，供 service 层审计和 outbox 使用。
@@ -29,6 +35,15 @@ func WithHTTPMeta(ctx context.Context, ip string, userAgent string) context.Cont
 	return ctx
 }
 
+// WithAccountID attaches the authenticated account (not the role object ID)
+// so audit writers can persist a stable cross-role identity.
+func WithAccountID(ctx context.Context, accountID string) context.Context {
+	if accountID == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, accountIDKey, accountID)
+}
+
 // RequestID 返回当前上下文中的请求 ID。
 func RequestID(ctx context.Context) string {
 	value, _ := ctx.Value(requestIDKey).(string)
@@ -47,6 +62,14 @@ func UserAgent(ctx context.Context) string {
 	return value
 }
 
+// AccountID returns the authenticated account ID when the request passed an
+// authentication middleware. Anonymous and system jobs return zero.
+func AccountID(ctx context.Context) uint64 {
+	value, _ := ctx.Value(accountIDKey).(string)
+	id, _ := strconv.ParseUint(value, 10, 64)
+	return id
+}
+
 // RequestIDPtr 返回当前上下文中的请求 ID 指针。
 func RequestIDPtr(ctx context.Context) *string {
 	return stringPtr(RequestID(ctx))
@@ -55,6 +78,16 @@ func RequestIDPtr(ctx context.Context) *string {
 // IPPtr 返回当前上下文中的客户端 IP 指针。
 func IPPtr(ctx context.Context) *string {
 	return stringPtr(IP(ctx))
+}
+
+// IPHashPtr is the only IP representation allowed in new audit records.
+func IPHashPtr(ctx context.Context) *string {
+	ip := IP(ctx)
+	if ip == "" {
+		return nil
+	}
+	hash := securevalue.Digest(ip)
+	return &hash
 }
 
 // UserAgentPtr 返回当前上下文中的用户代理信息指针。

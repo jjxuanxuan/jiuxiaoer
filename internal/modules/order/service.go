@@ -24,6 +24,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/modules/auth"
 	"jiuxiaoer-admin/backend-go/internal/modules/compliance"
 	"jiuxiaoer-admin/backend-go/internal/modules/customerlocation"
+	"jiuxiaoer-admin/backend-go/internal/modules/deliveryverification"
 	"jiuxiaoer-admin/backend-go/internal/modules/dispatch"
 	"jiuxiaoer-admin/backend-go/internal/modules/servicearea"
 	"jiuxiaoer-admin/backend-go/internal/pkg/idempotency"
@@ -116,7 +117,7 @@ func (s *Service) Create(ctx context.Context, claims *auth.Claims, method string
 	if !s.cfg.Feature.StockReserveEnabled {
 		return OrderCreateResp{}, problem.New(503, "STOCK_RESERVE_DISABLED", "Service Unavailable", "stock reservation is temporarily disabled")
 	}
-	customerID, err := customerIDFromClaims(claims)
+	customerID, err := customerIDFromClaims(claims, "order:create")
 	if err != nil {
 		return OrderCreateResp{}, err
 	}
@@ -153,7 +154,7 @@ func (s *Service) Create(ctx context.Context, claims *auth.Claims, method string
 				}
 			} else {
 				locationResolution = &value
-				if !contextContainsShop(value.Context, req.ShopID) && s.cfg.CustomerLBS.Mode == "enforce" {
+				if !contextServiceShopMatches(value.Context, req.ShopID) && s.cfg.CustomerLBS.Mode == "enforce" {
 					return OrderCreateResp{}, serviceShopChanged(value.Context)
 				}
 			}
@@ -192,35 +193,49 @@ func (s *Service) Create(ctx context.Context, claims *auth.Claims, method string
 			if addressRow.Version != locationResolution.AddressVersion {
 				return problem.Conflict("ADDRESS_VERSION_CONFLICT", "address changed while the order was being prepared")
 			}
-			currentRows, currentErr := s.serviceArea.CandidatesWithDB(ctx, tx, servicearea.ResolveInput{CityCode: stringValue(addressRow.CityCode), Latitude: pointerValue(addressRow.Latitude), Longitude: pointerValue(addressRow.Longitude)}, 5)
-			if currentErr != nil {
+			if !contextServiceShopMatches(locationResolution.Context, req.ShopID) {
 				if s.cfg.CustomerLBS.Mode == "enforce" {
-					return currentErr
-				}
-			} else {
-				var chosen *servicearea.ShopDTO
-				for _, candidate := range locationResolution.Context.CandidateShops {
-					if candidate.ID != req.ShopID {
-						continue
-					}
-					for _, current := range currentRows {
-						if strconv.FormatUint(current.ID, 10) == req.ShopID && current.ServiceAreaVersion == candidate.ServiceAreaVersion {
-							copy := candidate
-							chosen = &copy
-						}
-					}
-				}
-				if chosen == nil && s.cfg.CustomerLBS.Mode == "enforce" {
 					return serviceShopChanged(locationResolution.Context)
 				}
-				if chosen != nil {
-					if locationResolution.Context.ServiceShop == nil || locationResolution.Context.ServiceShop.ID != req.ShopID {
-						selectionSource = "manual"
+			} else if locationResolution.Context.SelectionSource != "" {
+				selectionSource = locationResolution.Context.SelectionSource
+			}
+			if s.serviceArea == nil {
+				if s.cfg.CustomerLBS.Mode == "enforce" {
+					return problem.Internal("service area resolver unavailable")
+				}
+			} else {
+				currentRows, currentErr := s.serviceArea.CandidatesWithDB(ctx, tx, servicearea.ResolveInput{CityCode: stringValue(addressRow.CityCode), Latitude: pointerValue(addressRow.Latitude), Longitude: pointerValue(addressRow.Longitude)}, 5)
+				if currentErr != nil {
+					if s.cfg.CustomerLBS.Mode == "enforce" {
+						return currentErr
 					}
-					resolved = &servicearea.ResolveDTO{ServiceShop: *chosen, ResolvedAt: time.Now().UTC()}
+				} else {
+					var chosen *servicearea.ShopDTO
+					serviceShop := locationResolution.Context.ServiceShop
+					if serviceShop != nil && serviceShop.ID == req.ShopID {
+						for _, current := range currentRows {
+							if strconv.FormatUint(current.ID, 10) == req.ShopID && current.ServiceAreaVersion == serviceShop.ServiceAreaVersion {
+								copy := enhanceResolvedShop(servicearea.ToDTO(current), *serviceShop)
+								chosen = &copy
+								break
+							}
+						}
+					}
+					if chosen == nil && s.cfg.CustomerLBS.Mode == "enforce" {
+						return serviceShopChanged(locationResolution.Context)
+					}
+					if chosen != nil {
+						resolved = &servicearea.ResolveDTO{ServiceShop: *chosen, ResolvedAt: time.Now().UTC()}
+					}
 				}
 			}
-		} else if s.cfg.Service.EnforcementMode != "off" {
+		}
+		// Customer LBS is an enhancement layer. In observe mode it may fail or
+		// return a stale/different shop, but it must never bypass the authoritative
+		// service-area gate. Resolve again whenever it did not yield a currently
+		// trusted shop.
+		if resolved == nil && s.cfg.Service.EnforcementMode != "off" {
 			if s.serviceArea == nil {
 				if s.cfg.Service.EnforcementMode == "enforce" {
 					return problem.Internal("service area resolver unavailable")
@@ -243,6 +258,11 @@ func (s *Service) Create(ctx context.Context, claims *auth.Claims, method string
 						return detail
 					}
 				}
+			}
+		}
+		if s.cfg.Service.EnforcementMode == "enforce" {
+			if err := validateEnforcedOrderResolution(resolved, req.ShopID); err != nil {
+				return err
 			}
 		}
 
@@ -278,7 +298,7 @@ func (s *Service) Create(ctx context.Context, claims *auth.Claims, method string
 			if err != nil {
 				return err
 			}
-			if productRow.ShopProductStatus != "on_sale" || productRow.ProductStatus != "on_sale" || productRow.ShopStatus != "active" || productRow.BusinessStatus != "open" {
+			if productRow.ShopProductStatus != "on_sale" || productRow.ProductStatus != "on_sale" || productRow.CategoryStatus != "active" || productRow.ShopStatus != "active" || productRow.BusinessStatus != "open" {
 				return problem.Conflict("PRODUCT_NOT_ON_SALE", "product not on sale")
 			}
 			if merchantID == 0 {
@@ -294,6 +314,7 @@ func (s *Service) Create(ctx context.Context, claims *auth.Claims, method string
 				return err
 			}
 			beforeAvailable := stock.AvailableQty
+			beforeTotal := stock.AvailableQty + stock.ReservedQty + stock.LockedQty
 			if err := s.repo.ReserveStock(ctx, tx, stock, quantity); err != nil {
 				return err
 			}
@@ -307,6 +328,9 @@ func (s *Service) Create(ctx context.Context, claims *auth.Claims, method string
 				QuantityDelta:      -quantity,
 				BeforeAvailableQty: beforeAvailable,
 				AfterAvailableQty:  beforeAvailable - quantity,
+				TotalQuantityDelta: 0,
+				BeforeTotalQty:     beforeTotal,
+				AfterTotalQty:      beforeTotal,
 				SourceType:         "order",
 				SourceID:           orderID,
 				IdempotencyKey:     stringPtr(key),
@@ -420,53 +444,103 @@ func (s *Service) Create(ctx context.Context, claims *auth.Claims, method string
 }
 
 // List 查询订单 DTO列表列表。
-func (s *Service) List(ctx context.Context, claims *auth.Claims, query pagination.Query) ([]OrderDTO, string, error) {
-	customerID, err := customerIDFromClaims(claims)
+func (s *Service) List(ctx context.Context, claims *auth.Claims, query pagination.Query, filters CustomerOrderListFilters) ([]OrderSummaryDTO, string, error) {
+	customerID, err := customerIDFromClaims(claims, "order:list")
 	if err != nil {
 		return nil, "", err
 	}
-	rows, err := s.repo.ListCustomerOrders(ctx, customerID, query)
+	rows, err := s.repo.ListCustomerOrders(ctx, customerID, filters, query)
 	if err != nil {
 		return nil, "", err
 	}
 	nextPageToken := ""
 	if len(rows) > query.PageSize {
-		nextPageToken = pagination.NextPageToken(query)
 		rows = rows[:query.PageSize]
+		last := rows[len(rows)-1]
+		nextPageToken = pagination.NextPageTokenWithCursor(query, last.CreatedAt.UTC().Format(time.RFC3339Nano), idString(last.ID))
 	}
-	items := make([]OrderDTO, 0, len(rows))
+	orderIDs := make([]uint64, 0, len(rows))
+	shopIDs := make([]uint64, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, orderDTO(row, nil))
+		orderIDs = append(orderIDs, row.ID)
+		shopIDs = append(shopIDs, row.ShopID)
+	}
+	orderItems, err := s.repo.CustomerOrderItems(ctx, orderIDs)
+	if err != nil {
+		return nil, "", err
+	}
+	shops, err := s.repo.OrderShops(ctx, shopIDs)
+	if err != nil {
+		return nil, "", err
+	}
+	itemsByOrder := make(map[uint64][]OrderItem, len(rows))
+	for _, item := range orderItems {
+		itemsByOrder[item.OrderID] = append(itemsByOrder[item.OrderID], item)
+	}
+	shopsByID := make(map[uint64]OrderShop, len(shops))
+	for _, shop := range shops {
+		shopsByID[shop.ID] = shop
+	}
+	items := make([]OrderSummaryDTO, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, orderSummaryDTO(row, shopsByID[row.ShopID], itemsByOrder[row.ID]))
 	}
 	return items, nextPageToken, nil
 }
 
 // Detail 返回Detail。
-func (s *Service) Detail(ctx context.Context, claims *auth.Claims, orderIDRaw string) (OrderDTO, error) {
-	customerID, err := customerIDFromClaims(claims)
+func (s *Service) Detail(ctx context.Context, claims *auth.Claims, orderIDRaw string) (OrderDetailDTO, error) {
+	customerID, err := customerIDFromClaims(claims, "order:view")
 	if err != nil {
-		return OrderDTO{}, err
+		return OrderDetailDTO{}, err
 	}
 	orderID, err := parseID(orderIDRaw)
 	if err != nil {
-		return OrderDTO{}, problem.InvalidArgument("VALIDATION_FAILED", "invalid order id")
+		return OrderDetailDTO{}, problem.InvalidArgument("VALIDATION_FAILED", "invalid order id")
 	}
 	row, items, err := s.repo.GetCustomerOrder(ctx, customerID, orderID)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return OrderDTO{}, problem.NotFound("ORDER_NOT_FOUND", "order not found")
+		return OrderDetailDTO{}, problem.NotFound("ORDER_NOT_FOUND", "order not found")
 	}
 	if err != nil {
-		return OrderDTO{}, err
+		return OrderDetailDTO{}, err
 	}
-	return orderDTO(row, items), nil
+	shop, err := s.repo.OrderShopByID(ctx, row.ShopID)
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return OrderDetailDTO{}, err
+	}
+	payment, paymentErr := s.repo.LatestPaymentByOrder(ctx, row.ID)
+	if paymentErr != nil && !errors.Is(paymentErr, gorm.ErrRecordNotFound) {
+		return OrderDetailDTO{}, paymentErr
+	}
+	return orderDetailDTO(row, shop, items, payment, paymentErr == nil), nil
 }
 
-// Cancel 在 P0 阶段刻意限制为只能取消待支付订单。
-// 已支付订单取消需要退款流程，暂不进入第一版。
+// Cancel is the customer endpoint contract: only the owner can cancel a
+// pending-payment order. Administrative cancellation has a separate entry so
+// an admin token can never inherit customer-route semantics accidentally.
 func (s *Service) Cancel(ctx context.Context, claims *auth.Claims, method string, path string, key string, orderIDRaw string, req OrderCancelReq) (OrderDTO, error) {
-	actor, err := cancelActorFromClaims(claims)
+	actor, err := customerCancelActorFromClaims(claims)
 	if err != nil {
 		return OrderDTO{}, err
+	}
+	return s.cancel(ctx, claims, actor, method, path, key, orderIDRaw, req)
+}
+
+// CancelAdmin is used only by the operations route. Paid orders enter the
+// existing refund workflow; this capability is never exposed through the
+// customer cancellation endpoint.
+func (s *Service) CancelAdmin(ctx context.Context, claims *auth.Claims, method string, path string, key string, orderIDRaw string, req OrderCancelReq) (OrderDTO, error) {
+	actor, err := adminCancelActorFromClaims(claims)
+	if err != nil {
+		return OrderDTO{}, err
+	}
+	return s.cancel(ctx, claims, actor, method, path, key, orderIDRaw, req)
+}
+
+func (s *Service) cancel(ctx context.Context, claims *auth.Claims, actor cancelActor, method string, path string, key string, orderIDRaw string, req OrderCancelReq) (OrderDTO, error) {
+	if req.ExpectedVersion == nil {
+		return OrderDTO{}, problem.InvalidArgument("VALIDATION_FAILED", "expected_version is required")
 	}
 	orderID, err := parseID(orderIDRaw)
 	if err != nil {
@@ -475,7 +549,7 @@ func (s *Service) Cancel(ctx context.Context, claims *auth.Claims, method string
 
 	var resp OrderDTO
 	err = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		started, err := s.idStore.Start(ctx, tx, s.idGen.Next(), claims.AccountType, actor.ActorID, method, path, key, idempotency.RequestHash(req))
+		started, err := s.idStore.Start(ctx, tx, s.idGen.Next(), claims.AccountType, actor.ActorID, method, path, key, idempotency.ResourceRequestHash("order.cancel", orderID, req))
 		if err != nil {
 			return err
 		}
@@ -502,7 +576,7 @@ func (s *Service) Cancel(ctx context.Context, claims *auth.Claims, method string
 		if err != nil {
 			return err
 		}
-		if req.ExpectedVersion != 0 && uint(row.Version) != req.ExpectedVersion {
+		if uint(row.Version) != *req.ExpectedVersion {
 			return problem.Conflict("VERSION_CONFLICT", "order version changed")
 		}
 		if row.Status != "pending_payment" {
@@ -575,7 +649,7 @@ func (s *Service) cancelPaidOrder(ctx context.Context, tx *gorm.DB, row Order, a
 		if err := tx.WithContext(ctx).Table("delivery_assignments").Where("delivery_order_id IN ? AND status='active'", deliveryIDs).Update("status", "cancelled").Error; err != nil {
 			return OrderDTO{}, err
 		}
-		if err := tx.WithContext(ctx).Table("delivery_verifications").Where("delivery_order_id IN ? AND status IN ?", deliveryIDs, []string{"active", "locked"}).Update("status", "cancelled").Error; err != nil {
+		if err := deliveryverification.InvalidateMany(ctx, tx, s.idGen, deliveryIDs, "order_cancelled"); err != nil {
 			return OrderDTO{}, err
 		}
 	}
@@ -623,6 +697,7 @@ func (s *Service) cancelPendingOrder(ctx context.Context, tx *gorm.DB, row Order
 			return OrderDTO{}, problem.Conflict("STOCK_RESERVATION_INCONSISTENT", "reserved stock is lower than the order quantity")
 		}
 		beforeAvailable := stock.AvailableQty
+		beforeTotal := stock.AvailableQty + stock.ReservedQty + stock.LockedQty
 		if err := s.repo.ReleaseStock(ctx, tx, stock, item.Quantity); err != nil {
 			return OrderDTO{}, err
 		}
@@ -636,6 +711,9 @@ func (s *Service) cancelPendingOrder(ctx context.Context, tx *gorm.DB, row Order
 			QuantityDelta:      item.Quantity,
 			BeforeAvailableQty: beforeAvailable,
 			AfterAvailableQty:  beforeAvailable + item.Quantity,
+			TotalQuantityDelta: 0,
+			BeforeTotalQty:     beforeTotal,
+			AfterTotalQty:      beforeTotal,
 			SourceType:         "order",
 			SourceID:           row.ID,
 			IdempotencyKey:     stringPtr(idempotencyKey),
@@ -654,6 +732,12 @@ func (s *Service) cancelPendingOrder(ctx context.Context, tx *gorm.DB, row Order
 		"cancelled_at":       &now,
 		"version":            gorm.Expr("version + 1"),
 	}); err != nil {
+		return OrderDTO{}, err
+	}
+	// A pending-payment order normally has no delivery yet. This defensive
+	// order-boundary invalidation closes the race for legacy or repaired data
+	// where a delivery credential was created early.
+	if err := deliveryverification.InvalidateByOrder(ctx, tx, s.idGen, row.ID, "order_cancelled"); err != nil {
 		return OrderDTO{}, err
 	}
 	action := "cancel"
@@ -699,7 +783,7 @@ func (s *Service) MockPay(ctx context.Context, claims *auth.Claims, method strin
 	if req.Channel != "mock" {
 		return PaymentDTO{}, problem.InvalidArgument("VALIDATION_FAILED", "channel must be mock")
 	}
-	customerID, err := customerIDFromClaims(claims)
+	customerID, err := customerIDFromClaims(claims, "payment:create")
 	if err != nil {
 		return PaymentDTO{}, err
 	}
@@ -710,7 +794,7 @@ func (s *Service) MockPay(ctx context.Context, claims *auth.Claims, method strin
 
 	var resp PaymentDTO
 	err = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		started, err := s.idStore.Start(ctx, tx, s.idGen.Next(), claims.AccountType, customerID, method, path, key, idempotency.RequestHash(req))
+		started, err := s.idStore.Start(ctx, tx, s.idGen.Next(), claims.AccountType, customerID, method, path, key, idempotency.ResourceRequestHash("payment.mock", orderID, req))
 		if err != nil {
 			return err
 		}
@@ -743,6 +827,7 @@ func (s *Service) MockPay(ctx context.Context, claims *auth.Claims, method strin
 		if err != nil {
 			return err
 		}
+		paymentID := s.idGen.Next()
 		for _, item := range items {
 			// 支付消耗 reserved_qty；available_qty 在创建订单时已经减少。
 			stock, err := s.repo.LockStock(ctx, tx, item.ShopProductID)
@@ -753,6 +838,7 @@ func (s *Service) MockPay(ctx context.Context, claims *auth.Claims, method strin
 				return problem.Conflict("STOCK_NOT_ENOUGH", "reserved stock not enough")
 			}
 			beforeAvailable := stock.AvailableQty
+			beforeTotal := stock.AvailableQty + stock.ReservedQty + stock.LockedQty
 			if err := s.repo.DeductReservedStock(ctx, tx, stock, item.Quantity); err != nil {
 				return err
 			}
@@ -763,11 +849,14 @@ func (s *Service) MockPay(ctx context.Context, claims *auth.Claims, method strin
 				ShopID:             row.ShopID,
 				ProductID:          item.ProductID,
 				ChangeType:         "deduct",
-				QuantityDelta:      -item.Quantity,
+				QuantityDelta:      0,
 				BeforeAvailableQty: beforeAvailable,
 				AfterAvailableQty:  beforeAvailable,
+				TotalQuantityDelta: -item.Quantity,
+				BeforeTotalQty:     beforeTotal,
+				AfterTotalQty:      beforeTotal - item.Quantity,
 				SourceType:         "payment",
-				SourceID:           orderID,
+				SourceID:           paymentID,
 				IdempotencyKey:     stringPtr(key),
 			}); err != nil {
 				return err
@@ -779,7 +868,7 @@ func (s *Service) MockPay(ctx context.Context, claims *auth.Claims, method strin
 
 		now := time.Now()
 		payment := Payment{
-			ID:             s.idGen.Next(),
+			ID:             paymentID,
 			PaymentNo:      paymentNo(orderID),
 			OrderID:        orderID,
 			CustomerID:     customerID,
@@ -839,7 +928,7 @@ func (s *Service) CreatePayment(ctx context.Context, claims *auth.Claims, method
 	if s.payment == nil || !s.cfg.WeChat.PayEnabled || req.Provider != s.payment.Code() {
 		return PaymentDTO{}, problem.New(503, "PAYMENT_PROVIDER_UNAVAILABLE", "Service Unavailable", "payment provider is unavailable")
 	}
-	customerID, err := customerIDFromClaims(claims)
+	customerID, err := customerIDFromClaims(claims, "payment:create")
 	if err != nil {
 		return PaymentDTO{}, err
 	}
@@ -854,7 +943,7 @@ func (s *Service) CreatePayment(ctx context.Context, claims *auth.Claims, method
 	var response PaymentDTO
 	callProvider := false
 	err = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		started, err := s.idStore.Start(ctx, tx, s.idGen.Next(), claims.AccountType, customerID, method, path, key, idempotency.RequestHash(req))
+		started, err := s.idStore.Start(ctx, tx, s.idGen.Next(), claims.AccountType, customerID, method, path, key, idempotency.ResourceRequestHash("payment.create", orderID, req))
 		if err != nil {
 			return err
 		}
@@ -1023,7 +1112,7 @@ func (s *Service) CreatePayment(ctx context.Context, claims *auth.Claims, method
 
 // GetPayment 获取支付。
 func (s *Service) GetPayment(ctx context.Context, claims *auth.Claims, orderIDRaw string) (PaymentDTO, error) {
-	customerID, err := customerIDFromClaims(claims)
+	customerID, err := customerIDFromClaims(claims, "payment:view")
 	if err != nil {
 		return PaymentDTO{}, err
 	}
@@ -1156,13 +1245,16 @@ func (s *Service) applyPaymentSuccess(ctx context.Context, tx *gorm.DB, row Orde
 			return problem.Conflict("STOCK_RESERVATION_INCONSISTENT", "reserved stock not enough")
 		}
 		stockRecordID := s.idGen.Next()
+		beforeTotal := stock.AvailableQty + stock.ReservedQty + stock.LockedQty
 		if err := s.repo.DeductReservedStock(ctx, tx, stock, item.Quantity); err != nil {
 			return err
 		}
 		if err := s.repo.CreateStockRecord(ctx, tx, StockRecord{
 			ID: stockRecordID, ShopProductID: item.ShopProductID, ShopID: row.ShopID, ProductID: item.ProductID,
-			ChangeType: "deduct", QuantityDelta: -item.Quantity, BeforeAvailableQty: stock.AvailableQty,
-			AfterAvailableQty: stock.AvailableQty, SourceType: "payment", SourceID: payment.ID, IdempotencyKey: stringPtr(key),
+			ChangeType: "deduct", QuantityDelta: 0, BeforeAvailableQty: stock.AvailableQty,
+			AfterAvailableQty: stock.AvailableQty, TotalQuantityDelta: -item.Quantity,
+			BeforeTotalQty: beforeTotal, AfterTotalQty: beforeTotal - item.Quantity,
+			SourceType: "payment", SourceID: payment.ID, IdempotencyKey: stringPtr(key),
 		}); err != nil {
 			return err
 		}
@@ -1229,12 +1321,37 @@ func (s *Service) createAudit(ctx context.Context, tx *gorm.DB, actorType string
 		AfterData:    jsonData(after),
 		Result:       "success",
 		RequestID:    requestctx.RequestIDPtr(ctx),
-		IP:           requestctx.IPPtr(ctx),
+		IPHash:       requestctx.IPHashPtr(ctx),
 		UserAgent:    requestctx.UserAgentPtr(ctx),
 	})
 }
 
-// aggregateItems 在库存校验前合并客户端传入的重复商品行。
+// AuditFailure records a rejected customer order/payment action in an
+// independent transaction boundary. Request bodies, verification values and
+// provider payloads are intentionally excluded.
+func (s *Service) AuditFailure(ctx context.Context, claims *auth.Claims, action, orderIDRaw string, cause error) error {
+	actorType := "unknown"
+	actorID := uint64(0)
+	if claims != nil {
+		actorType = claims.AccountType
+		switch claims.AccountType {
+		case "customer":
+			actorID, _ = strconv.ParseUint(claims.CustomerID, 10, 64)
+		case "admin":
+			actorID, _ = strconv.ParseUint(claims.AdminUserID, 10, 64)
+		}
+	}
+	orderID, _ := strconv.ParseUint(orderIDRaw, 10, 64)
+	detail := problem.FromError(cause)
+	return s.repo.CreateAuditLog(ctx, s.repo.DB(), AuditLog{
+		ID: s.idGen.Next(), ActorType: actorType, ActorID: actorID, Action: action,
+		ResourceType: "order", ResourceID: orderID,
+		AfterData: jsonData(map[string]any{"error_code": detail.ErrorCode, "status": detail.Status}),
+		Result:    "failed", RequestID: requestctx.RequestIDPtr(ctx), IPHash: requestctx.IPHashPtr(ctx), UserAgent: requestctx.UserAgentPtr(ctx),
+	})
+}
+
+// aggregateItems 在库存校验前校验商品行；同一门店商品不允许重复。
 func aggregateItems(items []OrderCreateItemReq) (map[uint64]int, error) {
 	result := make(map[uint64]int)
 	for _, item := range items {
@@ -1245,20 +1362,32 @@ func aggregateItems(items []OrderCreateItemReq) (map[uint64]int, error) {
 		if item.Quantity <= 0 || item.Quantity > 99 {
 			return nil, problem.InvalidArgument("ORDER_EMPTY_ITEMS", "invalid quantity")
 		}
-		result[shopProductID] += item.Quantity
-		if result[shopProductID] > 99 {
-			return nil, problem.InvalidArgument("ORDER_EMPTY_ITEMS", "quantity exceeds limit")
+		if _, exists := result[shopProductID]; exists {
+			return nil, problem.InvalidArgument("ORDER_DUPLICATE_ITEM", "duplicate shop_product_id")
 		}
+		result[shopProductID] = item.Quantity
 	}
 	return result, nil
 }
 
 // customerIDFromClaims 从认证声明中解析并返回用户 ID。
-func customerIDFromClaims(claims *auth.Claims) (uint64, error) {
+func customerIDFromClaims(claims *auth.Claims, permission string) (uint64, error) {
 	if claims == nil || claims.AccountType != "customer" {
 		return 0, problem.Forbidden("PERM_FORBIDDEN", "customer account required")
 	}
+	if !hasPermission(claims.Permissions, permission) {
+		return 0, problem.Forbidden("PERM_FORBIDDEN", "permission denied")
+	}
 	return parseID(claims.CustomerID)
+}
+
+func hasPermission(permissions []string, required string) bool {
+	for _, permission := range permissions {
+		if permission == required {
+			return true
+		}
+	}
+	return false
 }
 
 type cancelActor struct {
@@ -1267,32 +1396,26 @@ type cancelActor struct {
 	IsAdmin    bool
 }
 
-// cancelActorFromClaims 允许 C 端取消本人订单，也允许具备 order:cancel 的 admin 全局取消。
-func cancelActorFromClaims(claims *auth.Claims) (cancelActor, error) {
-	if claims == nil {
-		return cancelActor{}, problem.Forbidden("PERM_FORBIDDEN", "authenticated account required")
+func customerCancelActorFromClaims(claims *auth.Claims) (cancelActor, error) {
+	if claims == nil || claims.AccountType != "customer" || !hasPermission(claims.Permissions, "order:cancel") {
+		return cancelActor{}, problem.Forbidden("PERM_FORBIDDEN", "customer cancellation permission required")
 	}
-	switch claims.AccountType {
-	case "customer":
-		customerID, err := parseID(claims.CustomerID)
-		if err != nil {
-			return cancelActor{}, problem.Forbidden("PERM_FORBIDDEN", "invalid customer identity")
-		}
-		return cancelActor{ActorID: customerID, CustomerID: customerID}, nil
-	case "admin":
-		adminID, err := parseID(claims.AdminUserID)
-		if err != nil {
-			return cancelActor{}, problem.Forbidden("PERM_FORBIDDEN", "invalid admin identity")
-		}
-		for _, permission := range claims.Permissions {
-			if permission == "order:cancel" || permission == "order:cancel_all" {
-				return cancelActor{ActorID: adminID, IsAdmin: true}, nil
-			}
-		}
-		return cancelActor{}, problem.Forbidden("PERM_FORBIDDEN", "permission denied")
-	default:
-		return cancelActor{}, problem.Forbidden("PERM_FORBIDDEN", "customer or admin account required")
+	customerID, err := parseID(claims.CustomerID)
+	if err != nil {
+		return cancelActor{}, problem.Forbidden("PERM_FORBIDDEN", "invalid customer identity")
 	}
+	return cancelActor{ActorID: customerID, CustomerID: customerID}, nil
+}
+
+func adminCancelActorFromClaims(claims *auth.Claims) (cancelActor, error) {
+	if claims == nil || claims.AccountType != "admin" || !hasPermission(claims.Permissions, "order:cancel_all") {
+		return cancelActor{}, problem.Forbidden("PERM_FORBIDDEN", "administrative cancellation permission required")
+	}
+	adminID, err := parseID(claims.AdminUserID)
+	if err != nil {
+		return cancelActor{}, problem.Forbidden("PERM_FORBIDDEN", "invalid admin identity")
+	}
+	return cancelActor{ActorID: adminID, IsAdmin: true}, nil
 }
 
 // parseID 解析并校验字符串形式的 ID。
@@ -1362,13 +1485,39 @@ func addressSnapshot(row CustomerAddress) map[string]any {
 	}
 }
 
-func contextContainsShop(value customerlocation.LocationContext, shopID string) bool {
-	for _, candidate := range value.CandidateShops {
-		if candidate.ID == shopID && candidate.Selectable {
-			return true
-		}
+func contextServiceShopMatches(value customerlocation.LocationContext, shopID string) bool {
+	return value.ServiceShop != nil && value.ServiceShop.ID == shopID && value.ServiceShop.Selectable
+}
+
+func enhanceResolvedShop(current, observed servicearea.ShopDTO) servicearea.ShopDTO {
+	current.Selected = observed.Selected
+	current.SelectionSource = observed.SelectionSource
+	current.RouteDistanceM = observed.RouteDistanceM
+	current.RouteDurationSeconds = observed.RouteDurationSeconds
+	current.Degraded = observed.Degraded
+	current.DeliveryPromise.RouteDistanceM = observed.DeliveryPromise.RouteDistanceM
+	current.DeliveryPromise.RouteDurationSeconds = observed.DeliveryPromise.RouteDurationSeconds
+	current.DeliveryPromise.RouteSource = observed.DeliveryPromise.RouteSource
+	return current
+}
+
+func validateEnforcedOrderResolution(resolved *servicearea.ResolveDTO, shopID string) error {
+	if resolved == nil {
+		return problem.New(503, "SERVICE_AREA_UNAVAILABLE", "Service Unavailable", "service area did not return a service shop")
 	}
-	return false
+	shop := resolved.ServiceShop
+	if shop.ID != shopID || !shop.Selectable {
+		detail := problem.Conflict("SERVICE_SHOP_CHANGED", "requested shop does not match the current service shop")
+		detail.Data = map[string]any{"service_shop": shop}
+		return detail
+	}
+	promise := shop.DeliveryPromise
+	if shop.ServiceAreaVersion == 0 || resolved.ResolvedAt.IsZero() || !promise.Confirmed || promise.DeliveryFeeAmount < 0 ||
+		(promise.FreeDeliveryThresholdAmount != nil && *promise.FreeDeliveryThresholdAmount < 0) ||
+		promise.ETAMinMinutes > promise.ETAMaxMinutes {
+		return problem.New(503, "DELIVERY_PROMISE_UNAVAILABLE", "Service Unavailable", "service shop did not return a valid delivery promise")
+	}
+	return nil
 }
 
 func serviceShopChanged(value customerlocation.LocationContext) error {
@@ -1442,6 +1591,208 @@ func orderDTO(row Order, items []OrderItem) OrderDTO {
 	return dto
 }
 
+func orderSummaryDTO(row Order, shop OrderShop, rows []OrderItem) OrderSummaryDTO {
+	shopName := strings.TrimSpace(shop.Name)
+	if shopName == "" {
+		shopName = "历史门店"
+	}
+	var itemSummary OrderItemSummaryDTO
+	totalQuantity := 0
+	for index, row := range rows {
+		item := orderItemDTO(row)
+		totalQuantity += item.Quantity
+		if index == 0 {
+			itemSummary = OrderItemSummaryDTO{
+				ProductID: item.ProductID, Name: item.Name, Spec: item.Spec,
+				ImageURL: item.ImageURL, Quantity: item.Quantity,
+			}
+		}
+	}
+	return OrderSummaryDTO{
+		ID: idString(row.ID), OrderNo: row.OrderNo, ShopID: idString(row.ShopID),
+		Status: row.Status, PayStatus: row.PayStatus, DeliveryStatus: row.DeliveryStatus,
+		PayableAmount: row.PayableAmount,
+		ShopSummary:   OrderShopSummaryDTO{ID: idString(row.ShopID), Name: shopName},
+		ItemSummary:   itemSummary, ItemKindCount: len(rows), TotalQuantity: totalQuantity,
+		CreatedAt: row.CreatedAt.Format(time.RFC3339), UpdatedAt: row.UpdatedAt.Format(time.RFC3339),
+	}
+}
+
+func orderDetailDTO(row Order, shop OrderShop, rows []OrderItem, payment Payment, hasPayment bool) OrderDetailDTO {
+	summary := orderSummaryDTO(row, shop, rows)
+	items := make([]OrderItemDTO, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, orderItemDTO(row))
+	}
+	result := OrderDetailDTO{
+		ID: summary.ID, OrderNo: summary.OrderNo, ShopID: summary.ShopID,
+		Status: summary.Status, PayStatus: summary.PayStatus, DeliveryStatus: summary.DeliveryStatus,
+		PayableAmount: summary.PayableAmount, ShopSummary: summary.ShopSummary,
+		ItemSummary: summary.ItemSummary, ItemKindCount: summary.ItemKindCount, TotalQuantity: summary.TotalQuantity,
+		CreatedAt: summary.CreatedAt, UpdatedAt: summary.UpdatedAt, Items: items,
+		AddressSnapshot: customerOrderAddressProjection(row.AddressSnapshot),
+		Remark:          stringValue(row.Remark), DeliveryPromise: customerDeliveryPromiseProjection(row.DeliveryPromiseSnapshot),
+		ComplianceSummary: customerComplianceProjection(row.ComplianceSnapshot, rows),
+		GoodsAmount:       row.GoodsAmount, DiscountAmount: row.DiscountAmount,
+		DeliveryFeeAmount: row.DeliveryFeeAmount, PaidAmount: row.PaidAmount,
+		CancelSource: stringValue(row.CancelSource), CancelReasonCode: stringValue(row.CancelReasonCode), Version: row.Version,
+		ExpiresAt: formatOrderTime(row.ExpiresAt), PaidAt: formatOrderTime(row.PaidAt),
+		CancelledAt: formatOrderTime(row.CancelledAt), CompletedAt: formatOrderTime(row.CompletedAt),
+	}
+	if hasPayment {
+		result.PaymentSummary = &OrderPaymentSummaryDTO{
+			PaymentNo: payment.PaymentNo, Status: payment.Status, Amount: payment.Amount,
+			Currency: payment.Currency, RefundedAmount: payment.RefundedAmount,
+			Channel: payment.Channel, Provider: payment.Provider,
+			ExpiresAt: formatOrderTime(payment.ExpiresAt), PaidAt: formatOrderTime(payment.PaidAt),
+		}
+	}
+	return result
+}
+
+type storedCustomerOrderAddress struct {
+	ContactName      string   `json:"contact_name"`
+	ContactPhone     string   `json:"contact_phone"`
+	Province         string   `json:"province"`
+	City             string   `json:"city"`
+	CityCode         string   `json:"city_code"`
+	District         string   `json:"district"`
+	DistrictCode     string   `json:"district_code"`
+	AddressDetail    string   `json:"address_detail"`
+	Doorplate        string   `json:"doorplate"`
+	POIID            string   `json:"poi_id"`
+	FormattedAddress string   `json:"formatted_address"`
+	Latitude         *float64 `json:"latitude"`
+	Longitude        *float64 `json:"longitude"`
+	CoordinateSystem string   `json:"coordinate_system"`
+	LocationSource   string   `json:"location_source"`
+	GeocodeProvider  string   `json:"geocode_provider"`
+	GeocodeStatus    string   `json:"geocode_status"`
+	AddressVersion   uint32   `json:"address_version"`
+}
+
+func customerOrderAddressProjection(raw datatypes.JSON) CustomerOrderAddressSnapshotDTO {
+	var stored storedCustomerOrderAddress
+	_ = json.Unmarshal(raw, &stored)
+	quality := "legacy_incomplete"
+	if stored.CityCode != "" && stored.FormattedAddress != "" && stored.Latitude != nil && stored.Longitude != nil && stored.CoordinateSystem == "gcj02" && stored.LocationSource != "" {
+		quality = "complete"
+	}
+	version := stored.AddressVersion
+	if version == 0 {
+		version = 1
+	}
+	return CustomerOrderAddressSnapshotDTO{
+		SnapshotQuality: quality, ContactName: stored.ContactName, ContactPhone: stored.ContactPhone,
+		Province: stored.Province, City: stored.City, CityCode: optionalOrderString(stored.CityCode),
+		District: stored.District, DistrictCode: optionalOrderString(stored.DistrictCode),
+		AddressDetail: stored.AddressDetail, Doorplate: optionalOrderString(stored.Doorplate), POIID: optionalOrderString(stored.POIID),
+		FormattedAddress: optionalOrderString(stored.FormattedAddress), Latitude: stored.Latitude, Longitude: stored.Longitude,
+		CoordinateSystem: optionalOrderString(stored.CoordinateSystem), LocationSource: optionalOrderString(stored.LocationSource),
+		GeocodeProvider: optionalOrderString(stored.GeocodeProvider), GeocodeStatus: optionalOrderString(stored.GeocodeStatus),
+		AddressVersion: version,
+	}
+}
+
+type storedOrderDeliveryPromiseEnvelope struct {
+	SchemaVersion      uint32          `json:"schema_version"`
+	ServiceAreaVersion uint32          `json:"service_area_version"`
+	SelectionSource    string          `json:"selection_source"`
+	ResolvedAt         string          `json:"resolved_at"`
+	DeliveryPromise    json.RawMessage `json:"delivery_promise"`
+}
+
+func customerDeliveryPromiseProjection(raw datatypes.JSON) *OrderDeliveryPromiseDTO {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var envelope storedOrderDeliveryPromiseEnvelope
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return nil
+	}
+	payload := []byte(raw)
+	if len(envelope.DeliveryPromise) > 0 && string(envelope.DeliveryPromise) != "null" {
+		payload = envelope.DeliveryPromise
+	}
+	var result OrderDeliveryPromiseDTO
+	if err := json.Unmarshal(payload, &result); err != nil {
+		return nil
+	}
+	if result.SchemaVersion == 0 {
+		result.SchemaVersion = envelope.SchemaVersion
+	}
+	if result.ServiceAreaVersion == 0 {
+		result.ServiceAreaVersion = envelope.ServiceAreaVersion
+	}
+	if result.SelectionSource == "" {
+		result.SelectionSource = envelope.SelectionSource
+	}
+	if result.ResolvedAt == "" {
+		result.ResolvedAt = envelope.ResolvedAt
+	}
+	switch result.RouteSource {
+	case "", "amap", "cache", "local_distance":
+	default:
+		result.RouteSource = ""
+	}
+	return &result
+}
+
+type storedOrderCompliance struct {
+	PolicyVersion               string            `json:"policy_version"`
+	Status                      string            `json:"status"`
+	AdultResult                 string            `json:"adult_result"`
+	VerificationLevel           string            `json:"verification_level"`
+	CheckedAt                   string            `json:"checked_at"`
+	WouldAllow                  bool              `json:"would_allow"`
+	AgeRestrictedShopProductIDs []json.RawMessage `json:"age_restricted_shop_product_ids"`
+}
+
+func customerComplianceProjection(raw datatypes.JSON, rows []OrderItem) OrderComplianceSummaryDTO {
+	ageRestricted := false
+	for _, row := range rows {
+		var snapshot struct {
+			AgeRestricted bool `json:"age_restricted"`
+		}
+		_ = json.Unmarshal(row.ProductSnapshot, &snapshot)
+		if snapshot.AgeRestricted {
+			ageRestricted = true
+			break
+		}
+	}
+	var stored storedOrderCompliance
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &stored)
+		ageRestricted = ageRestricted || len(stored.AgeRestrictedShopProductIDs) > 0
+	}
+	status := "not_required"
+	if ageRestricted {
+		status = "legacy_unknown"
+		if stored.Status == "verified" && stored.AdultResult == "adult" && stored.WouldAllow {
+			status = "verified"
+		}
+	}
+	return OrderComplianceSummaryDTO{
+		AgeRestricted: ageRestricted, Status: status, PolicyVersion: stored.PolicyVersion,
+		VerificationLevel: stored.VerificationLevel, CheckedAt: stored.CheckedAt,
+	}
+}
+
+func optionalOrderString(value string) *string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
+func formatOrderTime(value *time.Time) string {
+	if value == nil {
+		return ""
+	}
+	return value.Format(time.RFC3339)
+}
+
 // orderItemDTO 返回订单明细DTO。
 func orderItemDTO(row OrderItem) OrderItemDTO {
 	var snapshot map[string]string
@@ -1453,6 +1804,7 @@ func orderItemDTO(row OrderItem) OrderItemDTO {
 		Name:            snapshot["name"],
 		BrandName:       snapshot["brand_name"],
 		Spec:            snapshot["spec"],
+		ImageURL:        snapshot["image_url"],
 		Quantity:        row.Quantity,
 		SalePriceAmount: row.SalePriceAmount,
 		TotalAmount:     row.TotalAmount,

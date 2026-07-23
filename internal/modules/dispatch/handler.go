@@ -2,8 +2,10 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-playground/validator/v10"
 
 	"jiuxiaoer-admin/backend-go/internal/modules/auth"
 	"jiuxiaoer-admin/backend-go/internal/pkg/pagination"
@@ -58,11 +60,31 @@ func (h *Handler) Heartbeat(c *gin.Context) {
 		return
 	}
 	var req HeartbeatReq
-	if !bind(c, &req) {
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.service.createHeartbeatFailureAudit(c.Request.Context(), claims, heartbeatBindingAuditSpec(err))
+		response.Error(c, problem.InvalidArgument("VALIDATION_FAILED", err.Error()))
 		return
 	}
 	item, err := h.service.Heartbeat(c.Request.Context(), claims, req, c.ClientIP())
 	write(c, item, err)
+}
+
+func heartbeatBindingAuditSpec(bindingErr error) heartbeatAuditSpec {
+	action := heartbeatRejectedAction
+	reasonCode := "heartbeat_contract_invalid"
+	var validationErrors validator.ValidationErrors
+	if errors.As(bindingErr, &validationErrors) {
+		for _, fieldErr := range validationErrors {
+			switch fieldErr.StructField() {
+			case "CapturedAt", "Latitude", "Longitude", "CoordinateSystem", "AccuracyM":
+				action = heartbeatLocationAnomalyAction
+				reasonCode = "location_contract_invalid"
+			}
+		}
+	}
+	return heartbeatAuditSpec{
+		Action: action, ErrorCode: "VALIDATION_FAILED", ReasonCode: reasonCode, RequestStage: "request_validation",
+	}
 }
 
 // ListOffers 查询Offers列表。

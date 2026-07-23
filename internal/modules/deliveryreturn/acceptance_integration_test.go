@@ -156,6 +156,10 @@ func TestDeliveryReturnFullClosureMySQLAcceptance(t *testing.T) {
 	}{{"ACC-DR-013-refund-before-receipt", true}, {"ACC-DR-014-receipt-before-refund", false}} {
 		t.Run(flow.name, func(t *testing.T) {
 			fx := insertClosureFixture(t, tx, ids)
+			mustClosureExec(t, tx, `INSERT INTO delivery_verifications
+				(id,delivery_order_id,stage,mode_snapshot,code_hash,code_ciphertext,code_mask,policy_version,secret_key_version,status,max_attempts,expires_at,activated_at,version)
+				VALUES (?,?, 'delivery','enforce',?,?,?,'cp1-v1','v1','active',5,?,?,1)`,
+				ids.Next(), fx.deliveryID, fmt.Sprintf("%064d", 1), []byte("return-verification"), "****11", time.Now().UTC().Add(2*time.Hour), time.Now().UTC())
 			flowCfg := cfg
 			flowCfg.DeliveryReturn.RiderAllowlist = []string{idString(fx.riderID)}
 			flowCfg.DeliveryReturn.ShopAllowlist = []string{idString(fx.shopID)}
@@ -176,6 +180,14 @@ func TestDeliveryReturnFullClosureMySQLAcceptance(t *testing.T) {
 				t.Fatalf("ACC-DR-004 approve: dto=%+v err=%v", approved, err)
 			}
 			assertAtomicApproval(t, tx, created.ID, fx, approved)
+			var verification struct {
+				Status     string
+				ReasonCode *string    `gorm:"column:invalidation_reason_code"`
+				InvalidAt  *time.Time `gorm:"column:invalidated_at"`
+			}
+			if err := tx.Table("delivery_verifications").Select("status,invalidation_reason_code,invalidated_at").Where("delivery_order_id=? AND stage='delivery'", fx.deliveryID).Scan(&verification).Error; err != nil || verification.Status != "invalidated" || verification.ReasonCode == nil || *verification.ReasonCode != "delivery_return_approved" || verification.InvalidAt == nil {
+				t.Fatalf("return approval left delivery code usable: row=%+v err=%v", verification, err)
+			}
 			customerView, err := afterSales.DetailCustomer(context.Background(), &auth.Claims{AccountType: "customer", CustomerID: idString(fx.customerID)}, approved.AfterSaleID)
 			if err != nil || customerView.SourceType != "delivery_return" || customerView.SourceID != created.ID || customerView.InitiatorType != "system" {
 				t.Fatalf("ACC-DR-012 customer after-sale: dto=%+v err=%v", customerView, err)
@@ -303,7 +315,14 @@ func TestDeliveryReturnFullClosureMySQLAcceptance(t *testing.T) {
 		if err := refunds.Retry(context.Background(), refundAdmin, "POST", "/api/v1/admin/refunds/:id/retry", prefix+"manual-retry", refundRow.RefundNo); err != nil {
 			t.Fatalf("retry failed refund: %v", err)
 		}
-		provider.state.Status = "SUCCESS"
+		var replacement refundmodule.Row
+		if err := tx.Where("replaces_refund_id=?", refundRow.ID).Take(&replacement).Error; err != nil {
+			t.Fatalf("replacement refund: %v", err)
+		}
+		provider.state = refundmodule.State{
+			ProviderRefundID: "wx-" + replacement.RefundNo, RefundNo: replacement.RefundNo, PaymentNo: fx.paymentNo,
+			Status: "SUCCESS", Currency: replacement.Currency, Amount: replacement.Amount, TotalAmount: replacement.TotalAmount,
+		}
 		request, _ = http.NewRequest(http.MethodPost, "/api/v1/refunds/wechat/callback", nil)
 		request.Header.Set("X-Event-ID", prefix+"succeeded")
 		if err := refunds.ProcessCallback(context.Background(), "wechat", request, []byte(`{"status":"SUCCESS"}`)); err != nil {
@@ -313,14 +332,15 @@ func TestDeliveryReturnFullClosureMySQLAcceptance(t *testing.T) {
 		if err != nil || final.Status != StatusClosed || final.RefundStatus != "succeeded" {
 			t.Fatalf("retry did not close return: dto=%+v err=%v", final, err)
 		}
-		var refundsCount, receipts, stockRows, closeEvents int64
+		var refundsCount, replacementCount, originalFailed, replacementSucceeded int64
 		tx.Table("refunds").Where("after_sale_id=?", mustReturnID(t, approved.AfterSaleID)).Count(&refundsCount)
-		tx.Table("return_receipts").Where("after_sale_id=?", mustReturnID(t, approved.AfterSaleID)).Count(&receipts)
-		tx.Table("stock_records").Where("source_type='delivery_return' AND source_id=?", mustReturnID(t, created.ID)).Count(&stockRows)
-		tx.Table("outbox_events").Where("aggregate_type='delivery_return' AND aggregate_id=? AND event_type='delivery.return_closed'", mustReturnID(t, created.ID)).Count(&closeEvents)
-		if refundsCount != 1 || receipts != 1 || stockRows != 1 || closeEvents != 1 || stockAvailable(t, tx, fx.restockShopProductID) != before+1 {
-			t.Fatalf("retry exactly-once refunds=%d receipts=%d stock=%d close_events=%d", refundsCount, receipts, stockRows, closeEvents)
+		tx.Table("refunds").Where("replaces_refund_id=?", refundRow.ID).Count(&replacementCount)
+		tx.Table("refunds").Where("id=? AND status='failed'", refundRow.ID).Count(&originalFailed)
+		tx.Table("refunds").Where("id=? AND status='succeeded'", replacement.ID).Count(&replacementSucceeded)
+		if refundsCount != 2 || replacementCount != 1 || originalFailed != 1 || replacementSucceeded != 1 || stockAvailable(t, tx, fx.restockShopProductID) != before+1 {
+			t.Fatalf("retry chain refunds=%d replacements=%d original_failed=%d replacement_succeeded=%d", refundsCount, replacementCount, originalFailed, replacementSucceeded)
 		}
+		assertClosureExactlyOnce(t, tx, created.ID, replacement.ID)
 	})
 }
 

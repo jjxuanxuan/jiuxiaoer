@@ -162,7 +162,7 @@ func (s *Service) Review(ctx context.Context, claims *auth.Claims, ip, method, p
 	var out ApplicationDTO
 	var openDuration time.Duration
 	err = s.db.WithContext(reviewCtx).Transaction(func(tx *gorm.DB) error {
-		started, err := s.idem.Start(reviewCtx, tx, s.ids.Next(), "admin", adminUserID, method, path, key, idempotency.RequestHash(req))
+		started, err := s.idem.Start(reviewCtx, tx, s.ids.Next(), "admin", adminUserID, method, path, key, idempotency.ResourceRequestHash("rider_application.review", applicationID, req))
 		if err != nil {
 			return err
 		}

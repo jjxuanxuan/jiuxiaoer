@@ -39,6 +39,7 @@ type ProductRow struct {
 	CategoryID          uint64
 	ShopID              uint64
 	ShopProductID       uint64
+	SortOrder           int
 	Name                string
 	BrandName           *string
 	Spec                *string
@@ -47,6 +48,9 @@ type ProductRow struct {
 	SalePriceAmount     int64
 	OriginalPriceAmount int64
 	Status              string
+	ShopProductStatus   string
+	ShopStatus          string
+	BusinessStatus      string
 	AvailableQty        int
 	AgeRestricted       bool
 }

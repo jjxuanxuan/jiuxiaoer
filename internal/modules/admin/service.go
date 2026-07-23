@@ -127,7 +127,7 @@ func (s *Service) UpdateProduct(ctx context.Context, claims *auth.Claims, method
 	// 开启事务
 	err = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		//幂等
-		started, err := s.idStore.Start(ctx, tx, s.idGen.Next(), claims.AccountType, adminID, method, path, key, idempotency.RequestHash(req))
+		started, err := s.idStore.Start(ctx, tx, s.idGen.Next(), claims.AccountType, adminID, method, path, key, idempotency.ResourceRequestHash("product.update", productID, req))
 		if err != nil {
 			return err
 		}
@@ -289,6 +289,7 @@ func (s *Service) AdjustStock(ctx context.Context, claims *auth.Claims, method s
 			return err
 		}
 		afterAvailable := stock.AvailableQty + req.QuantityDelta
+		beforeTotal := stock.AvailableQty + stock.ReservedQty + stock.LockedQty
 		if afterAvailable < 0 {
 			return problem.Conflict("STOCK_NOT_ENOUGH", "available stock cannot be negative")
 		}
@@ -304,6 +305,9 @@ func (s *Service) AdjustStock(ctx context.Context, claims *auth.Claims, method s
 			QuantityDelta:      req.QuantityDelta,
 			BeforeAvailableQty: stock.AvailableQty,
 			AfterAvailableQty:  afterAvailable,
+			TotalQuantityDelta: req.QuantityDelta,
+			BeforeTotalQty:     beforeTotal,
+			AfterTotalQty:      beforeTotal + req.QuantityDelta,
 			SourceType:         "admin_adjust",
 			SourceID:           adminID,
 		}); err != nil {
@@ -370,7 +374,7 @@ func (s *Service) ReviewMerchant(ctx context.Context, claims *auth.Claims, metho
 	}
 	var resp MerchantDTO
 	err = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		started, err := s.idStore.Start(ctx, tx, s.idGen.Next(), claims.AccountType, adminID, method, path, key, idempotency.RequestHash(req))
+		started, err := s.idStore.Start(ctx, tx, s.idGen.Next(), claims.AccountType, adminID, method, path, key, idempotency.ResourceRequestHash("merchant.review", merchantID, req))
 		if err != nil {
 			return err
 		}
@@ -435,14 +439,18 @@ func (s *Service) ListAuditLogs(ctx context.Context, claims *auth.Claims, query 
 	if _, err := requireAdminPermission(claims, "audit_log:view"); err != nil {
 		return nil, "", err
 	}
+	if query.OrderBy != "" && query.OrderBy != "created_at desc,id desc" {
+		return nil, "", problem.InvalidArgument("VALIDATION_INVALID_QUERY", "audit logs use fixed order created_at desc,id desc")
+	}
 	rows, err := s.repo.ListAuditLogs(ctx, query)
 	if err != nil {
 		return nil, "", err
 	}
 	nextPageToken := ""
 	if len(rows) > query.PageSize {
-		nextPageToken = pagination.NextPageToken(query)
 		rows = rows[:query.PageSize]
+		last := rows[len(rows)-1]
+		nextPageToken = pagination.NextPageTokenWithCursor(query, last.CreatedAt.UTC().Format(time.RFC3339Nano), idString(last.ID))
 	}
 	items := make([]AuditLogDTO, 0, len(rows))
 	for _, row := range rows {
@@ -562,7 +570,7 @@ func (s *Service) createAudit(ctx context.Context, tx *gorm.DB, actorID uint64, 
 		AfterData:    jsonData(after),
 		Result:       "success",
 		RequestID:    requestctx.RequestIDPtr(ctx),
-		IP:           requestctx.IPPtr(ctx),
+		IPHash:       requestctx.IPHashPtr(ctx),
 		UserAgent:    requestctx.UserAgentPtr(ctx),
 	})
 }
@@ -693,19 +701,43 @@ func merchantDTO(row Merchant) MerchantDTO {
 func auditLogDTO(row AuditLog) AuditLogDTO {
 	return AuditLogDTO{
 		ID:           idString(row.ID),
+		EventID:      stringValue(row.EventID),
 		ActorType:    row.ActorType,
 		ActorID:      idString(row.ActorID),
+		AccountID:    optionalIDString(row.AccountID),
 		Action:       row.Action,
 		ResourceType: row.ResourceType,
 		ResourceID:   idString(row.ResourceID),
+		ShopID:       optionalIDString(row.ShopID),
+		OrderID:      optionalIDString(row.OrderID),
+		DeliveryID:   optionalIDString(row.DeliveryID),
 		BeforeData:   rawJSON(row.BeforeData),
 		AfterData:    rawJSON(row.AfterData),
 		Result:       row.Result,
+		ErrorCode:    stringValue(row.ErrorCode),
+		ReasonCode:   stringValue(row.ReasonCode),
+		BeforeStatus: stringValue(row.BeforeStatus),
+		AfterStatus:  stringValue(row.AfterStatus),
+		Version:      optionalUint64(row.Version),
 		RequestID:    stringValue(row.RequestID),
-		IP:           stringValue(row.IP),
+		IPHash:       stringValue(row.IPHash),
 		UserAgent:    stringValue(row.UserAgent),
 		CreatedAt:    row.CreatedAt.Format(time.RFC3339),
 	}
+}
+
+func optionalIDString(value *uint64) string {
+	if value == nil || *value == 0 {
+		return ""
+	}
+	return idString(*value)
+}
+
+func optionalUint64(value *uint64) uint64 {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
 
 // rawJSON 将输入值序列化为原始 JSON 数据。

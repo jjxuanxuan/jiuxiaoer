@@ -15,7 +15,7 @@ func TestTokenPairSharesSessionAndKeepsTokenTypesSeparate(t *testing.T) {
 		AccessTTL:     time.Hour,
 		RefreshTTL:    24 * time.Hour,
 	})
-	pair, err := manager.Issue(Identity{AccountType: "customer", AccountID: 1, CustomerID: 2})
+	pair, err := manager.Issue(Identity{AccountType: "customer", AccountID: 1, CredentialVersion: 7, CustomerID: 2})
 	if err != nil {
 		t.Fatalf("issue token pair: %v", err)
 	}
@@ -29,6 +29,9 @@ func TestTokenPairSharesSessionAndKeepsTokenTypesSeparate(t *testing.T) {
 	}
 	if pair.SessionID == "" || access.SessionID != pair.SessionID || refresh.SessionID != pair.SessionID {
 		t.Fatal("access and refresh tokens must share one session id")
+	}
+	if access.CredentialVersion != 7 || refresh.CredentialVersion != 7 {
+		t.Fatal("access and refresh tokens must carry the current credential version")
 	}
 	if _, err := manager.ParseAccess(pair.RefreshToken); err == nil {
 		t.Fatal("refresh token must not be accepted as access token")
