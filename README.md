@@ -1,63 +1,197 @@
-# Jiuxiaoer Go Backend
+# 九小二 Go 后端
 
-Go 模块化整体架构是第一阶段交易和履行流程的真实来源。增加了可靠的打印任务、交易通知和收件箱、提货/送货验证码、帐户配置、受控订单恢复以及受限产品的服务器端实名/成人门。
+九小二的 Go API 服务，覆盖顾客、商户、骑手和平台管理员四类角色。项目采用模块化单体结构，对外接口以 OpenAPI/Swagger 为准，适合本地启动后直接进行前端联调。
 
-## Local Run
+## 功能范围
+
+- 顾客端：微信/短信登录、首页、搜索、商品、门店、购物车、地址、下单、支付、会员与资产。
+- 商户端：门店和商品管理、接单备货、售后处理、配送协作、打印任务。
+- 骑手端：短信登录、接单、配送状态、定位、路线、配送异常与退回。
+- 平台端：管理员与权限、商户开通、订单运营、售后退款、会员资产、调度、消息和审计。
+
+部分高风险或依赖第三方服务的功能由环境变量控制，路由存在不代表功能默认开启。
+
+## 技术栈
+
+- Go 1.26、Gin、GORM
+- MySQL 8.4、Redis 8、RabbitMQ 4
+- Goose 数据库迁移
+- JWT 鉴权
+- OpenAPI 3 与 Swagger UI
+
+## 本地启动
+
+### 环境要求
+
+- Go 1.26 或更高版本
+- Docker Desktop（含 Docker Compose）
+- Make
+
+首次执行 Goose 或 `go run` 时，Go 可能需要联网下载依赖。
+
+### 1. 准备配置
 
 ```bash
 cp .env.example .env.local
+```
+
+`.env.example` 是可启动本地环境的配置模板；`.env.local` 是个人运行配置，已被 Git 忽略，不应提交或作为交付文件传递。
+
+### 2. 启动依赖并初始化数据库
+
+```bash
 make deps-up
 make migrate-up
 make seed
+bash ./deploy/mysql/provision-local-runtime-user.sh
+```
+
+`make deps-up` 会在后台启动 MySQL、Redis 和 RabbitMQ。容器首次启动可能需要数秒；如果迁移提示连接失败，等待容器健康后重试：
+
+```bash
+docker compose -f deploy/docker-compose.local.yml --profile mq ps
+```
+
+初始化步骤的职责如下：
+
+- `make migrate-up`：按版本顺序创建或升级数据库结构。
+- `make seed`：写入管理员、商户、骑手、门店和商品等本地演示数据。
+- `provision-local-runtime-user.sh`：为 API 创建低权限 MySQL 运行账号。新增迁移后应重新执行此脚本，以补充新表权限。
+
+### 3. 启动 API
+
+```bash
 make run
 ```
 
-The Go backend must use its own database (the local default is `jiuxiaoer_go_p0`). The legacy Node backend runs Sequelize schema synchronization at startup and must never point at the same database. Startup verifies migration sentinel columns and fails with an actionable error when the schema is incompatible.
+默认监听 `http://localhost:8080`。`make run` 除 HTTP API 外，还会启动当前配置已启用的进程内任务，前端本地联调通常不需要再执行 `make run-worker`。
 
-Endpoints:
+### 4. 验证服务
 
-- `GET /livez`: process liveness only.
-- `GET /readyz`: required dependency and Snowflake lease readiness.
-- `GET /api/v1/health`: compatibility readiness endpoint using the API envelope.
-- `GET /metrics`: Prometheus text metrics; production requires `Authorization: Bearer $JXE_METRICS_TOKEN`.
-- `GET /api/v1/swagger/index.html`: API documentation.
-- `POST /api/v1/auth/customer/send-code`: send a login code through the configured SMS provider; this never creates a customer account.
-- `POST /api/v1/auth/customer/sms-login`: authenticate an existing customer that has already completed the current Mini Program login and phone binding.
-- `POST /api/v1/auth/customer/wechat-login`: exchange a Mini Program code for a customer session, creating the customer identity on first login.
-- `POST /api/v1/auth/customer/phone-bind`: bind the authenticated customer's WeChat-authorized phone and enable subsequent SMS login.
-- `POST /api/v1/orders/:id/payments`: idempotently create a provider payment for a customer with an active Mini Program identity and a bound phone.
-- `GET /api/v1/orders/:id/payment`: read the persisted payment state.
-- `POST /api/v1/payments/:provider/callbacks`: receive provider-signed callbacks.
-- `POST /api/v1/identity-verifications`: create an idempotent provider-hosted identity/adult-verification session; the client never submits a name or document number to this API.
-- `GET /api/v1/identity-verifications/:id`: poll one customer-owned verification request.
-- `POST /api/v1/identity-verifications/:provider/callbacks`: verify a provider callback and actively query the authoritative result before updating the adult-authorization fact.
+| 地址 | 用途 |
+| --- | --- |
+| `http://localhost:8080/livez` | 进程存活检查 |
+| `http://localhost:8080/readyz` | MySQL、Redis、RabbitMQ 和节点租约就绪检查 |
+| `http://localhost:8080/api/v1/health` | API 格式的健康检查 |
+| `http://localhost:8080/api/v1/swagger/index.html` | Swagger UI |
+| `http://localhost:8080/metrics` | Prometheus 指标 |
 
-The customer authentication flow is WeChat-first: first Mini Program login → bind the WeChat-authorized phone → use either WeChat login or SMS login on later visits → create the Mini Program payment. SMS login is authentication only and never registers a new customer.
+## 前端联调
 
-## Multi-instance Requirements
+业务 API 的统一前缀是 `/api/v1`。建议先通过 Swagger 完成登录并获取 Token，再调试业务接口。
 
-Every live instance needs a stable `JXE_INSTANCE_ID` and a Snowflake node ID in `0..1023`. Redis holds a renewable lease for each node ID; a second instance using the same ID fails startup. Losing the lease makes the instance unready and then terminates it before the lease can expire.
+### 本地演示账号
 
-Outbox workers claim rows using `locked_by` and `locked_until` under `FOR UPDATE SKIP LOCKED`. Delivery remains at-least-once, so consumers must continue deduplicating by `event_id`.
+| 角色 | 登录信息 |
+| --- | --- |
+| 用户 | `13800000001` ，短信验证码 `123456` |
+| 管理员 | `admin` / `admin123` |
+| 商户 | `merchant_demo` / `merchant123` |
+| 骑手 | 手机号 `13800000003`，先发送验证码，再使用 Mock 验证码 `123456` |
+| 顾客 | 首次使用微信 Mock 登录并绑定手机号；之后才可短信登录 |
 
-## Production Guardrails
+管理员和商户密码来自 `.env.local` 中对应的 `JXE_*_BOOTSTRAP_PASSWORD`。如果修改过配置，应使用修改后的密码并重新执行 `make seed`。
 
-`JXE_APP_ENV=production` rejects startup when required MySQL/Redis/RabbitMQ configuration is absent, JWT secrets are default/short/shared, metrics lacks a bearer token, any mock provider is enabled, Tencent Cloud SMS credentials/sign/template are incomplete, or WeChat identity/payment credentials are incomplete. The Tencent Cloud SecretID/SecretKey, Mini Program secret, merchant private key, API v3 key, provider credentials, and JWT secrets must come from the deployment secret manager, never `system_configs` or Git.
+顾客本地 Mock 流程：
 
-Production SMS uses Tencent Cloud SMS API 3.0. Configure `JXE_SMS_MOCK_ENABLED=false` and the `JXE_SMS_TENCENTCLOUD_*` settings from `.env.example`. The approved verification template must have two variables in this exact order: the six-digit code and its validity in minutes, for example `您的验证码为{1}，{2}分钟内有效。`.
+1. 调用 `/auth/customer/wechat-login`，`code` 使用 `test-code-` 前缀。
+2. 将返回的 `data.access_token` 填入 Swagger 的 `bearerAuth`；只粘贴 Token，不要手动添加 `Bearer `。
+3. 调用 `/auth/customer/phone-bind`，`phone_code` 使用 `test-phone-<11位手机号>`。
+4. 后续短信登录必须先调用 `/auth/customer/send-code`，再使用验证码 `123456`。
 
-## Basic Test
+骑手短信登录同样必须先调用 `/auth/rider/send-code`。Mock 验证码不是永久万能码：它有有效期，验证成功后只能使用一次。
+
+接口通用约定：
+
+- 业务 ID 在 JSON 中按字符串传递。
+- 金额单位为分，例如 `12900` 表示 ¥129.00。
+- 需要幂等保护的写接口必须携带唯一的 `Idempotency-Key`。
+- 业务错误采用 Problem Details，前端应重点读取 HTTP 状态码、`error_code` 和 `request_id`。
+
+完整登录流程、请求示例、接口清单和常见错误见 [API 手工验证文档](docs/runbooks/api-manual-test.md)。
+
+## 常用命令
+
+| 命令 | 作用 |
+| --- | --- |
+| `make run` | 加载 `.env.local` 并启动 API |
+| `make run-worker` | 单独启动指定 MQ/后台任务进程；`JXE_WORKER_ROLE` 未设置时使用 `all` |
+| `make test` | 执行 `go test ./...` |
+| `make tidy` | 整理依赖，会更新 `go.mod` 和 `go.sum` |
+| `make deps-up` | 启动本地 MySQL、Redis 和 RabbitMQ |
+| `make deps-mq-up` | 只启动 RabbitMQ |
+| `make deps-down` | 停止本地依赖，保留 Docker 数据卷 |
+| `make migrate-up` | 执行尚未应用的数据库迁移 |
+| `make migrate-down` | 回滚最近一条迁移，会修改数据库，请谨慎使用 |
+| `make seed` | 写入或更新本地演示数据 |
+
+如需把 Worker 拆成独立进程，应为每个进程设置不同的 `JXE_INSTANCE_ID` 和 `JXE_SNOWFLAKE_NODE_ID`，避免节点租约冲突。
+
+## 项目结构
+
+```text
+.
+├── cmd/
+│   ├── api/                 # HTTP API 入口
+│   ├── worker/              # 独立 Worker 入口
+│   ├── seed/                # 本地演示数据
+│   └── mq-topology/         # RabbitMQ 拓扑工具
+├── internal/
+│   ├── app/                 # 依赖装配、路由和进程生命周期
+│   ├── config/              # 环境变量配置和启动校验
+│   ├── infra/               # MySQL、Redis、短信、微信、高德等基础设施实现
+│   ├── modules/             # 按业务域拆分的 Handler、Service、Repository 和模型
+│   └── pkg/                 # 日志、鉴权、幂等、指标等共享组件
+├── migrations/              # Goose 数据库迁移，交付时需要完整保留
+├── deploy/                  # 本地 Compose、数据库账号和部署辅助文件
+└── docs/runbooks/           # 联调与运行文档
+```
+
+典型请求调用链为：
+
+```text
+HTTP 请求 → Router/Middleware → Handler → Service → Repository → MySQL/Redis/MQ
+```
+
+业务代码优先在 `internal/modules/<模块名>` 内闭环；外部服务适配放在 `internal/infra`，跨模块通用能力放在 `internal/pkg`。
+
+## 配置说明
+
+### 两个 MySQL DSN
+
+- `JXE_MYSQL_MIGRATION_DSN`：高权限账号，仅供迁移和 Seed 使用，需要建表、改表等权限。
+- `JXE_MYSQL_DSN`：低权限运行账号，供 API 和 Worker 日常读写业务数据。
+
+两者分离可以避免业务进程意外修改数据库结构。Go 后端应使用独立数据库；不要让会自动同步表结构的旧服务与它共用同一个库。
+
+### 本地 Mock
+
+`.env.example` 默认开启微信认证、微信支付、支付和短信的本地 Mock，便于无第三方凭证时联调。高德地图相关接口需要有效的 Key；Key 为空时，依赖地图供应商的接口可能不可用。
+
+售后模块默认关闭。需要联调售后页面时，可在 `.env.local` 中增加：
+
+```dotenv
+JXE_AFTERSALE_ENABLED=true
+```
+
+完整执行退款还需要开启 `JXE_REFUND_EXECUTION_ENABLED=true`，并确保对应支付/退款 Provider 已正确配置。修改环境变量后必须重启 API。
+
+## 测试
 
 ```bash
 make test
 ```
 
-L2 服务区、首页与订单强校验运行手册：`docs/runbooks/l2-service-area-home.md`。
+该命令执行项目的 Go 测试。依赖真实 MySQL、Redis 或 RabbitMQ 的集成测试可能还需要对应容器、迁移和测试开关。
 
-Integration tests require the local Compose dependencies and applied migrations. The suite covers the P0 transaction chain, identity/phone binding, payment creation and callbacks, provider query reconciliation, unpaid expiry, 1000-way callback/expiry contention, inventory contention, Snowflake lease collision, concurrent Outbox claims, and the CP1 compliance/print/provisioning/assignment/verification/notification/account-revocation chain including provider-hosted identity sessions, signed/query-confirmed callbacks, duplicate callback collapse, identity revocation, and genuine two-principal force completion.
+## 生产环境注意事项
 
-CP1 capabilities are additive and external side effects default off. Use the
-`JXE_CP1_*` settings in `.env.example`; production rejects fake providers and
-default security secrets. Operational recovery and rollback are documented in
-`docs/runbooks/cp1-launch-closure.md`. The generated OpenAPI endpoint is the only
-client contract and includes every registered `/api/v1` route.
+- 不要使用 `.env.example` 中的默认密码、JWT Secret 或 Mock Provider。
+- 第三方密钥和生产密码应由部署环境的密钥管理系统注入，不要写入 Git。
+- 每个实例必须使用稳定且唯一的 `JXE_INSTANCE_ID`，并分配 `0..1023` 范围内不重复的 `JXE_SNOWFLAKE_NODE_ID`。
+- RabbitMQ/Outbox 采用至少一次投递，消费者必须继续按事件 ID 去重。
+
+## 相关文档
+
+- [API 手工验证与前端联调](docs/runbooks/api-manual-test.md)
+- [OpenAPI 源文件](internal/modules/docs/openapi.yaml)
