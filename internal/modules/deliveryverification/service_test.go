@@ -18,7 +18,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/pkg/snowflake"
 )
 
-// TestGeneratedCodesAndDomainSeparatedHashes 验证Generated Codes And Domain Separated Hashes的预期行为。
+// TestGeneratedCodesAndDomainSeparatedHashes 验证生成的验证码和领域隔离哈希。
 func TestGeneratedCodesAndDomainSeparatedHashes(t *testing.T) {
 	seen := map[string]bool{}
 	for i := 0; i < 100; i++ {
@@ -349,8 +349,7 @@ func TestInvalidateManyAndByOrderAreIdempotent(t *testing.T) {
 		t.Fatalf("terminal credential was mutated: %+v", verified)
 	}
 
-	// Repeating a terminal action must not rewrite the original invalidation
-	// fact or bump its optimistic-lock version again.
+	// 重复执行终态操作不得改写原始失效事实，也不得再次推进其乐观锁版本。
 	firstInvalidatedAt := *active.InvalidatedAt
 	if err := InvalidateMany(ctx, db, ids, []uint64{11}, "different_reason"); err != nil {
 		t.Fatal(err)

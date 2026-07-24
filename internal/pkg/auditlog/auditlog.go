@@ -18,9 +18,8 @@ import (
 
 const createCallbackName = "jxe:auditlog:enrich"
 
-// Register installs the audit write invariant on a GORM handle. It covers both
-// typed models and map-based writers, which prevents individual modules from
-// silently omitting the phase-one structured audit fields.
+// Register 在 GORM 句柄上安装审计写入不变量。它同时覆盖强类型模型和
+// 基于映射的写入器，防止各模块悄然遗漏一期结构化审计字段。
 func Register(db *gorm.DB) error {
 	if db == nil {
 		return nil
@@ -49,8 +48,7 @@ func enrich(tx *gorm.DB) {
 
 	ipHash := requestctx.IPHashPtr(tx.Statement.Context)
 	if ipHash != nil {
-		// The middleware-derived value is canonical and must override any value
-		// supplied by a module or request body.
+		// 中间件生成的值是权威值，必须覆盖模块或请求体提供的任何值。
 		setColumn(tx, "ip_hash", ipHash)
 	} else if rawIP := stringValue(readColumn(tx, "ip")); rawIP != "" {
 		hash := securevalue.Digest(rawIP)
@@ -287,7 +285,7 @@ func sensitiveAuditKey(key string) bool {
 	if normalized == "" {
 		return false
 	}
-	// These are controlled enums/identifiers, not operator/provider free text.
+	// 这些是受控枚举或标识符，不是操作人员或服务商输入的自由文本。
 	switch normalized {
 	case "errorcode", "reasoncode", "failurecode", "policycode", "returnpolicycode", "cancellationreasoncode":
 		return false

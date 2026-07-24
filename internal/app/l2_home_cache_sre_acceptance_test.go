@@ -15,7 +15,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/modules/auth"
 )
 
-// TestL2HomeCacheAndSREMissingAcceptanceScenarios 验证L 2 首页缓存 And SRE Missing 验收 Scenarios的预期行为。
+// TestL2HomeCacheAndSREMissingAcceptanceScenarios 验证 L2 首页缓存和可靠性缺失的验收场景。
 func TestL2HomeCacheAndSREMissingAcceptanceScenarios(t *testing.T) {
 	f := newL2AcceptanceFixture(t)
 	defer f.close()

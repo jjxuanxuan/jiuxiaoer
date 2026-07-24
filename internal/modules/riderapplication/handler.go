@@ -21,13 +21,13 @@ type Handler struct {
 // NewHandler 创建并初始化Handler。
 func NewHandler(service *Service) *Handler { return &Handler{service: service} }
 
-// RegisterPublicRoutes 注册公开数据 Routes。
+// RegisterPublicRoutes 注册公开路由。
 func RegisterPublicRoutes(api *gin.RouterGroup, handler *Handler) {
 	api.POST("/rider-applications", handler.Submit)
 	api.POST("/auth/rider-application/sms-login", handler.Login)
 }
 
-// RegisterApplicantRoutes 注册申请人 Routes。
+// RegisterApplicantRoutes 注册申请人路由。
 func RegisterApplicantRoutes(api *gin.RouterGroup, handler *Handler) {
 	group := api.Group("/rider-applications")
 	group.Use(handler.ApplicationAuthRequired())
@@ -36,7 +36,7 @@ func RegisterApplicantRoutes(api *gin.RouterGroup, handler *Handler) {
 	group.POST("/me/resubmit", handler.Resubmit)
 }
 
-// RegisterAdminRoutes 注册管理端 Routes。
+// RegisterAdminRoutes 注册管理端路由。
 func RegisterAdminRoutes(admin *gin.RouterGroup, handler *Handler) {
 	admin.GET("/rider-applications", handler.List)
 	admin.GET("/rider-applications/:id", handler.Detail)
@@ -174,7 +174,7 @@ func (h *Handler) ApplicationAuthRequired() gin.HandlerFunc {
 	}
 }
 
-// strictJSON 返回strict JSON。
+// strictJSON 严格解析 JSON 请求体。
 func strictJSON(c *gin.Context, target any) error {
 	decoder := json.NewDecoder(c.Request.Body)
 	decoder.DisallowUnknownFields()
@@ -191,10 +191,10 @@ func strictJSON(c *gin.Context, target any) error {
 	return nil
 }
 
-// errorsIsEOF 判断errors Is EOF。
+// errorsIsEOF 判断错误是否为文件结束。
 func errorsIsEOF(err error) bool { return err == io.EOF }
 
-// bearerToken 返回bearer 令牌。
+// bearerToken 返回 Bearer 令牌。
 func bearerToken(header string) (string, bool) {
 	parts := strings.SplitN(strings.TrimSpace(header), " ", 2)
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || strings.TrimSpace(parts[1]) == "" {
@@ -213,7 +213,7 @@ func applicationClaims(c *gin.Context) (*auth.Claims, bool) {
 	return value, true
 }
 
-// standardClaims 返回standard 认证声明。
+// standardClaims 返回标准认证声明。
 func standardClaims(c *gin.Context) (*auth.Claims, bool) {
 	value, ok := auth.ClaimsFromContext(c)
 	if !ok {

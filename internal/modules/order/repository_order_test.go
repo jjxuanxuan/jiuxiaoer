@@ -76,3 +76,37 @@ func TestCustomerOrderKeysetDoesNotSkipWhenEarlierRowsChange(t *testing.T) {
 		t.Fatalf("keyset page skipped or duplicated rows after changes: %#v err=%v", second, err)
 	}
 }
+
+func TestCustomerPhoneBoundRequiresNonEmptyActiveRow(t *testing.T) {
+	dsn := "file:" + strings.ReplaceAll(t.Name(), "/", "_") + "?mode=memory&cache=shared"
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`CREATE TABLE customers (id INTEGER PRIMARY KEY, phone TEXT NOT NULL, deleted_at DATETIME)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO customers (id, phone) VALUES (1, '')`).Error; err != nil {
+		t.Fatal(err)
+	}
+	repo := NewRepository(db)
+
+	bound, err := repo.CustomerPhoneBound(context.Background(), db, 1)
+	if err != nil || bound {
+		t.Fatalf("empty phone must be unbound: bound=%t err=%v", bound, err)
+	}
+	if err := db.Exec(`UPDATE customers SET phone = '13800138000' WHERE id = 1`).Error; err != nil {
+		t.Fatal(err)
+	}
+	bound, err = repo.CustomerPhoneBound(context.Background(), db, 1)
+	if err != nil || !bound {
+		t.Fatalf("valid phone must be bound: bound=%t err=%v", bound, err)
+	}
+	if err := db.Exec(`UPDATE customers SET deleted_at = ? WHERE id = 1`, time.Now()).Error; err != nil {
+		t.Fatal(err)
+	}
+	bound, err = repo.CustomerPhoneBound(context.Background(), db, 1)
+	if err != nil || bound {
+		t.Fatalf("deleted customer must be unbound: bound=%t err=%v", bound, err)
+	}
+}

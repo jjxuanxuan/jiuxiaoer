@@ -38,8 +38,8 @@ func (h *flakyReliableAfterCommitHandler) RequiresSuccessfulAfterCommit(envelope
 	return envelope.EventType == "order.paid"
 }
 
-// TestRealtimeConsumerReceiptSuppressesDuplicatePaidEvent verifies the exact
-// event_id fence used before merchant WebSocket fanout.
+// TestRealtimeConsumerReceiptSuppressesDuplicatePaidEvent 验证商户 WebSocket
+// 扇出前使用的精确 event_id 防重屏障。
 func TestRealtimeConsumerReceiptSuppressesDuplicatePaidEvent(t *testing.T) {
 	db := realtimeReceiptDB(t)
 	calls := 0
@@ -67,9 +67,9 @@ func TestRealtimeConsumerReceiptSuppressesDuplicatePaidEvent(t *testing.T) {
 	}
 }
 
-// TestReliableAfterCommitRetriesBeforeClosingReceipt covers the Redis outage
-// edge: the first fanout fails, the durable receipt becomes processable again,
-// and recovery delivers exactly once before duplicates are suppressed.
+// TestReliableAfterCommitRetriesBeforeClosingReceipt 覆盖 Redis 故障边界：
+// 首次扇出失败，持久回执重新变为可处理状态，恢复后仅投递一次，
+// 随后重复消息被抑制。
 func TestReliableAfterCommitRetriesBeforeClosingReceipt(t *testing.T) {
 	db := realtimeReceiptDB(t)
 	handler := &flakyReliableAfterCommitHandler{}

@@ -77,6 +77,7 @@ func TestP0Integration(t *testing.T) {
 	}
 
 	phone := fmt.Sprintf("139%08d", time.Now().UnixNano()%100000000)
+	seedCustomerReadyForSMSLogin(t, tx, cfg, phone)
 	performOK(t, router, http.MethodPost, "/api/v1/auth/customer/send-code", "", "", map[string]any{"phone": phone})
 	login := performOK(t, router, http.MethodPost, "/api/v1/auth/customer/sms-login", "", "", map[string]any{"phone": phone, "code": "123456"})
 	loginData := object(t, login["data"])
@@ -131,8 +132,7 @@ func TestP0Integration(t *testing.T) {
 		t.Fatalf("payment did not create exactly one pending dispatch job: count=%d err=%v", paidJobCount, err)
 	}
 
-	// Confirm the agreed phase-one rule: once payment has produced the order,
-	// the rider may accept it before the merchant finishes preparation.
+	// 确认约定的一期规则：支付生成订单后，骑手可以在商户备货完成前接单。
 	openOrderGrab(t, cfg, tx, redisClient, log, orderID)
 	performOK(t, router, http.MethodPost, "/api/v1/auth/rider/send-code", "", "", map[string]any{"phone": "13800000003"})
 	rider := performOK(t, router, http.MethodPost, "/api/v1/auth/rider/sms-login", "", "", map[string]any{"phone": "13800000003", "code": "123456"})
@@ -209,7 +209,7 @@ func openOrderGrab(t *testing.T, cfg config.Config, db *gorm.DB, redisClient *go
 	}
 }
 
-// TestP0ConcurrentOrdersDoNotOversell 验证P 0 Concurrent 订单 Do 不 Oversell的预期行为。
+// TestP0ConcurrentOrdersDoNotOversell 验证 P0 并发下单不会造成超卖。
 func TestP0ConcurrentOrdersDoNotOversell(t *testing.T) {
 	if os.Getenv("JXE_RUN_INTEGRATION") != "1" {
 		t.Skip("set JXE_RUN_INTEGRATION=1 to run local P0 integration test")
@@ -262,12 +262,10 @@ func TestP0ConcurrentOrdersDoNotOversell(t *testing.T) {
 	}
 
 	router := NewRouter(Dependencies{Config: cfg, Log: log, DB: db, Redis: redisClient})
+	_, customerID = seedCustomerReadyForSMSLogin(t, db, cfg, phone)
 	performOK(t, router, http.MethodPost, "/api/v1/auth/customer/send-code", "", "", map[string]any{"phone": phone})
 	login := performOK(t, router, http.MethodPost, "/api/v1/auth/customer/sms-login", "", "", map[string]any{"phone": phone, "code": "123456"})
 	accessToken := stringValue(t, object(t, login["data"])["access_token"])
-	if err := db.Raw("SELECT id FROM customers WHERE phone = ?", phone).Scan(&customerID).Error; err != nil || customerID == 0 {
-		t.Fatalf("query concurrency customer: id=%d err=%v", customerID, err)
-	}
 	address := performOK(t, router, http.MethodPost, "/api/v1/addresses", accessToken, "race-address-01", map[string]any{
 		"contact_name": "并发测试", "contact_phone": phone,
 		"province": "广东省", "city": "深圳市", "city_code": "440300", "district": "南山区", "district_code": "440305",
@@ -353,6 +351,7 @@ func cleanupConcurrentOrderData(db *gorm.DB, customerID uint64, productID uint64
 		db.Exec("DELETE FROM carts WHERE customer_id = ?", customerID)
 		var accountID uint64
 		_ = db.Raw("SELECT account_id FROM customers WHERE id = ?", customerID).Scan(&accountID).Error
+		db.Exec("DELETE FROM customer_identities WHERE customer_id = ?", customerID)
 		db.Exec("DELETE FROM customers WHERE id = ?", customerID)
 		if accountID != 0 {
 			db.Exec("DELETE FROM accounts WHERE id = ?", accountID)
@@ -363,7 +362,7 @@ func cleanupConcurrentOrderData(db *gorm.DB, customerID uint64, productID uint64
 	db.Exec("DELETE FROM products WHERE id = ?", productID)
 }
 
-// uint64Strings 返回uint 64 Strings。
+// uint64Strings 将 64 位无符号整数列表转换为字符串列表。
 func uint64Strings(values []uint64) []string {
 	result := make([]string, 0, len(values))
 	for _, value := range values {
@@ -372,7 +371,7 @@ func uint64Strings(values []uint64) []string {
 	return result
 }
 
-// perform 返回perform。
+// perform 执行测试请求。
 func perform(t *testing.T, handler http.Handler, method string, path string, token string, idempotencyKey string, body any) (int, map[string]any) {
 	t.Helper()
 	var reader io.Reader
@@ -402,7 +401,7 @@ func perform(t *testing.T, handler http.Handler, method string, path string, tok
 	return recorder.Code, response
 }
 
-// mustOK 返回must OK。
+// mustOK 断言响应成功。
 func mustOK(t *testing.T, status int, response map[string]any) map[string]any {
 	t.Helper()
 	if status != http.StatusOK {
@@ -411,14 +410,14 @@ func mustOK(t *testing.T, status int, response map[string]any) map[string]any {
 	return response
 }
 
-// performOK 返回perform OK。
+// performOK 执行请求并断言成功。
 func performOK(t *testing.T, handler http.Handler, method string, path string, token string, idempotencyKey string, body any) map[string]any {
 	t.Helper()
 	status, response := perform(t, handler, method, path, token, idempotencyKey, body)
 	return mustOK(t, status, response)
 }
 
-// object 返回object。
+// object 将响应数据解析为对象。
 func object(t *testing.T, value any) map[string]any {
 	t.Helper()
 	result, ok := value.(map[string]any)
@@ -428,7 +427,7 @@ func object(t *testing.T, value any) map[string]any {
 	return result
 }
 
-// array 返回array。
+// array 将响应数据解析为数组。
 func array(t *testing.T, value any) []any {
 	t.Helper()
 	result, ok := value.([]any)
@@ -448,8 +447,8 @@ func stringValue(t *testing.T, value any) string {
 	return result
 }
 
-// performStoreOrderAction reads the latest order version immediately before
-// each merchant transition, matching the optimistic-lock HTTP contract.
+// performStoreOrderAction 在每次商户状态变更前立即读取最新订单版本，
+// 与 HTTP 乐观锁契约保持一致。
 func performStoreOrderAction(t *testing.T, handler http.Handler, tx *gorm.DB, orderID, action, token, key string) map[string]any {
 	t.Helper()
 	var version uint

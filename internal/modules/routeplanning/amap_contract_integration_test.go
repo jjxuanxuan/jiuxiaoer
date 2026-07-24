@@ -9,9 +9,9 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/config"
 )
 
-// TestAmapProviderNonProductionContract is opt-in because it consumes a real
-// Amap Web Service quota. It uses fixed non-customer GCJ-02 coordinates and is
-// never part of the default unit or CI test path.
+// TestAmapProviderNonProductionContract 为可选测试，因为会消耗真实的高德
+// Web 服务额度。它使用固定的非客户 GCJ-02 坐标，绝不属于默认单元测试
+// 或 CI 测试路径。
 func TestAmapProviderNonProductionContract(t *testing.T) {
 	if os.Getenv("JXE_RUN_AMAP_CONTRACT") != "1" {
 		t.Skip("set JXE_RUN_AMAP_CONTRACT=1 with a non-production Amap Web Service key")

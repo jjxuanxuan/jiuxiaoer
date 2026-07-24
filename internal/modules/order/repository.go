@@ -137,9 +137,9 @@ func (r *Repository) CreateOrderLog(ctx context.Context, tx *gorm.DB, row OrderL
 }
 
 // DeletePurchasedCartItems 删除Purchased 购物车明细。
-// DeletePurchasedCartItems removes only cart rows represented by the committed
-// order. The customer join prevents one customer's checkout from touching
-// another customer's cart, even if both contain the same shop product.
+// DeletePurchasedCartItems 只删除已提交订单所对应的购物车记录。
+// 客户关联可防止一个客户结算时触碰另一客户的购物车，
+// 即使两者包含相同的门店商品。
 func (r *Repository) DeletePurchasedCartItems(ctx context.Context, tx *gorm.DB, customerID uint64, shopProductIDs []uint64) error {
 	if len(shopProductIDs) == 0 {
 		return nil
@@ -270,9 +270,9 @@ func (r *Repository) NextExpiredOrder(ctx context.Context, now time.Time) (Order
 	return row, err
 }
 
-// ClaimNextReconcilablePayment claims one creating or pending payment without
-// holding a database lock across the provider request. next_reconcile_at is a
-// short lease as well as the explicit retry schedule.
+// ClaimNextReconcilablePayment 认领一笔创建中或待处理支付，
+// 且不会在请求服务商期间持续持有数据库锁。next_reconcile_at
+// 既是短期租约，也是明确的重试计划。
 func (r *Repository) ClaimNextReconcilablePayment(ctx context.Context, provider string, now, staleBefore time.Time) (Payment, error) {
 	var payment Payment
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -329,7 +329,7 @@ func (r *Repository) CreatePayment(ctx context.Context, tx *gorm.DB, row Payment
 	return tx.WithContext(ctx).Create(&row).Error
 }
 
-// LockPaymentByOrderProvider 加锁并获取支付 By 订单提供器。
+// LockPaymentByOrderProvider 按订单和服务商加锁并获取支付记录。
 func (r *Repository) LockPaymentByOrderProvider(ctx context.Context, tx *gorm.DB, orderID uint64, provider string) (Payment, error) {
 	var payment Payment
 	err := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).
@@ -338,7 +338,7 @@ func (r *Repository) LockPaymentByOrderProvider(ctx context.Context, tx *gorm.DB
 	return payment, err
 }
 
-// LockPaymentByNo 加锁并获取支付 By 无。
+// LockPaymentByNo 按支付单号加锁并获取支付记录。
 func (r *Repository) LockPaymentByNo(ctx context.Context, tx *gorm.DB, paymentNo string, provider string) (Payment, error) {
 	var payment Payment
 	err := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).
@@ -347,7 +347,7 @@ func (r *Repository) LockPaymentByNo(ctx context.Context, tx *gorm.DB, paymentNo
 	return payment, err
 }
 
-// GetPaymentByNo 获取支付 By 无。
+// GetPaymentByNo 按支付单号获取支付记录。
 func (r *Repository) GetPaymentByNo(ctx context.Context, tx *gorm.DB, paymentNo string, provider string) (Payment, error) {
 	var payment Payment
 	err := tx.WithContext(ctx).
@@ -365,7 +365,7 @@ func (r *Repository) GetCustomerPayment(ctx context.Context, customerID uint64, 
 	return payment, err
 }
 
-// GetPaymentByOrderProvider 获取支付 By 订单提供器。
+// GetPaymentByOrderProvider 按订单和服务商获取支付记录。
 func (r *Repository) GetPaymentByOrderProvider(ctx context.Context, orderID uint64, provider string) (Payment, error) {
 	var payment Payment
 	err := r.db.WithContext(ctx).
@@ -394,6 +394,16 @@ func (r *Repository) CustomerWeChatOpenID(ctx context.Context, tx *gorm.DB, cust
 	return openID, nil
 }
 
+// CustomerPhoneBound 判断顾客是否已经完成手机号绑定。
+func (r *Repository) CustomerPhoneBound(ctx context.Context, tx *gorm.DB, customerID uint64) (bool, error) {
+	var count int64
+	err := tx.WithContext(ctx).
+		Table("customers").
+		Where("id = ? AND TRIM(phone) <> '' AND deleted_at IS NULL", customerID).
+		Count(&count).Error
+	return count > 0, err
+}
+
 // CreatePaymentCallbackIfAbsent 创建支付回调 If Absent。
 func (r *Repository) CreatePaymentCallbackIfAbsent(ctx context.Context, tx *gorm.DB, row PaymentCallback) (bool, error) {
 	result := tx.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&row)
@@ -410,7 +420,7 @@ func (r *Repository) CreateAuditLog(ctx context.Context, tx *gorm.DB, row AuditL
 	return tx.WithContext(ctx).Create(&row).Error
 }
 
-// GetPaymentByOrder 获取支付 By 订单。
+// GetPaymentByOrder 按订单获取支付记录。
 func (r *Repository) GetPaymentByOrder(ctx context.Context, tx *gorm.DB, orderID uint64, channel string) (Payment, error) {
 	var payment Payment
 	err := tx.WithContext(ctx).Where("order_id = ? AND channel = ? AND deleted_at IS NULL", orderID, channel).First(&payment).Error

@@ -125,9 +125,9 @@ func (s *Service) ValidatePolicy(ctx context.Context, claims *auth.Claims, idRaw
 	}
 	var out PolicyDTO
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Probe the scope without a lock, then lock every policy in that scope in
-		// id order. Locking only the target draft allows two concurrent publishes
-		// to deadlock or race on the generated published-scope unique key.
+		// 先无锁探测范围，再按 ID 顺序锁定该范围内的所有策略。
+		// 如果只锁目标草稿，两个并发发布可能在生成的已发布范围唯一键上
+		// 发生死锁或竞争。
 		var probe Policy
 		if err := tx.Select("id,scope_type,scope_id").First(&probe, id).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 			return problem.NotFound("DISPATCH_POLICY_NOT_FOUND", "dispatch policy not found")
@@ -194,7 +194,7 @@ func (s *Service) RetirePolicy(ctx context.Context, claims *auth.Claims, method,
 	return s.changePolicyStatus(ctx, actor, method, path, key, idRaw, req, "retired")
 }
 
-// changePolicyStatus 返回change 策略状态。
+// changePolicyStatus 变更策略状态。
 func (s *Service) changePolicyStatus(ctx context.Context, actor uint64, method, path, key, idRaw string, req VersionReq, target string) (PolicyDTO, error) {
 	id, err := parseID(idRaw)
 	if err != nil {
@@ -315,7 +315,7 @@ func policyDTO(row Policy) PolicyDTO {
 	}
 }
 
-// adminActor 返回管理端 Actor。
+// adminActor 返回管理端审计主体。
 func adminActor(claims *auth.Claims, permission string) (uint64, error) {
 	if claims == nil || claims.AccountType != "admin" {
 		return 0, problem.Forbidden("PERM_FORBIDDEN", "admin permission required")

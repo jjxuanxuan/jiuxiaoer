@@ -18,8 +18,8 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/config"
 )
 
-// Manager owns a reconnectable RabbitMQ connection. Workers ask for the
-// current connection for every session instead of retaining a dead pointer.
+// Manager 管理可重连的 RabbitMQ 连接。工作进程每次会话都获取当前连接，
+// 而不是保留已经失效的指针。
 type Manager struct {
 	cfg    config.RabbitMQConfig
 	log    *slog.Logger
@@ -74,7 +74,7 @@ func (m *Manager) Connection(ctx context.Context) (*amqp.Connection, error) {
 	}
 }
 
-// connectOnce 返回connect Once。
+// connectOnce 尝试建立一次连接。
 func (m *Manager) connectOnce(ctx context.Context) (*amqp.Connection, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -114,9 +114,8 @@ func (m *Manager) Healthy() bool {
 }
 
 // ManagementGet 返回Management Get。
-// ManagementGet reads RabbitMQ Management API state without mutating broker
-// resources. It is used for exact topology verification and queue statistics;
-// AMQP passive declarations alone cannot expose exchange/queue arguments.
+// ManagementGet 在不修改代理资源的情况下读取 RabbitMQ 管理 API 状态。
+// 它用于精确拓扑验证和队列统计；仅靠 AMQP 被动声明无法公开交换机或队列参数。
 func (m *Manager) ManagementGet(ctx context.Context, resource string, destination any) error {
 	if m == nil {
 		return fmt.Errorf("rabbitmq is disabled")
@@ -149,7 +148,7 @@ func (m *Manager) ManagementGet(ctx context.Context, resource string, destinatio
 	return nil
 }
 
-// managementEndpoint 返回management Endpoint。
+// managementEndpoint 返回管理 API 地址。
 func managementEndpoint(cfg config.RabbitMQConfig, resource string) (string, string, string, error) {
 	amqpURL, err := url.Parse(cfg.URL)
 	if err != nil || amqpURL.Hostname() == "" {

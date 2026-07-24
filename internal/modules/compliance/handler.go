@@ -16,7 +16,7 @@ type Handler struct{ service *Service }
 // NewHandler 创建并初始化Handler。
 func NewHandler(s *Service) *Handler { return &Handler{service: s} }
 
-// RegisterCustomerRoutes 注册用户 Routes。
+// RegisterCustomerRoutes 注册客户路由。
 func RegisterCustomerRoutes(g *gin.RouterGroup, h *Handler) {
 	g.GET("/me", h.GetMe)
 	g.GET("/:id", h.GetRequest)
@@ -28,13 +28,13 @@ func RegisterCallbackRoute(api *gin.RouterGroup, h *Handler) {
 	api.POST("/identity-verifications/:provider/callbacks", h.Callback)
 }
 
-// RegisterAdminRoutes 注册管理端 Routes。
+// RegisterAdminRoutes 注册管理端路由。
 func RegisterAdminRoutes(g *gin.RouterGroup, h *Handler) {
 	g.GET("/identity-verifications", h.List)
 	g.POST("/identity-verifications/:id/review", h.Review)
 }
 
-// cl 返回cl。
+// cl 返回合规控制器。
 func cl(c *gin.Context) (*auth.Claims, bool) {
 	v, ok := auth.ClaimsFromContext(c)
 	if !ok {

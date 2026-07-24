@@ -8,7 +8,7 @@ import (
 	"gorm.io/datatypes"
 )
 
-// TestExchangeNamesMatchPRD 验证Exchange Names Match PRD的预期行为。
+// TestExchangeNamesMatchPRD 验证交换机名称符合 PRD。
 func TestExchangeNamesMatchPRD(t *testing.T) {
 	if exchangeName != "jxe.events.topic.v2" {
 		t.Fatalf("expected consumer-scoped exchange jxe.events.topic.v2, got %s", exchangeName)
@@ -29,7 +29,7 @@ func TestExchangeNamesMatchPRD(t *testing.T) {
 	}
 }
 
-// TestEventBodyIncludesRequiredMetadata 验证事件请求体 Includes Required Metadata的预期行为。
+// TestEventBodyIncludesRequiredMetadata 验证事件体包含必需元数据。
 func TestEventBodyIncludesRequiredMetadata(t *testing.T) {
 	requestID := "req_test"
 	body, err := eventBody(OutboxEvent{

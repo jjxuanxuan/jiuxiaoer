@@ -9,8 +9,8 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/pkg/metrics"
 )
 
-// RegisterMetrics exposes low-cardinality backlog, branch-divergence, and
-// accounting-invariant gauges. Scrape failures never affect business traffic.
+// RegisterMetrics 公开低基数的积压、分支偏差和记账不变量指标。
+// 抓取失败绝不会影响业务流量。
 func RegisterMetrics(db *gorm.DB, registry *metrics.Registry) {
 	if db == nil || registry == nil {
 		return

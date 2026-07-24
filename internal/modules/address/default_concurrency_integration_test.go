@@ -17,7 +17,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/pkg/snowflake"
 )
 
-// TestConcurrentSetDefaultKeepsExactlyOneAddress 验证Concurrent Set 默认项 Keeps Exactly One 地址的预期行为。
+// TestConcurrentSetDefaultKeepsExactlyOneAddress 验证并发设置默认地址时只保留一个默认项。
 func TestConcurrentSetDefaultKeepsExactlyOneAddress(t *testing.T) {
 	if os.Getenv("JXE_RUN_INTEGRATION") != "1" {
 		t.Skip("set JXE_RUN_INTEGRATION=1 to run MySQL concurrency test")

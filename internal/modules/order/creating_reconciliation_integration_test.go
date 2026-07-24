@@ -17,7 +17,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/pkg/snowflake"
 )
 
-// TestExpiryReconcilesCreatingPaymentBeforeClosingOrder 验证过期 Reconciles 创建中支付 Before Closing 订单的预期行为。
+// TestExpiryReconcilesCreatingPaymentBeforeClosingOrder 验证订单关闭前先对账创建中的支付。
 func TestExpiryReconcilesCreatingPaymentBeforeClosingOrder(t *testing.T) {
 	if os.Getenv("JXE_RUN_INTEGRATION") != "1" {
 		t.Skip("set JXE_RUN_INTEGRATION=1 to run creating payment reconciliation test")
@@ -82,7 +82,7 @@ func TestExpiryReconcilesCreatingPaymentBeforeClosingOrder(t *testing.T) {
 	}
 }
 
-// TestWorkerReconcilesStaleCreatingPaymentBeforeExpiry 验证工作器 Reconciles Stale 创建中支付 Before 过期的预期行为。
+// TestWorkerReconcilesStaleCreatingPaymentBeforeExpiry 验证工作进程在过期前对账停滞的创建中支付。
 func TestWorkerReconcilesStaleCreatingPaymentBeforeExpiry(t *testing.T) {
 	if os.Getenv("JXE_RUN_INTEGRATION") != "1" {
 		t.Skip("set JXE_RUN_INTEGRATION=1 to run creating payment reconciliation test")
@@ -112,7 +112,7 @@ func TestWorkerReconcilesStaleCreatingPaymentBeforeExpiry(t *testing.T) {
 	if err := db.Create(&order.Payment{ID: paymentID, PaymentNo: paymentNo, OrderID: orderID, CustomerID: 1, Channel: "miniapp", Provider: "wechat", Status: "creating", Amount: 100, Currency: "CNY", ExpiresAt: &expiresAt, UpdatedAt: staleAt}).Error; err != nil {
 		t.Fatalf("create payment: %v", err)
 	}
-	// GORM may refresh auto-update timestamps on Create; pin the fixture's age.
+	// GORM 可能在 Create 时刷新自动更新时间戳，因此固定测试夹具的时间。
 	if err := db.Model(&order.Payment{}).Where("id = ?", paymentID).UpdateColumn("updated_at", staleAt).Error; err != nil {
 		t.Fatalf("age payment fixture: %v", err)
 	}

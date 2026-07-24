@@ -57,8 +57,8 @@ func TestRegisterEnrichesTypedAndMapAuditWrites(t *testing.T) {
 	if err := Register(db); err != nil {
 		t.Fatal(err)
 	}
-	// Registration is idempotent because application tests can construct more
-	// than one router around the same database handle.
+	// 注册操作具备幂等性，因为应用测试可能基于同一个数据库句柄
+	// 构造多个路由器。
 	if err := Register(db); err != nil {
 		t.Fatal(err)
 	}

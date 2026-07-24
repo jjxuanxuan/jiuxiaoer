@@ -110,8 +110,8 @@ type DispatchConfig struct {
 	HeartbeatPersistInterval time.Duration
 }
 
-// RealtimeConfig controls the rider WebSocket delivery plane. Every switch is
-// off by default so deploying a binary never enables realtime side effects.
+// RealtimeConfig 控制骑手 WebSocket 投递平面。所有开关默认关闭，
+// 确保仅部署二进制文件不会启用实时副作用。
 type RealtimeConfig struct {
 	Enabled                  bool
 	RelayEnabled             bool
@@ -138,8 +138,8 @@ type RealtimeConfig struct {
 	ResumeRatePerMinute      int
 }
 
-// MapRouteConfig controls the read-only delivery route planning capability.
-// The feature is disabled and uses a deterministic fake provider by default.
+// MapRouteConfig 控制只读配送路线规划能力。该功能默认关闭，
+// 并使用结果确定的模拟服务商。
 type MapRouteConfig struct {
 	Enabled              bool
 	Provider             string
@@ -160,9 +160,8 @@ type MapRouteConfig struct {
 	CacheHMACSecret      string
 }
 
-// CustomerLBSConfig controls the customer-facing location context flow. It is
-// deliberately independent from rider route planning so the two workloads can
-// use separate Amap keys, quotas and rollout switches.
+// CustomerLBSConfig 控制面向客户的位置上下文流程。它刻意与骑手路线规划分离，
+// 使两类工作负载可以使用独立的高德密钥、额度和灰度开关。
 type CustomerLBSConfig struct {
 	Mode                   string
 	Provider               string
@@ -189,8 +188,8 @@ type CustomerLBSConfig struct {
 	AnonymousSessionHeader string
 }
 
-// SearchConfig controls customer search history, hot ranking, and retention.
-// MySQL remains authoritative; Redis is only a short-lived ranking cache.
+// SearchConfig 控制客户搜索历史、热词排行和保留策略。
+// MySQL 始终是权威数据源，Redis 仅作为短期排行缓存。
 type SearchConfig struct {
 	HistoryMax         int
 	HistoryRetention   time.Duration
@@ -203,9 +202,8 @@ type SearchConfig struct {
 	CleanupBatchSize   int
 }
 
-// RiderApplicationConfig controls the pre-onboarding rider application flow.
-// It is intentionally disabled by default and requires both MySQL and Redis
-// before public application or review traffic can be enabled.
+// RiderApplicationConfig 控制骑手正式入驻前的申请流程。该功能刻意默认关闭，
+// 只有 MySQL 和 Redis 都可用时才能开放申请或审核流量。
 type RiderApplicationConfig struct {
 	Enabled                    bool
 	TokenTTL                   time.Duration
@@ -235,8 +233,8 @@ type OrderConfig struct {
 	ExpiryBatchSize      int
 }
 
-// ReconciliationConfig controls the T+1 WeChat trade and fund-flow bill
-// closure. It is disabled locally by default; production payments require it.
+// ReconciliationConfig 控制 T+1 微信交易账单和资金账单闭环。
+// 本地默认关闭，生产支付必须启用。
 type ReconciliationConfig struct {
 	Enabled              bool
 	WorkerEnabled        bool
@@ -262,8 +260,7 @@ type AfterSaleConfig struct {
 	EvidenceTokenSecret     string
 }
 
-// DeliveryIncidentConfig keeps the new write path and its two side effects
-// independently switchable during rollout.
+// DeliveryIncidentConfig 使新的写入路径及其两个副作用在灰度期间可以独立开关。
 type DeliveryIncidentConfig struct {
 	Enabled               bool
 	AutoResolveEnabled    bool
@@ -279,9 +276,8 @@ type DeliveryIncidentConfig struct {
 	EvidenceViewTTL       time.Duration
 }
 
-// DeliveryReturnConfig keeps every high-risk branch independently switchable.
-// The master switch alone never enables rider writes, approval, receipts, or
-// notifications.
+// DeliveryReturnConfig 使每个高风险分支都能独立开关。
+// 仅打开总开关不会启用骑手写入、批准、收货或通知。
 type DeliveryReturnConfig struct {
 	Enabled                bool
 	RiderWriteEnabled      bool
@@ -320,9 +316,8 @@ type ServiceAreaConfig struct {
 	QueryTimeout    time.Duration
 }
 
-// SMSConfig controls login verification messages. Local development can keep
-// using the deterministic mock, while non-mock environments use Tencent Cloud
-// SMS API 3.0 with an approved sign and template.
+// SMSConfig 控制登录验证短信。本地开发可继续使用结果确定的模拟实现，
+// 非模拟环境则使用带已审核签名和模板的腾讯云短信 API 3.0。
 type SMSConfig struct {
 	Enabled     bool
 	Provider    string
@@ -372,9 +367,8 @@ type MetricsConfig struct {
 	Token   string
 }
 
-// CP1Config contains rollout controls and secrets for the phase-one closure.
-// Modes are off, observe, or enforce. External side effects stay disabled by
-// default until the corresponding provider and rollout gate are approved.
+// CP1Config 包含一期闭环的灰度控制项和密钥。模式包括 off、observe 和 enforce。
+// 在对应服务商与灰度门禁获批前，外部副作用默认保持关闭。
 type CP1Config struct {
 	ReleaseProfile             string
 	PrintEnabled               bool
@@ -725,7 +719,7 @@ func Load() Config {
 }
 
 // Validate 校验配置是否合法。
-// Validate rejects unsafe or internally inconsistent runtime configuration.
+// Validate 拒绝不安全或内部不一致的运行时配置。
 func (c Config) Validate() error {
 	var problems []string
 	if c.App.SnowflakeNodeID < 0 || c.App.SnowflakeNodeID > 1023 {
@@ -1183,9 +1177,8 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// CP1ReleaseProfileProblems returns the fail-closed capability gaps for a
-// phase-one release candidate. Ordinary production instances keep this profile
-// off so an approved incident response can still disable optional side effects.
+// CP1ReleaseProfileProblems 返回一期候选版本按失败关闭原则检查出的能力缺口。
+// 普通生产实例保持此配置关闭，以便经批准的事故响应仍能停用可选副作用。
 func (c Config) CP1ReleaseProfileProblems() []string {
 	if c.CP1.ReleaseProfile != CP1ReleaseProfilePhaseOne {
 		return nil
@@ -1252,7 +1245,7 @@ func isProduction(envName string) bool {
 	return envName == "prod" || envName == "production"
 }
 
-// defaultInstanceID 返回默认项 Instance ID。
+// defaultInstanceID 返回默认实例 ID。
 func defaultInstanceID() string {
 	hostname, err := os.Hostname()
 	if err != nil || hostname == "" {
@@ -1261,7 +1254,7 @@ func defaultInstanceID() string {
 	return fmt.Sprintf("%s-%d", hostname, os.Getpid())
 }
 
-// env 返回env。
+// env 返回环境变量值。
 func env(key string, fallback string) string {
 	if value, ok := os.LookupEnv(key); ok {
 		return value
@@ -1282,7 +1275,7 @@ func boolEnv(key string, fallback bool) bool {
 	return value
 }
 
-// csvEnv 返回csv Env。
+// csvEnv 解析英文逗号分隔的环境变量。
 func csvEnv(key string) []string {
 	raw := strings.TrimSpace(os.Getenv(key))
 	if raw == "" {
@@ -1298,7 +1291,7 @@ func csvEnv(key string) []string {
 	return result
 }
 
-// intEnv 返回int Env。
+// intEnv 解析整数环境变量。
 func intEnv(key string, fallback int) int {
 	raw, ok := os.LookupEnv(key)
 	if !ok {
@@ -1311,7 +1304,7 @@ func intEnv(key string, fallback int) int {
 	return value
 }
 
-// int64Env 返回int 64 Env。
+// int64Env 解析 64 位整数环境变量。
 func int64Env(key string, fallback int64) int64 {
 	raw, ok := os.LookupEnv(key)
 	if !ok {

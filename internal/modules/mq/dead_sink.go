@@ -91,7 +91,7 @@ func (s *DeadSink) consumeSession(ctx context.Context, conn *amqp.Connection) er
 	return fmt.Errorf("dead sink delivery channel closed")
 }
 
-// persist 返回persist。
+// persist 持久化死信。
 func (s *DeadSink) persist(ctx context.Context, delivery amqp.Delivery) error {
 	now := time.Now()
 	consumer := headerString(delivery.Headers, "x-jxe-consumer")
@@ -155,7 +155,7 @@ func (s *DeadSink) persist(ctx context.Context, delivery amqp.Delivery) error {
 	return err
 }
 
-// headerString 返回header 字符串。
+// headerString 返回消息头字符串。
 func headerString(headers amqp.Table, key string) string {
 	if headers == nil {
 		return ""

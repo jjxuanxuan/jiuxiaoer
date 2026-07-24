@@ -17,7 +17,7 @@ type Handler struct{ service *Service }
 // NewHandler 创建并初始化Handler。
 func NewHandler(service *Service) *Handler { return &Handler{service: service} }
 
-// RegisterStoreRoutes 注册门店 Routes。
+// RegisterStoreRoutes 注册门店路由。
 func RegisterStoreRoutes(group *gin.RouterGroup, h *Handler) {
 	group.GET("/print-settings", h.GetSettings)
 	group.POST("/print-settings", h.CreateSettings)
@@ -28,7 +28,7 @@ func RegisterStoreRoutes(group *gin.RouterGroup, h *Handler) {
 	group.POST("/print-tasks/:id/reprint", h.Reprint)
 }
 
-// CreateSettings creates the first configuration for an authorized shop.
+// CreateSettings 为获授权门店创建首个配置。
 func (h *Handler) CreateSettings(c *gin.Context) {
 	v, ok := claims(c)
 	if !ok {
@@ -47,7 +47,7 @@ func (h *Handler) CreateSettings(c *gin.Context) {
 	response.OK(c, item)
 }
 
-// TestSettings sends a standard non-PII test page to the configured device.
+// TestSettings 向配置的设备发送不含个人身份信息的标准测试页。
 func (h *Handler) TestSettings(c *gin.Context) {
 	v, ok := claims(c)
 	if !ok {
@@ -61,7 +61,7 @@ func (h *Handler) TestSettings(c *gin.Context) {
 	response.OK(c, item)
 }
 
-// RegisterAdminRoutes 注册管理端 Routes。
+// RegisterAdminRoutes 注册管理端路由。
 func RegisterAdminRoutes(group *gin.RouterGroup, h *Handler) {
 	group.GET("/print-tasks", h.ListAdminTasks)
 	group.POST("/print-tasks/:id/retry", h.Retry)

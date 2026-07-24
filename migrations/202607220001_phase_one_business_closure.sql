@@ -1,8 +1,7 @@
 -- +goose Up
--- Permission IDs 2132-2144 are allocated after the repository's current
--- controlled catalog maximum (2131). Abort before the first write when either
--- an ID or code belongs to a different permission; the upsert below is safe
--- only after this bidirectional mapping has been proven.
+-- 权限 ID 2132 至 2144 分配在仓库当前受控目录最大值 2131 之后。
+-- 当任一 ID 或代码已属于其他权限时，在首次写入前终止；
+-- 只有证明双向映射正确后，下方更新插入才是安全的。
 DROP PROCEDURE IF EXISTS assert_phase_one_permission_catalog;
 -- +goose StatementBegin
 CREATE PROCEDURE assert_phase_one_permission_catalog()
@@ -45,9 +44,9 @@ END;
 -- +goose StatementEnd
 CALL assert_phase_one_permission_catalog();
 
--- Before production rollout, also run the read-only print preflight documented
--- in docs/runbooks/cp1-launch-closure.md. The query must return zero rows before
--- adding uk_cp1_print_provider_request; do not delete or rewrite print facts.
+-- 生产灰度前，还要执行 docs/runbooks/cp1-launch-closure.md 中记录的
+-- 只读打印预检。添加 uk_cp1_print_provider_request 前查询必须返回零行；
+-- 不要删除或改写打印事实。
 INSERT INTO permissions (id, code, resource, action, description, status) VALUES
   (2132, 'cart:view', 'cart', 'view', '查看本人购物车', 'active'),
   (2133, 'cart:update', 'cart', 'update', '维护本人购物车', 'active'),
@@ -69,14 +68,13 @@ ON DUPLICATE KEY UPDATE
   status = IF(id = VALUES(id) AND BINARY code = BINARY VALUES(code), 'active', status),
   deleted_at = IF(id = VALUES(id) AND BINARY code = BINARY VALUES(code), NULL, deleted_at);
 
--- Recheck after the write as well: this closes the gap if another catalog
--- writer races the initial preflight. Conflicting rows are never mutated above.
+-- 写入后也要再次检查：如果其他目录写入器与初始预检竞争，
+-- 此检查可以消除空隙。上方绝不会修改冲突记录。
 CALL assert_phase_one_permission_catalog();
 DROP PROCEDURE assert_phase_one_permission_catalog;
 
--- Split force-complete maker/checker authority. The runtime also rejects the
--- same admin on both sides, while these mappings keep ordinary operations
--- unable to approve their own request.
+-- 分离强制完成的申请人与复核人权限。运行时还会拒绝同一管理员兼任两方，
+-- 这些映射则确保普通运营人员无法批准自己的申请。
 INSERT INTO role_permissions (id, role_id, permission_id)
 SELECT r.id * 1000 + p.id, r.id, p.id
 FROM roles r
@@ -157,9 +155,8 @@ ALTER TABLE orders
   ADD KEY idx_cp1_customer_orders (customer_id, created_at, id),
   ADD KEY idx_cp1_store_orders (merchant_id, shop_id, status, created_at, id);
 
--- Historical records cannot be proven to have been enforced. The application
--- treats an enforce runtime mode as authoritative and rotates active codes at
--- the next lifecycle boundary.
+-- 无法证明历史记录曾经强制执行。应用将 enforce 运行模式视为权威，
+-- 并在下一个生命周期边界轮换有效验证码。
 UPDATE delivery_verifications
 SET mode_snapshot = 'observe'
 WHERE mode_snapshot IS NULL OR mode_snapshot = '';

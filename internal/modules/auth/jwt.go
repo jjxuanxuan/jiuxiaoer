@@ -39,8 +39,8 @@ type TokenPair struct {
 	ExpiresIn    int64
 }
 
-// ApplicationToken is deliberately not a TokenPair: an applicant never
-// receives a refresh token or a formal rider session.
+// ApplicationToken 刻意不使用 TokenPair：申请人绝不会获得刷新令牌
+// 或正式骑手会话。
 type ApplicationToken struct {
 	Token     string
 	ExpiresIn int64
@@ -104,9 +104,8 @@ func (m TokenManager) Issue(identity Identity) (TokenPair, error) {
 }
 
 // IssueApplication 返回Issue 申请。
-// IssueApplication signs a short-lived token that is valid only in the rider
-// application module. It shares the access signing key but uses a distinct
-// token_type, so the normal access parser rejects it.
+// IssueApplication 签发仅在骑手申请模块有效的短期令牌。它共用访问签名密钥，
+// 但使用独立的 token_type，因此普通访问令牌解析器会拒绝它。
 func (m TokenManager) IssueApplication(accountID, applicationID uint64, credentialVersion uint, permissions []string, ttl time.Duration) (ApplicationToken, error) {
 	now := time.Now()
 	claims := Claims{
@@ -132,12 +131,12 @@ func (m TokenManager) IssueApplication(accountID, applicationID uint64, credenti
 	return ApplicationToken{Token: raw, ExpiresIn: int64(ttl.Seconds())}, nil
 }
 
-// ParseAccess 解析Access。
+// ParseAccess 解析访问令牌。
 func (m TokenManager) ParseAccess(raw string) (*Claims, error) {
 	return m.parse(raw, m.cfg.AccessSecret, "access")
 }
 
-// ParseRefresh 解析Refresh。
+// ParseRefresh 解析刷新令牌。
 func (m TokenManager) ParseRefresh(raw string) (*Claims, error) {
 	return m.parse(raw, m.cfg.RefreshSecret, "refresh")
 }
@@ -172,7 +171,7 @@ func (m TokenManager) parse(raw string, secret string, tokenType string) (*Claim
 	return claims, nil
 }
 
-// uint64Strings 返回uint 64 Strings。
+// uint64Strings 将 64 位无符号整数列表转换为字符串列表。
 func uint64Strings(values []uint64) []string {
 	result := make([]string, 0, len(values))
 	for _, value := range values {

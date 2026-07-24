@@ -13,7 +13,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/config"
 )
 
-// TestRabbitMQAcceptanceContractAndOperations 验证Rabbit 消息队列验收 Contract And Operations的预期行为。
+// TestRabbitMQAcceptanceContractAndOperations 验证 RabbitMQ 验收契约和运维能力。
 func TestRabbitMQAcceptanceContractAndOperations(t *testing.T) {
 	t.Run("ACC-RMQ-011-retry-schedule-is-10s-1m-10m", func(t *testing.T) {
 		spec, err := DefaultConsumerSpec("notification")

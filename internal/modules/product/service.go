@@ -60,10 +60,9 @@ func (s *Service) ListCategories(ctx context.Context) ([]CategoryDTO, error) {
 		return s.listCategoriesFromDB(ctx)
 	}
 
-	// Recheck the revision before returning a hit or publishing a fill. This
-	// closes the race where a category transaction commits between the first
-	// revision read and Redis/DB access: an old revision key is never returned
-	// after the newer committed revision becomes visible.
+	// 返回命中结果或发布缓存填充前重新检查版本。这可消除分类事务在首次读取版本
+	// 与访问 Redis 或数据库之间提交所产生的竞争：更新的已提交版本可见后，
+	// 绝不会再返回旧版本键。
 	for attempt := 0; attempt < categoryCacheReadAttempts; attempt++ {
 		revision, err := s.repo.CategoryCatalogRevision(ctx)
 		if err != nil {
@@ -99,8 +98,8 @@ func (s *Service) ListCategories(ctx context.Context) ([]CategoryDTO, error) {
 		return items, nil
 	}
 
-	// Under sustained category writes, favor a fresh DB snapshot over filling or
-	// returning a cache entry whose revision changed during the request.
+	// 分类持续写入时，优先使用新的数据库快照，
+	// 而不是填充或返回请求期间版本已变化的缓存记录。
 	return s.listCategoriesFromDB(ctx)
 }
 
@@ -216,8 +215,8 @@ func (s *Service) GetPublicProduct(ctx context.Context, id string, query ListQue
 		return ProductDTO{}, err
 	}
 	item := productDTO(row)
-	// Only the shop-static product projection is cached. A delivery promise is
-	// location-specific and must be attached after every cache read.
+	// 只缓存门店静态商品投影。配送承诺与位置相关，
+	// 每次读取缓存后都必须重新附加。
 	item.DeliveryPromise = nil
 	s.setJSONCache(ctx, cacheKey, item, 5*time.Minute)
 	return productResponse(item, query, promise), nil
@@ -230,7 +229,7 @@ func (s *Service) resolveProductShop(ctx context.Context, query *ListQuery) (*se
 	return s.resolveShop(ctx, query)
 }
 
-// resolveShop 返回resolve 门店。
+// resolveShop 解析并返回门店。
 func (s *Service) resolveShop(ctx context.Context, query *ListQuery) (*servicearea.DeliveryPromiseDTO, error) {
 	query.locationlessReason = reasonLocationRequired
 	if s.lbsMode == "enforce" {
@@ -274,8 +273,8 @@ func (s *Service) resolveShop(ctx context.Context, query *ListQuery) (*servicear
 		}
 	}
 	if s.lbsMode == "enforce" {
-		// The required context branch above always returns. This guard keeps the
-		// enforcement contract explicit if a future refactor changes that flow.
+		// 上方必需上下文分支始终会返回。即使未来重构改变流程，
+		// 此保护仍能明确保留强制执行契约。
 		return nil, problem.New(422, "LOCATION_CONTEXT_REQUIRED", "Unprocessable Entity", "X-Location-Context is required")
 	}
 	hasLocation := query.CityCode != "" || query.Latitude != nil || query.Longitude != nil
@@ -355,8 +354,8 @@ func productDTO(row ProductRow) ProductDTO {
 }
 
 func productResponse(item ProductDTO, query ListQuery, promise *servicearea.DeliveryPromiseDTO) ProductDTO {
-	// Old cache entries may still contain a location-specific promise. Always
-	// clear it before attaching the promise resolved for this request.
+	// 旧缓存记录可能仍包含位置相关的承诺。附加本次请求解析出的承诺前，
+	// 始终先将其清除。
 	item.DeliveryPromise = nil
 	if query.ShopID == "" {
 		item.ContextType = contextNoServiceShop
@@ -375,9 +374,8 @@ func productResponse(item ProductDTO, query ListQuery, promise *servicearea.Deli
 	}
 
 	item.ContextType = contextServiceShop
-	// Entries written before the contract change did not have the discriminator
-	// or availability fields. They only contained saleable products, so the
-	// static status and stock projection is sufficient to normalize them.
+	// 契约变更前写入的记录没有判别字段或可用性字段，且只包含可售商品，
+	// 因此静态状态和库存投影足以将其规范化。
 	if item.UnavailableReason == nil && !item.Purchasable {
 		switch {
 		case item.Status != "on_sale":

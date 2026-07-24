@@ -37,9 +37,8 @@ type receiptItemRow struct {
 	TotalAmount     int64
 }
 
-// renderReceiptV1 builds an immutable, provider-neutral snapshot. It excludes
-// precise coordinates, verification codes, complete phone numbers and other
-// fulfilment secrets by construction.
+// renderReceiptV1 构建不可变且与服务商无关的快照。
+// 其设计会排除精确坐标、验证码、完整手机号及其他履约秘密。
 func renderReceiptV1(tx *gorm.DB, orderID, shopID uint64, template Template) (datatypes.JSON, error) {
 	var order receiptOrderRow
 	err := tx.Table("orders o").
@@ -113,11 +112,9 @@ func renderReceiptV1(tx *gorm.DB, orderID, shopID uint64, template Template) (da
 	return datatypes.JSON(raw), err
 }
 
-// RenderReceiptV1ForBackfill exposes the same immutable receipt projection to
-// the controlled CP1 migration command. Keeping migration rendering on this
-// path prevents a one-off script from drifting from newly-created tasks.
-// Callers are still responsible for restricting writes to migratable task
-// states and for applying an optimistic update.
+// RenderReceiptV1ForBackfill 向受控 CP1 迁移命令公开同一不可变小票投影。
+// 让迁移渲染继续使用此路径，可防止一次性脚本与新建任务产生偏差。
+// 调用方仍负责只写入可迁移任务状态并应用乐观更新。
 func RenderReceiptV1ForBackfill(tx *gorm.DB, orderID, shopID uint64, template Template) (datatypes.JSON, error) {
 	return renderReceiptV1(tx, orderID, shopID, template)
 }

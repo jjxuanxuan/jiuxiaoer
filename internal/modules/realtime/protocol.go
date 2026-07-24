@@ -111,7 +111,7 @@ type ServerFrame struct {
 	Detail                   string          `json:"detail,omitempty"`
 }
 
-// frameNow 返回frame Now。
+// frameNow 返回带当前时间的协议帧。
 func frameNow(frameType string) ServerFrame {
 	return ServerFrame{ProtocolVersion: ProtocolVersion, Type: frameType, ServerTime: time.Now().UTC()}
 }
@@ -132,9 +132,8 @@ func deliveryFrame(row Delivery) ServerFrame {
 	return frame
 }
 
-// storeOrderPaidFrame keeps the merchant event payload deliberately small.
-// The client uses event_id for de-duplication, then reloads the scoped order
-// list/detail API as the source of truth.
+// storeOrderPaidFrame 刻意保持商户事件载荷精简。客户端使用 event_id 去重，
+// 随后重新加载限定范围的订单列表或详情 API 作为事实来源。
 func storeOrderPaidFrame(event StoreOrderPaidEvent) ServerFrame {
 	data, _ := json.Marshal(event)
 	frame := frameNow(FrameEvent)
@@ -150,7 +149,7 @@ func (i TicketInfo) recipient() (string, uint64) {
 	if i.RecipientType != "" && i.RecipientID != 0 {
 		return i.RecipientType, i.RecipientID
 	}
-	// Compatibility for rider tickets issued before recipient_type was added.
+	// 兼容添加 recipient_type 前签发的骑手票据。
 	if i.RiderID != 0 {
 		return recipientRider, i.RiderID
 	}

@@ -8,7 +8,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/modules/mq"
 )
 
-// TestRecipientMappingAssignmentClosesOnlyLosingRiders 验证收件人 Mapping 分配 Closes Only Losing Riders的预期行为。
+// TestRecipientMappingAssignmentClosesOnlyLosingRiders 验证分配事件只关闭未获分配骑手的映射。
 func TestRecipientMappingAssignmentClosesOnlyLosingRiders(t *testing.T) {
 	db := realtimeSQLite(t)
 	if err := db.Exec("CREATE TABLE dispatch_candidates (id INTEGER PRIMARY KEY,job_id INTEGER,rider_id INTEGER,rank_no INTEGER,eligible INTEGER)").Error; err != nil {
@@ -61,7 +61,7 @@ func TestRecipientMappingAssignmentClosesOnlyLosingRiders(t *testing.T) {
 	}
 }
 
-// TestOfferSourceMapsToOpenedClientEvent 验证Offer Source Maps To Opened 客户端事件的预期行为。
+// TestOfferSourceMapsToOpenedClientEvent 验证派单来源映射为已打开的客户端事件。
 func TestOfferSourceMapsToOpenedClientEvent(t *testing.T) {
 	handler := &MQHandler{}
 	targets, err := handler.targets(context.Background(), nil, mq.EventEnvelope{EventType: "dispatch.offer.created", OccurredAt: time.Now()}, map[string]any{

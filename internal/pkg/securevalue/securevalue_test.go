@@ -2,7 +2,7 @@ package securevalue
 
 import "testing"
 
-// TestSealAndHMAC 验证Seal And HMAC的预期行为。
+// TestSealAndHMAC 验证加密封装和 HMAC 计算行为。
 func TestSealAndHMAC(t *testing.T) {
 	key := "01234567890123456789012345678901"
 	sealed, err := Seal(key, "sensitive")

@@ -295,8 +295,8 @@ func boundedOptional(value string, max int) (string, bool) {
 	return value, len([]rune(value)) <= max
 }
 
-// flexibleText accepts the string/empty-array variants returned by Amap for
-// direct-controlled municipalities. Non-empty arrays are rejected.
+// flexibleText 接受高德针对直辖市返回的字符串或空数组形式，
+// 非空数组会被拒绝。
 type flexibleText string
 
 func (v *flexibleText) UnmarshalJSON(payload []byte) error {
@@ -385,8 +385,8 @@ type routeResponse struct {
 	} `json:"route"`
 }
 
-// UnavailableProvider is used when the feature is disabled or misconfigured;
-// it never exposes configuration values through its error.
+// UnavailableProvider 在功能关闭或配置错误时使用，
+// 其错误绝不会暴露配置值。
 type UnavailableProvider struct{}
 
 func (*UnavailableProvider) Reverse(context.Context, Coordinate) (AdministrativeLocation, error) {
@@ -397,8 +397,8 @@ func (*UnavailableProvider) Estimate(context.Context, Coordinate, Coordinate) (R
 	return RouteEstimate{}, &ProviderError{Kind: ErrorFailure}
 }
 
-// FakeProvider is deterministic local-test infrastructure. It must never be
-// enabled in production; configuration validation enforces that boundary.
+// FakeProvider 是结果确定的本地测试基础设施。生产环境绝不能启用，
+// 配置校验会强制执行此边界。
 type FakeProvider struct{}
 
 func NewFakeProvider() *FakeProvider { return &FakeProvider{} }

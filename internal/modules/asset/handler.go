@@ -13,13 +13,13 @@ type Handler struct{ service *Service }
 // NewHandler 创建并初始化Handler。
 func NewHandler(s *Service) *Handler { return &Handler{service: s} }
 
-// RegisterCustomerRoutes 注册用户 Routes。
+// RegisterCustomerRoutes 注册客户路由。
 func RegisterCustomerRoutes(g *gin.RouterGroup, h *Handler) {
 	g.GET("", h.Summaries)
 	g.GET("/:asset_type/transactions", h.CustomerTransactions)
 }
 
-// RegisterAdminRoutes 注册管理端 Routes。
+// RegisterAdminRoutes 注册管理端路由。
 func RegisterAdminRoutes(g *gin.RouterGroup, h *Handler) {
 	g.GET("/asset-transactions", h.AdminTransactions)
 	g.GET("/asset-transactions/:id", h.AdminTransaction)

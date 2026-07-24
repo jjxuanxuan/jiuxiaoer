@@ -32,7 +32,7 @@ func TestStorePageTokenIsBoundToMerchantPrincipalAndShopScope(t *testing.T) {
 	}
 	token := pagination.NextPageTokenWithCursor(query, "2026-07-22T10:00:00Z", "9001")
 
-	// Equivalent shop sets remain valid even when claim order changes.
+	// 即使声明顺序改变，等价门店集合仍然有效。
 	sameOwner := *owner
 	sameOwner.AuthorizedShopIDs = []string{"4201", "4202"}
 	same := storePaginationTestContext("/api/v1/store/orders?page_size=2&page_token=" + url.QueryEscape(token))
@@ -79,8 +79,8 @@ func TestStoreOrderDefaultKeysetIsStableAcrossInsertAndDelete(t *testing.T) {
 	}
 	cursorRow := first[1]
 
-	// A newer insert plus deletion from the already-consumed page shifts an
-	// offset window, but must not affect the keyset window after order 103.
+	// 新增较新记录并删除已消费页面中的记录会移动偏移窗口，
+	// 但不得影响订单 103 之后的键集窗口。
 	if err := db.Exec("DELETE FROM orders WHERE id=?", uint64(104)).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -188,8 +188,8 @@ func TestStoreInventoryDefaultKeysetIsStableAcrossInsertAndDelete(t *testing.T) 
 	}
 	cursorRow := first[1]
 
-	// A newer insert plus deletion from the consumed page must not move the
-	// effective-updated-at keyset window after shop product 203.
+	// 新增较新记录并删除已消费页面中的记录，不得移动门店商品 203
+	// 之后基于有效更新时间的键集窗口。
 	if err := db.Exec(`DELETE FROM shop_products WHERE id = ?`, 204).Error; err != nil {
 		t.Fatal(err)
 	}

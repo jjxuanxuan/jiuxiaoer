@@ -62,9 +62,8 @@ func complianceProviderRequired(cfg config.Config) bool {
 	return cfg.CP1.ComplianceMode != "off"
 }
 
-// buildConfiguredComplianceProvider is the production composition boundary.
-// A selected vendor adapter must be registered by its integration package;
-// this function never substitutes an unavailable placeholder.
+// buildConfiguredComplianceProvider 是生产环境的装配边界。选定的供应商适配器
+// 必须由其集成包注册；此函数绝不会替换为不可用的占位实现。
 func buildConfiguredComplianceProvider(ctx context.Context, cfg config.Config) (compliance.Provider, error) {
 	if !complianceProviderRequired(cfg) {
 		return nil, nil
@@ -76,8 +75,8 @@ func buildConfiguredComplianceProvider(ctx context.Context, cfg config.Config) (
 	return provider, nil
 }
 
-// routerComplianceProvider supports direct router construction in tests while
-// enforcing the same provider-code invariant as NewServer.
+// routerComplianceProvider 支持在测试中直接构造路由，
+// 同时执行与 NewServer 相同的服务商代码不变量。
 func routerComplianceProvider(deps Dependencies) compliance.Provider {
 	if deps.ComplianceProvider != nil {
 		if err := compliance.ValidateConfiguredProvider(deps.Config, deps.ComplianceProvider); err != nil {

@@ -20,9 +20,8 @@ return {count, ttl}
 
 const redisAttemptTimeout = 100 * time.Millisecond
 
-// Result reports both the decision and whether the process-local fallback was
-// used because Redis was unavailable. Callers can alert on Degraded without
-// turning a transient Redis failure into a write outage.
+// Result 同时报告限流决策，以及是否因 Redis 不可用而启用了进程内降级方案。
+// 调用方可以针对 Degraded 告警，而不会让短暂的 Redis 故障演变为写入中断。
 type Result struct {
 	Allowed    bool
 	Degraded   bool
@@ -34,9 +33,8 @@ type localWindow struct {
 	expiresAt time.Time
 }
 
-// Limiter implements an atomic Redis fixed window with a bounded, fail-soft
-// process-local fallback. The fallback is intentionally stricter per process,
-// but cannot provide a cluster-wide guarantee and must be observable.
+// Limiter 实现基于 Redis 的原子固定窗口，并提供有界、软失败的进程内降级方案。
+// 降级方案刻意对单进程执行更严格限制，但无法提供集群级保证，因此必须可观测。
 type Limiter struct {
 	redis *redis.Client
 	now   func() time.Time

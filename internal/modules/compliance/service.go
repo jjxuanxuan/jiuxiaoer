@@ -133,9 +133,8 @@ func (s *Service) CreateSession(ctx context.Context, claims *auth.Claims, method
 }
 
 // Callback 返回回调。
-// Callback treats a provider callback only as a change notification. The
-// provider adapter verifies the callback, then Query supplies the authoritative
-// result that is persisted below.
+// Callback 只把服务商回调视为变更通知。服务商适配器先验证回调，
+// 随后由 Query 提供将在下方持久化的权威结果。
 func (s *Service) Callback(ctx context.Context, providerCode string, headers http.Header, body []byte) error {
 	if providerCode != s.provider.Code() {
 		return problem.NotFound("IDENTITY_PROVIDER_NOT_FOUND", "identity provider not found")
@@ -372,7 +371,7 @@ func (s *Service) upsertCurrent(tx *gorm.DB, row Request, result ProviderResult,
 	return tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "customer_id"}}, DoUpdates: updates}).Create(&current).Error
 }
 
-// createOutcomeEvent 创建Outcome 事件。
+// createOutcomeEvent 创建结果事件。
 func (s *Service) createOutcomeEvent(ctx context.Context, tx *gorm.DB, row Request, result ProviderResult, now time.Time) error {
 	eventType := "identity.verification.updated"
 	errorCode := ""
@@ -403,7 +402,7 @@ func (s *Service) createOutcomeEvent(ctx context.Context, tx *gorm.DB, row Reque
 }
 
 // CheckOrder 检查订单是否满足要求。
-// CheckOrder is deliberately called before inventory locks or writes.
+// CheckOrder 刻意在库存加锁或写入前调用。
 func CheckOrder(ctx context.Context, tx *gorm.DB, cfg config.CP1Config, customerID uint64, shopProductIDs []uint64) (datatypes.JSON, error) {
 	if cfg.ComplianceMode == "off" {
 		return nil, nil
@@ -466,12 +465,12 @@ func validProviderResult(result ProviderResult) bool {
 	return result.VerificationLevel != ""
 }
 
-// terminal 判断terminal。
+// terminal 判断状态是否为终态。
 func terminal(status string) bool {
 	return status == StatusVerified || status == StatusRejected || status == StatusRevoked || status == StatusExpired
 }
 
-// randomState 返回random 状态。
+// randomState 返回随机状态值。
 func randomState() (string, error) {
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
@@ -533,7 +532,7 @@ func parseID(value string) (uint64, error) {
 // idString 将数字 ID 转换为字符串。
 func idString(value uint64) string { return strconv.FormatUint(value, 10) }
 
-// ts 返回ts。
+// ts 返回格式化时间字符串。
 func ts(value *time.Time) string {
 	if value == nil {
 		return ""
@@ -549,7 +548,7 @@ func value(input *string) string {
 	return *input
 }
 
-// optional 返回optional。
+// optional 返回可选字符串指针。
 func optional(input string) *string {
 	if input == "" {
 		return nil
@@ -570,7 +569,7 @@ func requestDTO(row Request) VerificationDTO {
 	}
 }
 
-// realnameDTO 返回realname DTO。
+// realnameDTO 返回实名状态 DTO。
 func realnameDTO(row Realname) VerificationDTO {
 	status := row.Status
 	if status == StatusVerified && row.ExpiresAt != nil && !row.ExpiresAt.After(time.Now()) {

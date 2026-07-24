@@ -51,8 +51,7 @@ func (s *Service) WithIncidentResolver(resolver IncidentResolver) *Service {
 	return s
 }
 
-// WithReturnGuard prevents a forward completion from racing past an active
-// reverse-logistics fact.
+// WithReturnGuard 防止正向完成流程与有效逆向物流事实竞争并越过它。
 func (s *Service) WithReturnGuard(guard ReturnGuard) *Service {
 	s.returns = guard
 	return s
@@ -170,7 +169,7 @@ func (s *Service) Pickup(ctx context.Context, claims *auth.Claims, method string
 	return s.PickupWithCode(ctx, claims, method, path, key, deliveryIDRaw, "")
 }
 
-// PickupWithCode 返回Pickup With 代码。
+// PickupWithCode 使用取货码执行取货。
 func (s *Service) PickupWithCode(ctx context.Context, claims *auth.Claims, method string, path string, key string, deliveryIDRaw string, code string) (DeliveryOrderDTO, error) {
 	return s.transition(ctx, claims, method, path, key, deliveryIDRaw, code, transitionSpec{
 		Action:             "delivery_pickup",
@@ -194,7 +193,7 @@ func (s *Service) Complete(ctx context.Context, claims *auth.Claims, method stri
 	return s.CompleteWithCode(ctx, claims, method, path, key, deliveryIDRaw, "")
 }
 
-// CompleteWithCode 返回Complete With 代码。
+// CompleteWithCode 使用送达码完成配送。
 func (s *Service) CompleteWithCode(ctx context.Context, claims *auth.Claims, method string, path string, key string, deliveryIDRaw string, code string) (DeliveryOrderDTO, error) {
 	return s.transition(ctx, claims, method, path, key, deliveryIDRaw, code, transitionSpec{
 		Action:             "delivery_complete",
@@ -356,9 +355,8 @@ func (s *Service) transition(ctx context.Context, claims *auth.Claims, method st
 			}
 		}
 		if spec.Action == "delivery_complete" {
-			// In observe mode an invalid/missing code is audited but does not block
-			// completion. The terminal boundary must still make any credential that
-			// remained active permanently unusable.
+			// 在 observe 模式下，无效或缺失验证码会被审计，但不阻止完成。
+			// 终态边界仍须使任何保持有效的凭据永久不可用。
 			if err := deliveryverification.Invalidate(ctx, tx, s.idGen, deliveryID, "delivery_completed"); err != nil {
 				return err
 			}
@@ -441,9 +439,9 @@ func (s *Service) createAudit(ctx context.Context, tx *gorm.DB, actorID uint64, 
 	})
 }
 
-// AuditFailure persists rejected fulfillment actions outside the business
-// transaction. This keeps permission, ownership, state and version failures
-// traceable without accidentally committing a partial delivery transition.
+// AuditFailure 在业务事务之外持久化被拒绝的履约操作。
+// 这样既能追踪权限、所有权、状态和版本失败，
+// 又不会意外提交部分配送状态变更。
 func (s *Service) AuditFailure(ctx context.Context, claims *auth.Claims, action, deliveryIDRaw string, cause error) error {
 	actorID := uint64(0)
 	if claims != nil {
@@ -459,7 +457,7 @@ func (s *Service) AuditFailure(ctx context.Context, claims *auth.Claims, action,
 	})
 }
 
-// riderIDFromClaims 返回骑手ID From 认证声明。
+// riderIDFromClaims 从认证声明中返回骑手 ID。
 func riderIDFromClaims(claims *auth.Claims, permission string, allowLegacyUpdate bool) (uint64, error) {
 	if claims == nil || claims.AccountType != "rider" {
 		return 0, problem.Forbidden("PERM_FORBIDDEN", "rider account required")
@@ -520,7 +518,7 @@ func deliveryOrderDTO(row DeliveryOrder) DeliveryOrderDTO {
 	}
 }
 
-// deliveryDTOFromAssignment 返回配送DTO From 分配。
+// deliveryDTOFromAssignment 根据分配记录构造配送 DTO。
 func deliveryDTOFromAssignment(row dispatch.AssignmentResult) DeliveryOrderDTO {
 	return DeliveryOrderDTO{
 		ViewType: "assigned", ID: row.DeliveryOrderID, OrderID: row.OrderID, ShopID: row.ShopID,
@@ -577,7 +575,7 @@ func timeString(value time.Time) string {
 	return value.Format(time.RFC3339)
 }
 
-// optionalTimeString 返回optional 时间字符串。
+// optionalTimeString 返回可选时间字符串。
 func optionalTimeString(value *time.Time) string {
 	if value == nil {
 		return ""

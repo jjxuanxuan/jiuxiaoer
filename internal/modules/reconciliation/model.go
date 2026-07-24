@@ -19,8 +19,8 @@ const (
 	DiscrepancyRefundMismatch        = "refund_mismatch"
 )
 
-// BillFile is a streamed WeChat bill plus the digest returned by the apply API.
-// The caller must close Body. WeChat currently fixes HashType to SHA1.
+// BillFile 包含流式微信账单及申请 API 返回的摘要。
+// 调用方必须关闭 Body。微信当前固定使用 SHA1 作为 HashType。
 type BillFile struct {
 	Body              io.ReadCloser
 	HashType          string

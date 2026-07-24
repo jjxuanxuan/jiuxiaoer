@@ -193,8 +193,7 @@ func TestListStoreTasksUsesStableCreatedAtIDKeyset(t *testing.T) {
 		t.Fatalf("unexpected first print-task page: items=%+v next=%q", first, next)
 	}
 
-	// Inserting a newer task and deleting an already consumed task must not
-	// shift the continuation window after the last item on page one.
+	// 插入较新任务并删除已消费任务，不得移动第一页最后一项之后的续查窗口。
 	if err := db.Delete(&Task{}, 7004).Error; err != nil {
 		t.Fatal(err)
 	}

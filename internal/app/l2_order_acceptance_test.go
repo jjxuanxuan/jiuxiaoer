@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// TestL2OrderMissingAcceptanceScenarios 验证L 2 订单 Missing 验收 Scenarios的预期行为。
+// TestL2OrderMissingAcceptanceScenarios 验证 L2 订单能力缺失项的验收场景。
 func TestL2OrderMissingAcceptanceScenarios(t *testing.T) {
 	f := newL2AcceptanceFixture(t)
 	defer f.close()
@@ -116,7 +116,7 @@ func TestL2OrderMissingAcceptanceScenarios(t *testing.T) {
 	})
 }
 
-// TestOrderCreationRemovesOnlyPurchasedCartItems 验证订单 Creation Removes Only Purchased 购物车明细的预期行为。
+// TestOrderCreationRemovesOnlyPurchasedCartItems 验证创建订单只删除已购买的购物车明细。
 func TestOrderCreationRemovesOnlyPurchasedCartItems(t *testing.T) {
 	f := newL2AcceptanceFixture(t)
 	defer f.close()
@@ -186,7 +186,7 @@ func TestOrderCreationRemovesOnlyPurchasedCartItems(t *testing.T) {
 	})
 }
 
-// TestFailedOrderKeepsPurchasedCartItems 验证Failed 订单 Keeps Purchased 购物车明细的预期行为。
+// TestFailedOrderKeepsPurchasedCartItems 验证下单失败时保留已选择的购物车明细。
 func TestFailedOrderKeepsPurchasedCartItems(t *testing.T) {
 	f := newL2AcceptanceFixture(t)
 	defer f.close()

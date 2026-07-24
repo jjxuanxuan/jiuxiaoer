@@ -13,7 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// TestRequestLimitsRejectKnownOversizedBody 验证请求 Limits Reject Known Oversized 请求体的预期行为。
+// TestRequestLimitsRejectKnownOversizedBody 验证请求限制拒绝已知的超大请求体。
 func TestRequestLimitsRejectKnownOversizedBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
@@ -47,7 +47,7 @@ func TestUntrustedForwardedForCannotSpoofClientIP(t *testing.T) {
 	}
 }
 
-// TestRequestDeadlineIsSkippedAfterWebSocketUpgrade 验证请求 Deadline Is Skipped 售后 Web Socket Upgrade的预期行为。
+// TestRequestDeadlineIsSkippedAfterWebSocketUpgrade 验证 WebSocket 升级后跳过请求截止时间。
 func TestRequestDeadlineIsSkippedAfterWebSocketUpgrade(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
@@ -84,7 +84,7 @@ func TestRequestDeadlineIsSkippedAfterWebSocketUpgrade(t *testing.T) {
 	}
 }
 
-// TestRequestDeadlineReturnsGatewayTimeoutBeforeWrite 验证请求 Deadline Returns 网关超时 Before 写入的预期行为。
+// TestRequestDeadlineReturnsGatewayTimeoutBeforeWrite 验证写入响应前请求超时会返回网关超时。
 func TestRequestDeadlineReturnsGatewayTimeoutBeforeWrite(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()

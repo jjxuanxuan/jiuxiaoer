@@ -740,8 +740,8 @@ func (s *Service) adminTransition(ctx context.Context, claims *auth.Claims, meth
 	return out, err
 }
 
-// ResolveActiveLocked is called from an existing transaction after its
-// delivery row has been locked. stage="" resolves all active incidents.
+// ResolveActiveLocked 在现有事务锁定配送记录后调用。
+// stage="" 会解决所有活动异常。
 func (s *Service) ResolveActiveLocked(ctx context.Context, tx *gorm.DB, deliveryID uint64, stage, resolutionCode string) error {
 	if !s.cfg.DeliveryIncident.Enabled || !s.cfg.DeliveryIncident.AutoResolveEnabled || tx == nil {
 		return nil
@@ -823,9 +823,8 @@ func (s *Service) AuditInvalidRequest(ctx context.Context, claims *auth.Claims, 
 		problem.InvalidArgument("VALIDATION_FAILED", "request validation failed"), nil)
 }
 
-// auditFailure runs after a rejected request's business transaction has rolled
-// back. It is deliberately best-effort so audit storage trouble never changes
-// a stable business error into an unrelated response or opens the write path.
+// auditFailure 在被拒绝请求的业务事务回滚后运行。它刻意采用尽力而为方式，
+// 确保审计存储故障不会把稳定业务错误变成无关响应，也不会放开写入路径。
 func (s *Service) auditFailure(ctx context.Context, claims *auth.Claims, route, action, resourceType, resourceIDRaw string, requestErr error, data map[string]any) {
 	if requestErr == nil || s == nil || s.repo == nil || s.repo.DB() == nil || s.ids == nil {
 		return

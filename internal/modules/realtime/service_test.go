@@ -21,7 +21,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/pkg/snowflake"
 )
 
-// TestTicketIsOpaqueOneTimeAndSessionBound 验证Ticket Is Opaque One 时间 And 会话 Bound的预期行为。
+// TestTicketIsOpaqueOneTimeAndSessionBound 验证票据不透明、仅使用一次且绑定会话。
 func TestTicketIsOpaqueOneTimeAndSessionBound(t *testing.T) {
 	mini := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mini.Addr()})
@@ -66,7 +66,7 @@ func TestTicketIsOpaqueOneTimeAndSessionBound(t *testing.T) {
 	}
 }
 
-// TestAcknowledgementAuthorizationIdempotencyAndResumeCloseFilter 验证Acknowledgement Authorization 幂等 And Resume Close 筛选条件的预期行为。
+// TestAcknowledgementAuthorizationIdempotencyAndResumeCloseFilter 验证确认授权、幂等性和续传关闭筛选。
 func TestAcknowledgementAuthorizationIdempotencyAndResumeCloseFilter(t *testing.T) {
 	db := realtimeSQLite(t)
 	cfg := realtimeTestConfig()

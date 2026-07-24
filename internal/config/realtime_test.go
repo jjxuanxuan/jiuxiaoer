@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// TestRealtimeDefaultsRemainDisabled 验证实时消息 Defaults Remain Disabled的预期行为。
+// TestRealtimeDefaultsRemainDisabled 验证实时消息能力默认保持关闭。
 func TestRealtimeDefaultsRemainDisabled(t *testing.T) {
 	t.Setenv("JXE_REALTIME_ENABLED", "false")
 	t.Setenv("JXE_REALTIME_RELAY_ENABLED", "false")
@@ -16,7 +16,7 @@ func TestRealtimeDefaultsRemainDisabled(t *testing.T) {
 	}
 }
 
-// TestRealtimeConfigDependenciesAndBounds 验证实时消息配置 Dependencies And Bounds的预期行为。
+// TestRealtimeConfigDependenciesAndBounds 验证实时消息配置的依赖关系和边界。
 func TestRealtimeConfigDependenciesAndBounds(t *testing.T) {
 	cfg := Load()
 	cfg.Realtime.Enabled = true

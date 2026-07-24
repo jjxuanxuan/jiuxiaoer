@@ -1,7 +1,6 @@
 -- +goose Up
--- Rider authentication is phone/SMS-only. Backfill legacy rider accounts from
--- the rider profile, remove dormant password credentials, and revoke sessions
--- issued under the legacy credential model.
+-- 骑手只使用手机号和短信认证。从骑手资料回填旧版骑手账户，
+-- 移除停用的密码凭据，并吊销旧凭据模型下签发的会话。
 UPDATE accounts a
 JOIN riders r ON r.account_id = a.id AND r.deleted_at IS NULL
 SET a.phone = r.phone,
@@ -21,6 +20,6 @@ WHERE account_type = 'rider'
   AND deleted_at IS NULL;
 
 -- +goose Down
--- Legacy usernames and password hashes are intentionally not recoverable.
--- Rolling application code back does not recreate password credentials.
+-- 旧版用户名和密码哈希刻意不可恢复。
+-- 回滚应用代码不会重新创建密码凭据。
 SELECT 1;

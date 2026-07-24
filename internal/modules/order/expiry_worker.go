@@ -159,8 +159,8 @@ func (w *ExpiryWorker) expireCandidate(ctx context.Context, candidate Order, now
 				w.metrics.IncOrderExpiry("provider_query_failed")
 				w.log.Warn("final payment query failed", slog.String("payment_no", payment.PaymentNo), slog.String("provider_code", paygateway.Code(queryErr, "PROVIDER_UNAVAILABLE")), slog.String("provider_request_id", paygateway.RequestID(queryErr)), slog.Bool("retryable", paygateway.Retryable(queryErr)))
 				if paygateway.IsCode(queryErr, "ORDER_NOT_EXIST") || paygateway.IsCode(queryErr, "ORDER_NOT_EXISTS") {
-					// The provider explicitly confirms that no transaction exists, so
-					// there is nothing to close and local stock can be released.
+					// 服务商明确确认交易不存在，因此无需关闭交易，
+					// 可以释放本地库存。
 					goto cancelLocal
 				}
 				return false, true, queryErr

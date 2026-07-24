@@ -28,9 +28,8 @@ type SystemDeliveryReturnResult struct {
 	Amount      int64
 }
 
-// CreateSystemDeliveryReturnWithTx creates the system after-sale, its item
-// ledger, and the refund reservation in the caller's transaction. It never
-// commits independently, so delivery-return approval is all-or-nothing.
+// CreateSystemDeliveryReturnWithTx 在调用方事务中创建系统售后单、商品明细账
+// 和退款预留。它绝不独立提交，因此配送退回批准要么全部成功，要么全部失败。
 func (s *Service) CreateSystemDeliveryReturnWithTx(ctx context.Context, tx *gorm.DB, req SystemDeliveryReturnRequest) (SystemDeliveryReturnResult, error) {
 	if tx == nil || req.DeliveryReturnID == 0 || req.OrderID == 0 || req.ApprovedBy == 0 {
 		return SystemDeliveryReturnResult{}, problem.Internal("invalid system after-sale transaction input")
@@ -67,8 +66,8 @@ func (s *Service) CreateSystemDeliveryReturnWithTx(ctx context.Context, tx *gorm
 	if err != nil {
 		return SystemDeliveryReturnResult{}, err
 	}
-	// P0 deliberately refuses partial automation. Any existing customer claim,
-	// reservation, or successful refund moves the return to disputed.
+	// P0 刻意拒绝部分自动化。只要已存在客户申请、退款预留或成功退款，
+	// 就会将退回转为争议状态。
 	if conflict || reserved > 0 || payment.RefundedAmount > 0 || order.RefundedAmount > 0 {
 		return SystemDeliveryReturnResult{}, ErrDeliveryReturnManualReview
 	}
@@ -139,8 +138,8 @@ func (s *Service) CreateSystemDeliveryReturnWithTx(ctx context.Context, tx *gorm
 	return SystemDeliveryReturnResult{AfterSaleID: afterSaleID, RefundID: refund.ID, RefundNo: refund.RefundNo, Amount: remaining}, nil
 }
 
-// allocateSystemRefund deterministically assigns the refundable goods amount
-// using immutable order-item totals. The final item absorbs integer rounding.
+// allocateSystemRefund 使用不可变的订单商品总额确定性分配可退商品金额，
+// 最后一项吸收整数舍入差额。
 func allocateSystemRefund(items []OrderItemRow, amount int64) []int64 {
 	result := make([]int64, len(items))
 	if len(items) == 0 || amount <= 0 {

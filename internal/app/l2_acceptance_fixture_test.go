@@ -92,20 +92,17 @@ func (f *l2AcceptanceFixture) routerWithConfig(cfg config.Config) *gin.Engine {
 	})
 }
 
-// loginCustomer 返回login 用户。
+// loginCustomer 登录测试客户。
 func (f *l2AcceptanceFixture) loginCustomer(t *testing.T, prefix string) (string, uint64) {
 	t.Helper()
 	phone := fmt.Sprintf("%s%08d", prefix, time.Now().UnixNano()%100000000)
+	_, customerID := seedCustomerReadyForSMSLogin(t, f.db, f.cfg, phone)
 	performOK(t, f.router, http.MethodPost, "/api/v1/auth/customer/send-code", "", "", map[string]any{"phone": phone})
 	login := performOK(t, f.router, http.MethodPost, "/api/v1/auth/customer/sms-login", "", "", map[string]any{"phone": phone, "code": "123456"})
-	var customerID uint64
-	if err := f.db.Table("customers").Select("id").Where("phone = ?", phone).Scan(&customerID).Error; err != nil || customerID == 0 {
-		t.Fatalf("find customer: id=%d err=%v", customerID, err)
-	}
 	return stringValue(t, object(t, login["data"])["access_token"]), customerID
 }
 
-// tokenFromLogin 返回令牌 From Login。
+// tokenFromLogin 从登录响应中提取令牌。
 func tokenFromLogin(t *testing.T, router http.Handler, path string, body any) string {
 	t.Helper()
 	login := performOK(t, router, http.MethodPost, path, "", "", body)
@@ -118,7 +115,7 @@ func (f *l2AcceptanceFixture) key(prefix string) string {
 	return fmt.Sprintf("%s-%d", prefix, f.seq)
 }
 
-// subtest 处理subtest相关逻辑。
+// subtest 运行子测试。
 func (f *l2AcceptanceFixture) subtest(t *testing.T, fn func(*testing.T)) {
 	t.Helper()
 	f.seq++
@@ -132,7 +129,7 @@ func (f *l2AcceptanceFixture) subtest(t *testing.T, fn func(*testing.T)) {
 	fn(t)
 }
 
-// expectProblem 处理expect 问题详情相关逻辑。
+// expectProblem 断言问题详情响应。
 func expectProblem(t *testing.T, status int, response map[string]any, wantStatus int, wantCode string) {
 	t.Helper()
 	if status != wantStatus {
@@ -144,7 +141,7 @@ func expectProblem(t *testing.T, status int, response map[string]any, wantStatus
 	}
 }
 
-// performStatusOnly 返回perform 状态 Only。
+// performStatusOnly 执行请求并只返回状态码。
 func performStatusOnly(t *testing.T, handler http.Handler, method, path, token, idempotencyKey string) int {
 	t.Helper()
 	req := httptest.NewRequest(method, path, nil)
@@ -159,7 +156,7 @@ func performStatusOnly(t *testing.T, handler http.Handler, method, path, token, 
 	return recorder.Code
 }
 
-// containsID 判断contains ID。
+// containsID 判断集合是否包含指定 ID。
 func containsID(items []any, field, id string) bool {
 	for _, item := range items {
 		row, _ := item.(map[string]any)

@@ -17,7 +17,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/infra/mysql"
 )
 
-// TestL2ServiceAreaOrderAndHomeIntegration 验证L 2 服务 Area 订单 And 首页集成的预期行为。
+// TestL2ServiceAreaOrderAndHomeIntegration 验证 L2 服务区、订单和首页集成。
 func TestL2ServiceAreaOrderAndHomeIntegration(t *testing.T) {
 	if os.Getenv("JXE_RUN_INTEGRATION") != "1" {
 		t.Skip("set JXE_RUN_INTEGRATION=1 to run local L2 integration test")
@@ -53,6 +53,7 @@ func TestL2ServiceAreaOrderAndHomeIntegration(t *testing.T) {
 	}
 
 	phone := fmt.Sprintf("136%08d", time.Now().UnixNano()%100000000)
+	seedCustomerReadyForSMSLogin(t, tx, cfg, phone)
 	performOK(t, router, http.MethodPost, "/api/v1/auth/customer/send-code", "", "", map[string]any{"phone": phone})
 	login := performOK(t, router, http.MethodPost, "/api/v1/auth/customer/sms-login", "", "", map[string]any{"phone": phone, "code": "123456"})
 	token := stringValue(t, object(t, login["data"])["access_token"])
@@ -98,7 +99,7 @@ func TestL2ServiceAreaOrderAndHomeIntegration(t *testing.T) {
 	}
 }
 
-// l2Number 返回l 2 编号。
+// l2Number 返回 L2 测试编号。
 func l2Number(t *testing.T, value any) float64 {
 	t.Helper()
 	number, ok := value.(float64)

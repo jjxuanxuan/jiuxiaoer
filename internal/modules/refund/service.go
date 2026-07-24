@@ -118,10 +118,9 @@ func (s *Service) ApplyProviderState(ctx context.Context, refundID uint64, state
 	return s.applyProviderState(ctx, refundID, nil, state)
 }
 
-// ApplyClaimedProviderState only applies the result if the worker still owns
-// the exact refund version produced by Claim. A callback or operator action
-// that advances the row while the provider call is in flight fences out the
-// stale result.
+// ApplyClaimedProviderState 仅在工作进程仍持有 Claim 产生的准确退款版本时
+// 应用结果。服务商调用进行期间，如果回调或人工操作推进记录版本，
+// 过期结果就会被屏蔽。
 func (s *Service) ApplyClaimedProviderState(ctx context.Context, refundID uint64, claimedVersion uint32, state State) error {
 	return s.applyProviderState(ctx, refundID, &claimedVersion, state)
 }
@@ -274,10 +273,9 @@ func (s *Service) applyState(ctx context.Context, tx *gorm.DB, row Row, state St
 	}
 }
 
-// guardTerminalRefundTransition keeps the two provider terminal states
-// immutable. CLOSED must be retried with a new merchant refund number, so the
-// original row can only receive an idempotent CLOSED observation after it has
-// failed or a replacement has been created.
+// guardTerminalRefundTransition 保持服务商的两个终态不可变。CLOSED 必须使用
+// 新商户退款单号重试，因此原始记录失败或创建替代记录后，
+// 只能接收幂等的 CLOSED 观测结果。
 func guardTerminalRefundTransition(row Row, incomingStatus string) (bool, error) {
 	switch {
 	case row.Status == "succeeded":
@@ -328,9 +326,8 @@ func isStateMismatch(err error) bool {
 	}
 }
 
-// MarkAttemptError records a retryable result only while the exact worker claim
-// is still current. Callback and operator writes increment version and fence out
-// stale provider results.
+// MarkAttemptError 仅在准确的工作进程认领仍然有效时记录可重试结果。
+// 回调和人工写入会递增版本并屏蔽过期的服务商结果。
 func (s *Service) MarkAttemptError(ctx context.Context, refundID uint64, claimedVersion uint32, cause error) error {
 	return s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		row, err := s.repo.Lock(ctx, tx, refundID)
@@ -354,8 +351,8 @@ func (s *Service) MarkAttemptError(ctx context.Context, refundID uint64, claimed
 	})
 }
 
-// MarkPermanentError records a permanent result only while the exact worker
-// claim is still current. In particular it must never overwrite CLOSED/failed.
+// MarkPermanentError 仅在准确的工作进程认领仍然有效时记录永久结果，
+// 尤其不得覆盖 CLOSED 或 failed 状态。
 func (s *Service) MarkPermanentError(ctx context.Context, refundID uint64, claimedVersion uint32, code string, cause error) error {
 	return s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		row, err := s.repo.Lock(ctx, tx, refundID)
@@ -554,9 +551,8 @@ func (s *Service) Retry(ctx context.Context, claims *auth.Claims, method, path, 
 	})
 }
 
-// Reconcile schedules a provider query after an operator has handled an
-// ABNORMAL refund in the WeChat Pay merchant platform. It never marks funds as
-// succeeded from administrator input.
+// Reconcile 在操作人员通过微信支付商户平台处理 ABNORMAL 退款后，
+// 安排服务商查询。它绝不会依据管理员输入把资金标记为成功。
 func (s *Service) Reconcile(ctx context.Context, claims *auth.Claims, method, path, key, refundNo string) error {
 	actorID, err := adminPermission(claims, "refund:retry")
 	if err != nil {
@@ -748,7 +744,7 @@ func adminPermission(claims *auth.Claims, permission string) (uint64, error) {
 // id 返回ID。
 func id(value uint64) string { return strconv.FormatUint(value, 10) }
 
-// optional 返回optional。
+// optional 返回可选字符串指针。
 func optional(value string) *string {
 	if value == "" {
 		return nil

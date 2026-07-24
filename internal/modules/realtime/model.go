@@ -63,8 +63,8 @@ type Wakeup struct {
 	ExpiresAt  time.Time `json:"expires_at"`
 }
 
-// StoreOrderPaidEvent is the complete client-visible payload for a merchant
-// new-order wakeup. Order details remain behind the scoped store order APIs.
+// StoreOrderPaidEvent 是商户新订单唤醒中客户端可见的完整载荷。
+// 订单详情仍只能通过限定范围的门店订单 API 获取。
 type StoreOrderPaidEvent struct {
 	EventID    string    `json:"event_id"`
 	OrderID    string    `json:"order_id"`
@@ -73,8 +73,8 @@ type StoreOrderPaidEvent struct {
 	OccurredAt time.Time `json:"occurred_at"`
 }
 
-// MerchantWakeup contains routing metadata used only between API instances.
-// MerchantEvent is the only portion forwarded to a WebSocket client.
+// MerchantWakeup 包含仅在 API 实例间使用的路由元数据。
+// 只有 MerchantEvent 部分会转发给 WebSocket 客户端。
 type MerchantWakeup struct {
 	AccountID uint64              `json:"account_id"`
 	Event     StoreOrderPaidEvent `json:"event"`

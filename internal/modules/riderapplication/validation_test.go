@@ -14,7 +14,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/pkg/snowflake"
 )
 
-// TestSubmitValidationNormalizesSinglePhoneAndScope 验证Submit 校验 Normalizes Single 手机号 And 范围的预期行为。
+// TestSubmitValidationNormalizesSinglePhoneAndScope 验证提交校验会规范化单个手机号和服务范围。
 func TestSubmitValidationNormalizesSinglePhoneAndScope(t *testing.T) {
 	req, shops, err := (SubmitRequest{
 		Name: " 张三 ", Phone: "13800138000", Code: "123456",
@@ -31,7 +31,7 @@ func TestSubmitValidationNormalizesSinglePhoneAndScope(t *testing.T) {
 	}
 }
 
-// TestSubmitValidationRejectsDuplicateAndInvalidFields 验证Submit 校验 Rejects 重复项 And 无效 Fields的预期行为。
+// TestSubmitValidationRejectsDuplicateAndInvalidFields 验证提交校验拒绝重复项和无效字段。
 func TestSubmitValidationRejectsDuplicateAndInvalidFields(t *testing.T) {
 	base := SubmitRequest{
 		Name: "张三", Phone: "13800138000", Code: "123456",
@@ -51,7 +51,7 @@ func TestSubmitValidationRejectsDuplicateAndInvalidFields(t *testing.T) {
 	}
 }
 
-// TestPageTokenBindsFilterAndOrder 验证分页令牌 Binds 筛选条件 And 订单的预期行为。
+// TestPageTokenBindsFilterAndOrder 验证分页令牌绑定筛选和排序条件。
 func TestPageTokenBindsFilterAndOrder(t *testing.T) {
 	cfg := config.Load()
 	service := NewService(cfg, nil, nil, nil)
@@ -66,7 +66,7 @@ func TestPageTokenBindsFilterAndOrder(t *testing.T) {
 	}
 }
 
-// TestApplicationDTOContainsNoPasswordOrRawTokenFields 验证申请DTO Contains 无密码 Or Raw 令牌 Fields的预期行为。
+// TestApplicationDTOContainsNoPasswordOrRawTokenFields 验证申请 DTO 不包含密码或原始令牌字段。
 func TestApplicationDTOContainsNoPasswordOrRawTokenFields(t *testing.T) {
 	raw, err := json.Marshal(ApplicationDTO{ID: "1", Phone: "138****8000", Status: StatusSubmitted})
 	if err != nil {
@@ -99,7 +99,7 @@ func TestSubmitRequestHashUsesServerHMACIncludingSMSCode(t *testing.T) {
 	}
 }
 
-// TestPublicSubmitFailsClosedWithoutRedis 验证公开数据 Submit Fails Closed Without Redis的预期行为。
+// TestPublicSubmitFailsClosedWithoutRedis 验证缺少 Redis 时公开提交按失败关闭处理。
 func TestPublicSubmitFailsClosedWithoutRedis(t *testing.T) {
 	cfg := config.Load()
 	cfg.RiderApplication.Enabled = true

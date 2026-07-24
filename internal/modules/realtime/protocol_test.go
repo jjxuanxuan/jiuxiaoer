@@ -4,7 +4,7 @@ import (
 	"testing"
 )
 
-// TestTicketRequestProtocolValidation 验证Ticket 请求协议校验的预期行为。
+// TestTicketRequestProtocolValidation 验证票据请求协议。
 func TestTicketRequestProtocolValidation(t *testing.T) {
 	valid := TicketRequest{DeviceID: "device", Platform: "weapp", ClientVersion: "1.2.3", ProtocolVersion: 1}
 	if err := valid.Validate(); err != nil {
@@ -23,7 +23,7 @@ func TestTicketRequestProtocolValidation(t *testing.T) {
 	}
 }
 
-// TestProtocolUsesFrozenFrameNames 验证协议 Uses Frozen Frame Names的预期行为。
+// TestProtocolUsesFrozenFrameNames 验证协议使用固定不变的帧名称。
 func TestProtocolUsesFrozenFrameNames(t *testing.T) {
 	if FrameHello != "hello" || FrameSyncComplete != "sync_complete" || FrameAckResult != "ack_result" {
 		t.Fatalf("unexpected protocol frame names: %s %s %s", FrameHello, FrameSyncComplete, FrameAckResult)

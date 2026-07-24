@@ -19,14 +19,12 @@ var (
 	providerCodePattern      = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 )
 
-// ProviderFactory constructs one approved identity compliance adapter from
-// process configuration. Vendor packages register their factory at the
-// application composition boundary after a provider has been selected.
+// ProviderFactory 根据进程配置构造一个已获批准的身份合规适配器。
+// 选定服务商后，供应商包在应用装配边界注册其工厂。
 type ProviderFactory func(context.Context, config.Config) (Provider, error)
 
-// ProviderRegistry contains only adapters linked into the current process. It
-// deliberately has no placeholder production adapter: an unknown configured
-// code is a startup error.
+// ProviderRegistry 只包含链接到当前进程的适配器。它刻意不提供生产占位适配器：
+// 配置未知代码属于启动错误。
 type ProviderRegistry struct {
 	mu        sync.RWMutex
 	factories map[string]ProviderFactory
@@ -36,7 +34,7 @@ func NewProviderRegistry() *ProviderRegistry {
 	return &ProviderRegistry{factories: make(map[string]ProviderFactory)}
 }
 
-// Register binds an immutable provider code to a factory.
+// Register 将不可变的服务商代码绑定到工厂。
 func (r *ProviderRegistry) Register(code string, factory ProviderFactory) error {
 	code = strings.TrimSpace(code)
 	if !providerCodePattern.MatchString(code) {
@@ -58,8 +56,7 @@ func (r *ProviderRegistry) Register(code string, factory ProviderFactory) error 
 	return nil
 }
 
-// Build resolves the configured code and verifies that the constructed
-// adapter identifies itself with that exact code.
+// Build 解析配置的代码，并验证构造出的适配器使用完全相同的代码标识自身。
 func (r *ProviderRegistry) Build(ctx context.Context, cfg config.Config) (Provider, error) {
 	code := strings.TrimSpace(cfg.CP1.IdentityProvider)
 	if !providerCodePattern.MatchString(code) {
@@ -86,8 +83,8 @@ func (r *ProviderRegistry) Build(ctx context.Context, cfg config.Config) (Provid
 	return provider, nil
 }
 
-// ValidateConfiguredProvider applies the same code and environment checks to
-// an adapter supplied directly through application Dependencies.
+// ValidateConfiguredProvider 对通过应用 Dependencies 直接提供的适配器，
+// 执行相同的代码和环境检查。
 func ValidateConfiguredProvider(cfg config.Config, provider Provider) error {
 	configured := strings.TrimSpace(cfg.CP1.IdentityProvider)
 	if !providerCodePattern.MatchString(configured) {
@@ -125,12 +122,12 @@ var defaultProviderRegistry = func() *ProviderRegistry {
 	return registry
 }()
 
-// RegisterProvider exposes the process registry to a selected vendor adapter.
+// RegisterProvider 向选定的供应商适配器公开进程注册表。
 func RegisterProvider(code string, factory ProviderFactory) error {
 	return defaultProviderRegistry.Register(code, factory)
 }
 
-// BuildProvider constructs the adapter configured for this process.
+// BuildProvider 构造为当前进程配置的适配器。
 func BuildProvider(ctx context.Context, cfg config.Config) (Provider, error) {
 	return defaultProviderRegistry.Build(ctx, cfg)
 }

@@ -24,7 +24,7 @@ func RegisterCallbackRoute(api *gin.RouterGroup, handler *Handler) {
 	api.POST("/refunds/:provider/callbacks", handler.Callback)
 }
 
-// RegisterAdminRoutes 注册管理端 Routes。
+// RegisterAdminRoutes 注册管理端路由。
 func RegisterAdminRoutes(group *gin.RouterGroup, handler *Handler) {
 	group.GET("", handler.List)
 	group.GET("/repair-candidates", handler.RepairCandidates)
@@ -35,8 +35,7 @@ func RegisterAdminRoutes(group *gin.RouterGroup, handler *Handler) {
 	group.POST("/:id/mark-exception", handler.MarkException)
 }
 
-// RepairCandidates returns a read-only, cursor-based inventory for the
-// controlled stored-refund repair runbook.
+// RepairCandidates 为受控存量退款修复手册返回只读的游标式清单。
 func (h *Handler) RepairCandidates(c *gin.Context) {
 	claims, ok := auth.ClaimsFromContext(c)
 	if !ok {
@@ -152,15 +151,13 @@ func (h *Handler) Retry(c *gin.Context) {
 		response.Error(c, err)
 		return
 	}
-	// A CLOSED provider refund creates a new replacement refund number, while a
-	// pending/unknown refund schedules a query of the original number. "scheduled"
-	// is accurate for both branches; callers can refresh the refund list to
-	// observe any replacement relationship.
+	// 服务商退款为 CLOSED 时会创建新的替代退款单号；待处理或未知退款则安排
+	// 查询原单号。两个分支都可准确描述为 scheduled；调用方可刷新退款列表，
+	// 查看可能出现的替代关系。
 	response.OK(c, gin.H{"status": "scheduled"})
 }
 
-// Reconcile schedules a provider query after an abnormal refund was handled
-// through the WeChat Pay merchant platform.
+// Reconcile 在通过微信支付商户平台处理异常退款后安排服务商查询。
 func (h *Handler) Reconcile(c *gin.Context) {
 	claims, ok := auth.ClaimsFromContext(c)
 	if !ok {

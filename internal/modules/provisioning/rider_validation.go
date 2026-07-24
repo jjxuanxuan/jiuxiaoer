@@ -42,7 +42,7 @@ func normalizeRiderCreate(req RiderCreateReq) (RiderCreateReq, []uint64, error) 
 	return req, shopIDs, nil
 }
 
-// serviceScopeShopIDs 返回服务范围门店 IDs。
+// serviceScopeShopIDs 返回服务范围内的门店 ID 列表。
 func serviceScopeShopIDs(scope map[string]any) ([]uint64, error) {
 	raw, ok := scope["shop_ids"]
 	if !ok {

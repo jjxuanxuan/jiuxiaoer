@@ -5,8 +5,8 @@ import (
 	"time"
 )
 
-// SMSProvider delivers a verification code. Code generation, expiry,
-// rate-limiting, and consumption remain owned by the auth service.
+// SMSProvider 发送验证码。代码生成、过期、
+// 速率限制和消费仍然归身份验证服务所有。
 type SMSProvider interface {
 	SendVerificationCode(ctx context.Context, phone, code string, ttl time.Duration) error
 }

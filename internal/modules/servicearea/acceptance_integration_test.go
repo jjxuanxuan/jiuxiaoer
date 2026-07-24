@@ -16,7 +16,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/pkg/snowflake"
 )
 
-// TestL2ServiceAreaMissingAcceptanceScenarios 验证L 2 服务 Area Missing 验收 Scenarios的预期行为。
+// TestL2ServiceAreaMissingAcceptanceScenarios 验证 L2 服务区能力缺失项的验收场景。
 func TestL2ServiceAreaMissingAcceptanceScenarios(t *testing.T) {
 	if os.Getenv("JXE_RUN_INTEGRATION") != "1" {
 		t.Skip("set JXE_RUN_INTEGRATION=1 to run L2 service-area acceptance tests")

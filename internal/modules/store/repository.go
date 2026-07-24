@@ -153,10 +153,9 @@ func (r *Repository) OrderItems(ctx context.Context, db *gorm.DB, orderID uint64
 	return rows, err
 }
 
-// TransitionOrder atomically advances an order only from the status/version
-// that was locked and observed by the caller. The conditional update is kept
-// even with SELECT FOR UPDATE so optimistic concurrency remains an explicit
-// database invariant rather than a service-only check.
+// TransitionOrder 仅从调用方已锁定并观察到的状态和版本原子推进订单。
+// 即使使用 SELECT FOR UPDATE 也保留条件更新，使乐观并发控制成为明确的
+// 数据库不变量，而不仅是服务层检查。
 func (r *Repository) TransitionOrder(ctx context.Context, tx *gorm.DB, orderID uint64, expectedStatus string, expectedVersion int, values map[string]any) (bool, error) {
 	updates := make(map[string]any, len(values)+1)
 	for key, value := range values {
@@ -188,7 +187,7 @@ func (r *Repository) CreateDeliveryOrder(ctx context.Context, tx *gorm.DB, row D
 	`, row.ID, row.OrderID, row.ShopID, row.Status, row.PickupSnapshot, row.RecipientSnapshot).Error
 }
 
-// LockDeliveryByOrder 加锁并获取配送 By 订单。
+// LockDeliveryByOrder 按订单加锁并获取配送记录。
 func (r *Repository) LockDeliveryByOrder(ctx context.Context, tx *gorm.DB, orderID uint64) (DeliveryOrder, error) {
 	var row DeliveryOrder
 	err := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).Where("order_id=? AND deleted_at IS NULL", orderID).First(&row).Error
@@ -218,7 +217,7 @@ func (r *Repository) UpdateShop(ctx context.Context, tx *gorm.DB, shopID uint64,
 	return tx.WithContext(ctx).Model(&Shop{}).Where("id = ?", shopID).Updates(values).Error
 }
 
-// ProductIDsByShop 返回商品 I Ds By 门店。
+// ProductIDsByShop 返回门店商品 ID 列表。
 func (r *Repository) ProductIDsByShop(ctx context.Context, db *gorm.DB, shopID uint64) ([]uint64, error) {
 	var productIDs []uint64
 	err := db.WithContext(ctx).

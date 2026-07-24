@@ -16,9 +16,8 @@ const (
 	AdultMinor   = "minor"
 )
 
-// Request is one provider-session lifecycle. Legacy document columns remain in
-// the table for additive migration compatibility, but the session flow never
-// writes raw identity material or derived document/name hashes.
+// Request 表示一个服务商会话生命周期。为兼容增量迁移，表中仍保留旧版证件列，
+// 但会话流程绝不写入原始身份材料或派生的证件与姓名哈希。
 type Request struct {
 	ID                  uint64
 	RequestNo           string
@@ -56,9 +55,8 @@ type Request struct {
 // TableName 返回当前数据模型对应的数据库表名。
 func (Request) TableName() string { return "identity_verification_requests" }
 
-// Realname is the current server-side authorization fact for one customer.
-// Adult verification is long-lived by default; ExpiresAt is nullable and only
-// populated when the provider or policy supplies a validity boundary.
+// Realname 是某个客户当前的服务端授权事实。成年验证默认长期有效；
+// ExpiresAt 可为空，仅在服务商或策略提供有效期边界时填充。
 type Realname struct {
 	CustomerID        uint64
 	RequestID         uint64

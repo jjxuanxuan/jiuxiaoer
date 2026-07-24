@@ -35,8 +35,8 @@ func WithHTTPMeta(ctx context.Context, ip string, userAgent string) context.Cont
 	return ctx
 }
 
-// WithAccountID attaches the authenticated account (not the role object ID)
-// so audit writers can persist a stable cross-role identity.
+// WithAccountID 附加已认证的账户 ID（不是角色对象 ID），
+// 以便审计写入器持久化稳定的跨角色身份。
 func WithAccountID(ctx context.Context, accountID string) context.Context {
 	if accountID == "" {
 		return ctx
@@ -62,8 +62,8 @@ func UserAgent(ctx context.Context) string {
 	return value
 }
 
-// AccountID returns the authenticated account ID when the request passed an
-// authentication middleware. Anonymous and system jobs return zero.
+// AccountID 在请求通过认证中间件后返回已认证的账户 ID。
+// 匿名请求和系统任务返回零。
 func AccountID(ctx context.Context) uint64 {
 	value, _ := ctx.Value(accountIDKey).(string)
 	id, _ := strconv.ParseUint(value, 10, 64)
@@ -80,7 +80,7 @@ func IPPtr(ctx context.Context) *string {
 	return stringPtr(IP(ctx))
 }
 
-// IPHashPtr is the only IP representation allowed in new audit records.
+// IPHashPtr 是新审计记录中唯一允许使用的 IP 表示形式。
 func IPHashPtr(ctx context.Context) *string {
 	ip := IP(ctx)
 	if ip == "" {

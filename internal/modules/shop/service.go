@@ -67,7 +67,7 @@ func stringValue(value *string) string {
 	return *value
 }
 
-// floatValue 返回float 值。
+// floatValue 返回浮点值。
 func floatValue(value *float64) float64 {
 	if value == nil {
 		return 0

@@ -1,7 +1,6 @@
 -- +goose Up
--- Phase one requires independently searchable audit facts. Keep the legacy
--- JSON snapshots for forensic context, but no longer make operators parse
--- those snapshots for the common order/delivery/status/error dimensions.
+-- 一期要求审计事实可独立搜索。保留旧版 JSON 快照作为取证上下文，
+-- 但不再要求操作人员解析快照才能获得常用的订单、配送、状态和错误维度。
 ALTER TABLE audit_logs
   ADD COLUMN event_id VARCHAR(64) NULL AFTER id,
   ADD COLUMN account_id BIGINT UNSIGNED NULL AFTER actor_id,
@@ -15,8 +14,8 @@ ALTER TABLE audit_logs
   ADD COLUMN version BIGINT UNSIGNED NULL AFTER after_status,
   ADD COLUMN ip_hash CHAR(64) NULL AFTER ip;
 
--- Existing audit IDs are globally unique Snowflake values, so they provide a
--- deterministic legacy event identifier. New API/worker writes use UUIDs.
+-- 现有审计 ID 是全局唯一的雪花值，因此可提供确定性的旧版事件标识符。
+-- 新的 API 和工作进程写入使用 UUID。
 UPDATE audit_logs
 SET event_id = CONCAT('legacy-audit-', id)
 WHERE event_id IS NULL OR event_id = '';
@@ -34,8 +33,8 @@ SET
   before_status = COALESCE(before_status, NULLIF(JSON_UNQUOTE(JSON_EXTRACT(before_data, '$.status')), 'null')),
   after_status = COALESCE(after_status, NULLIF(JSON_UNQUOTE(JSON_EXTRACT(after_data, '$.status')), 'null'));
 
--- Privacy migration is intentionally one-way: retain only a deterministic
--- SHA-256 digest suitable for abuse correlation, then erase the raw address.
+-- 隐私迁移刻意为单向：只保留适合滥用关联分析的确定性 SHA-256 摘要，
+-- 随后擦除原始地址。
 UPDATE audit_logs
 SET ip_hash = SHA2(TRIM(ip), 256)
 WHERE ip_hash IS NULL AND ip IS NOT NULL AND TRIM(ip) <> '';

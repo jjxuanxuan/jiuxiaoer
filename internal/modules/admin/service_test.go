@@ -6,7 +6,7 @@ import (
 	"gorm.io/datatypes"
 )
 
-// TestAuditLogDTOIncludesBeforeAfter 验证审计日志DTO Includes Before 售后的预期行为。
+// TestAuditLogDTOIncludesBeforeAfter 验证审计日志 DTO 包含变更前后数据。
 func TestAuditLogDTOIncludesBeforeAfter(t *testing.T) {
 	requestID := "req_test"
 	eventID := "audit_event_test"

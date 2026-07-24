@@ -54,8 +54,8 @@ func TestStockCheckValidatesAvailableAndTotalLedgers(t *testing.T) {
 		)`,
 	)
 	mustDQExec(t, db, `INSERT INTO product_stocks VALUES (1,10,8,0,0,NULL)`)
-	// The newer ledger row deliberately has a lower ID. DQ-002 must select the
-	// latest fact by (created_at,id), not by MAX(id).
+	// 较新的账本记录刻意使用更小的 ID。DQ-002 必须按 (created_at,id)
+	// 选择最新事实，而不能使用 MAX(id)。
 	mustDQExec(t, db, `INSERT INTO stock_records VALUES
 		(200,10,-2,10,8,0,10,10,'2026-07-22 10:00:00',NULL),
 		(100,10,0,8,8,-2,10,8,'2026-07-22 11:00:00',NULL)`)

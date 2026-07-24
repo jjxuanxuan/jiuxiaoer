@@ -71,9 +71,8 @@ type AfterCommitConsumerHandler interface {
 	AfterCommit(context.Context, EventEnvelope, ConsumerResult) error
 }
 
-// ReliableAfterCommitConsumerHandler keeps the consumer receipt unfinished
-// until a transient fanout has actually succeeded. Handlers should opt in only
-// when they do not already have a durable DB relay/fallback.
+// ReliableAfterCommitConsumerHandler 在临时扇出真正成功前保持消费者回执未完成。
+// 只有尚无持久数据库中继或降级机制的处理器才应启用。
 type ReliableAfterCommitConsumerHandler interface {
 	AfterCommitConsumerHandler
 	RequiresSuccessfulAfterCommit(EventEnvelope, ConsumerResult) bool
@@ -192,11 +191,10 @@ func (r *ConsumerRuntime) consumeSession(ctx context.Context, conn *amqp.Connect
 	}
 	confirmations := channel.NotifyPublish(make(chan amqp.Confirmation, 1))
 	returns := channel.NotifyReturn(make(chan amqp.Return, 1))
-	// Own cancellation in this goroutine. ConsumeWithContext starts an internal
-	// goroutine that sends basic.cancel when ctx is done; racing that RPC with
-	// the deferred channel.Close can block shutdown on the AMQP channel mutex.
-	// Closing the channel here still makes RabbitMQ requeue every unacked
-	// delivery, while keeping cancellation and channel ownership serialized.
+	// 在当前协程中负责取消。ConsumeWithContext 会启动内部协程，
+	// 在 ctx 结束时发送 basic.cancel；该 RPC 与延迟执行的 channel.Close
+	// 发生竞争时，可能因 AMQP 通道互斥锁阻塞关闭流程。此处关闭通道仍会让
+	// RabbitMQ 重新入队所有未确认投递，同时确保取消与通道所有权串行化。
 	deliveries, err := channel.Consume(r.spec.Queue, "jxe-"+r.spec.Name+"-"+r.instanceID, false, false, false, false, nil)
 	if err != nil {
 		return err
@@ -205,9 +203,8 @@ func (r *ConsumerRuntime) consumeSession(ctx context.Context, conn *amqp.Connect
 	for {
 		select {
 		case <-ctx.Done():
-			// Closing the channel below requeues every delivery that Rabbit has
-			// sent but this process has not ACKed. Do not turn shutdown into a
-			// synthetic consumer failure/retry storm.
+			// 关闭下方通道会重新入队 RabbitMQ 已发送但本进程尚未确认的所有投递。
+			// 不要把关闭流程转化为人为的消费者失败或重试风暴。
 			return nil
 		case delivery, ok := <-deliveries:
 			if !ok {
@@ -247,9 +244,8 @@ func (r *ConsumerRuntime) handleDelivery(ctx context.Context, channel *amqp.Chan
 		return delivery.Ack(false)
 	}
 	if ctx.Err() != nil {
-		// The session closes its channel on return, which requeues this
-		// unacknowledged delivery. Sending Nack while ConsumeWithContext is
-		// concurrently cancelling can block on the AMQP channel mutex.
+		// 会话返回时会关闭通道，从而重新入队这条未确认投递。
+		// ConsumeWithContext 并发取消时发送 Nack，可能阻塞在 AMQP 通道互斥锁上。
 		return ctx.Err()
 	}
 
@@ -265,9 +261,8 @@ func (r *ConsumerRuntime) handleDelivery(ctx context.Context, channel *amqp.Chan
 	return r.retry(ctx, channel, confirmations, returns, delivery, attempt, failure)
 }
 
-// processEnvelope 返回process 消息信封。
-// processEnvelope is the shared transactional unit used by Rabbit delivery and
-// the low-frequency DB compensation path.
+// processEnvelope 处理消息信封。
+// processEnvelope 是 RabbitMQ 投递和低频数据库补偿路径共用的事务单元。
 func (r *ConsumerRuntime) processEnvelope(ctx context.Context, envelope EventEnvelope) (bool, ConsumerResult, error) {
 	duplicate := false
 	var handlerResult ConsumerResult
@@ -321,9 +316,8 @@ func (r *ConsumerRuntime) requiresSuccessfulAfterCommit(envelope EventEnvelope, 
 	return ok && handler.RequiresSuccessfulAfterCommit(envelope, result)
 }
 
-// finalizeAfterCommit closes the receipt only after a reliable transient
-// fanout succeeds. A failure is returned to the normal MQ retry/dead-letter
-// path, whose recordFailure transition makes the receipt processable again.
+// finalizeAfterCommit 仅在可靠的临时扇出成功后关闭回执。失败会返回常规 MQ
+// 重试或死信路径，其中 recordFailure 状态变更会让回执重新可处理。
 func (r *ConsumerRuntime) finalizeAfterCommit(ctx context.Context, envelope EventEnvelope, result ConsumerResult) error {
 	postCommit, ok := r.handler.(AfterCommitConsumerHandler)
 	if !ok {
@@ -366,7 +360,7 @@ func (r *ConsumerRuntime) consumerAllowed(eventType string) bool {
 	return false
 }
 
-// recordFailure 返回记录 Failure。
+// recordFailure 记录消费失败。
 func (r *ConsumerRuntime) recordFailure(ctx context.Context, envelope EventEnvelope, attempt int, failure *ConsumerError) error {
 	now := time.Now()
 	row := ConsumerReceipt{ID: r.ids.Next(), ConsumerName: r.spec.Name, EventID: envelope.EventID, EventType: envelope.EventType, EventVersion: envelope.EventVersion, Status: "processing", Attempts: uint(attempt), LastErrorCode: &failure.Code, FirstReceivedAt: now}
@@ -408,9 +402,8 @@ func (r *ConsumerRuntime) deadLetter(ctx context.Context, channel *amqp.Channel,
 		return err
 	}
 	if err := r.db.WithContext(ctx).Model(&ConsumerReceipt{}).Where("consumer_name=? AND event_id=?", r.spec.Name, delivery.MessageId).Updates(map[string]any{"status": "dead", "locked_by": nil, "locked_until": nil, "last_error_code": code}).Error; err != nil {
-		// The confirmed dead copy is durable. Do not ACK the source until the
-		// receipt state is also durable; duplicate dead copies collapse in the
-		// Dead Sink through its database uniqueness constraint.
+		// 已确认的死信副本具有持久性。在回执状态同样持久化前不要确认源消息；
+		// 重复死信副本会通过死信接收端的数据库唯一约束合并。
 		_ = delivery.Nack(false, true)
 		return fmt.Errorf("mark consumer receipt dead: %w", err)
 	}
@@ -418,7 +411,7 @@ func (r *ConsumerRuntime) deadLetter(ctx context.Context, channel *amqp.Channel,
 	return delivery.Ack(false)
 }
 
-// classifyConsumerError 返回classify 消费者错误。
+// classifyConsumerError 对消费者错误分类。
 func classifyConsumerError(err error) *ConsumerError {
 	var failure *ConsumerError
 	if errors.As(err, &failure) {
@@ -442,12 +435,12 @@ func cloneHeaders(source amqp.Table) amqp.Table {
 	return result
 }
 
-// publishingFromDelivery 返回publishing From 配送。
+// publishingFromDelivery 根据投递内容构造发布状态。
 func publishingFromDelivery(delivery amqp.Delivery, headers amqp.Table) amqp.Publishing {
 	return amqp.Publishing{Headers: headers, ContentType: delivery.ContentType, DeliveryMode: amqp.Persistent, MessageId: delivery.MessageId, Timestamp: time.Now(), Type: delivery.Type, Body: delivery.Body}
 }
 
-// headerInt 返回header Int。
+// headerInt 返回消息头整数。
 func headerInt(headers amqp.Table, key string) int {
 	if headers == nil {
 		return 0
@@ -467,7 +460,7 @@ func headerInt(headers amqp.Table, key string) int {
 	}
 }
 
-// incConsume 递增Consume指标计数。
+// incConsume 递增消费指标计数。
 func (r *ConsumerRuntime) incConsume(result string) {
 	if r.metrics != nil {
 		r.metrics.IncMQConsume(r.spec.Name, result)

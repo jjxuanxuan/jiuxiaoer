@@ -16,8 +16,8 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/pkg/problem"
 )
 
-// ConfirmPayment performs the miniapp's backend confirmation. It only queries
-// payments owned by the caller and never trusts wx.requestPayment as final.
+// ConfirmPayment 执行小程序支付的后端确认。它只查询调用方拥有的支付记录，
+// 绝不把 wx.requestPayment 的结果视为最终结果。
 func (s *Service) ConfirmPayment(ctx context.Context, claims *auth.Claims, orderIDRaw string) (PaymentDTO, error) {
 	if s.payment == nil || !s.cfg.WeChat.PayEnabled {
 		return PaymentDTO{}, problem.New(http.StatusServiceUnavailable, "PAYMENT_PROVIDER_UNAVAILABLE", "Service Unavailable", "payment provider is unavailable")
@@ -37,11 +37,9 @@ func (s *Service) ConfirmPayment(ctx context.Context, claims *auth.Claims, order
 	return s.confirmCustomerPayment(ctx, customerID, payment)
 }
 
-// ConfirmPaymentIdempotent is the HTTP command variant of ConfirmPayment. A
-// completed response is persisted before it is returned, so a client retry
-// with the same key never issues another provider query. Provider and storage
-// failures release the claim; the store's bounded processing lease remains a
-// final crash-safety fallback.
+// ConfirmPaymentIdempotent 是 ConfirmPayment 的 HTTP 命令版本。完成的响应
+// 会先持久化再返回，因此客户端使用同一键重试时不会再次查询服务商。
+// 服务商或存储失败会释放认领；存储层的有界处理租约仍作为最终崩溃保护。
 func (s *Service) ConfirmPaymentIdempotent(ctx context.Context, claims *auth.Claims, method, path, key, orderIDRaw string) (PaymentDTO, error) {
 	customerID, err := customerIDFromClaims(claims, "payment:view")
 	if err != nil {
@@ -178,8 +176,7 @@ func (s *Service) logPaymentProviderFailure(paymentNo string, err error, decisio
 	s.log.Warn("payment provider call failed", attrs...)
 }
 
-// ApplyProviderPaymentState is the shared transaction used by callbacks,
-// customer confirmation and reconciliation workers.
+// ApplyProviderPaymentState 是回调、客户确认和对账工作进程共用的事务。
 func (s *Service) ApplyProviderPaymentState(ctx context.Context, paymentNo, provider string, state ProviderPaymentState, actorType string, actorID uint64, key string) (PaymentDTO, error) {
 	var result PaymentDTO
 	var reject error
@@ -210,13 +207,12 @@ func (s *Service) ApplyProviderPaymentState(ctx context.Context, paymentNo, prov
 	return result, reject
 }
 
-// applyProviderPaymentStateTx validates provider identity and amounts before it
-// dispatches to the single payment-success ledger transaction.
+// applyProviderPaymentStateTx 在进入唯一的支付成功记账事务前，
+// 校验服务商身份和金额。
 func (s *Service) applyProviderPaymentStateTx(ctx context.Context, tx *gorm.DB, orderRow Order, payment Payment, state ProviderPaymentState, actorType string, actorID uint64, key string) (Payment, error, error) {
 	providerStatus := strings.ToUpper(strings.TrimSpace(state.Status))
-	// Provider queries and callbacks can arrive out of order. Once a payment
-	// has been validated as successful, a stale non-success state must not
-	// overwrite its success evidence or schedule another reconciliation.
+	// 服务商查询和回调可能乱序到达。支付一旦验证成功，过期的非成功状态
+	// 不得覆盖成功证据，也不得再次安排对账。
 	if payment.Status == "succeeded" && providerStatus != "SUCCESS" {
 		return payment, nil, nil
 	}
@@ -262,9 +258,8 @@ func (s *Service) applyProviderPaymentStateTx(ctx context.Context, tx *gorm.DB, 
 			return payment, nil, nil
 		}
 
-		// A provider-confirmed payment after the local order was closed must
-		// never deduct already released stock. Preserve the money fact and
-		// raise a payment exception for manual fulfillment/refund handling.
+		// 本地订单关闭后才由服务商确认的支付，绝不能扣减已释放的库存。
+		// 保留资金事实并产生支付异常，交由人工履约或退款处理。
 		paidAt := state.PaidAt
 		if paidAt == nil {
 			now := time.Now()
@@ -350,8 +345,8 @@ func nextPaymentReconcileAt(payment Payment, now time.Time) time.Time {
 	return next
 }
 
-// MarkPaymentReconcileError preserves the local money state after a timeout or
-// provider failure and schedules a safe query retry.
+// MarkPaymentReconcileError 在超时或服务商失败后保留本地资金状态，
+// 并安排安全的查询重试。
 func (s *Service) MarkPaymentReconcileError(ctx context.Context, payment Payment, cause error) error {
 	return s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		locked, err := s.repo.LockPaymentByNo(ctx, tx, payment.PaymentNo, payment.Provider)

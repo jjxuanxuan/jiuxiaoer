@@ -11,9 +11,8 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/pkg/problem"
 )
 
-// Detail returns the sensitive fulfillment view for the rider who currently
-// owns the active assignment. Neither the list permission nor the status-write
-// permission authorizes reading the sensitive fulfillment snapshot.
+// Detail 为当前持有有效分配的骑手返回敏感履约视图。
+// 列表权限和状态写入权限都不能授权读取敏感履约快照。
 func (s *Service) Detail(ctx context.Context, claims *auth.Claims, deliveryIDRaw string) (DeliveryDetailDTO, error) {
 	riderID, err := riderIDForDetail(claims)
 	if err != nil {

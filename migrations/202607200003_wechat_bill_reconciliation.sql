@@ -23,8 +23,8 @@ CREATE TABLE wechat_bill_reconciliation_runs (
   KEY idx_wechat_bill_status (status, bill_date, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
--- Observations are deliberately narrow staging rows. They let the worker parse
--- and compare large bills without retaining the complete file in memory.
+-- 观测记录刻意采用精简的暂存行，使工作进程无需在内存中保留完整文件，
+-- 即可解析和比较大型账单。
 CREATE TABLE wechat_bill_observations (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
   run_id BIGINT UNSIGNED NOT NULL,

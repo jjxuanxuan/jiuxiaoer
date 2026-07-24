@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// TestValidatePolicySnapshot 验证Validate 策略快照的预期行为。
+// TestValidatePolicySnapshot 验证策略快照。
 func TestValidatePolicySnapshot(t *testing.T) {
 	valid := defaultPolicySnapshot()
 	if err := validatePolicySnapshot(valid); err != nil {
@@ -27,7 +27,7 @@ func TestValidatePolicySnapshot(t *testing.T) {
 	}
 }
 
-// TestValidatePolicyCandidateLimit 验证Validate 策略 Candidate 限制的预期行为。
+// TestValidatePolicyCandidateLimit 验证策略候选数量限制。
 func TestValidatePolicyCandidateLimit(t *testing.T) {
 	req := PolicyCreateReq{
 		PolicyCode: "test", ScopeType: "global", ScopeID: "0", Mode: "hybrid",
@@ -42,7 +42,7 @@ func TestValidatePolicyCandidateLimit(t *testing.T) {
 	}
 }
 
-// TestHaversineAndDistanceScore 验证Haversine And Distance Score的预期行为。
+// TestHaversineAndDistanceScore 验证 Haversine 距离和距离评分。
 func TestHaversineAndDistanceScore(t *testing.T) {
 	meters := haversineMeters(22.541, 113.931, 22.551, 113.931)
 	if math.Abs(meters-1112) > 15 {
@@ -58,7 +58,7 @@ func TestHaversineAndDistanceScore(t *testing.T) {
 	}
 }
 
-// TestCandidateRankingIsDeterministic 验证Candidate Ranking Is Deterministic的预期行为。
+// TestCandidateRankingIsDeterministic 验证候选骑手排序结果确定。
 func TestCandidateRankingIsDeterministic(t *testing.T) {
 	now := time.Now()
 	earlier := now.Add(-time.Minute)
@@ -76,7 +76,7 @@ func TestCandidateRankingIsDeterministic(t *testing.T) {
 			t.Fatalf("rank %d rider=%d want=%d", index+1, rows[index].candidate.RiderID, riderID)
 		}
 	}
-	// A second calculation with identical inputs must not change the order.
+	// 使用相同输入再次计算不得改变顺序。
 	sortScoredCandidates(rows)
 	for index, riderID := range want {
 		if rows[index].candidate.RiderID != riderID {
@@ -85,7 +85,7 @@ func TestCandidateRankingIsDeterministic(t *testing.T) {
 	}
 }
 
-// TestAssignmentResultUsesStableSnakeCaseStringIDs 验证分配结果 Uses Stable Snake Case 字符串 I Ds的预期行为。
+// TestAssignmentResultUsesStableSnakeCaseStringIDs 验证分配结果使用稳定的蛇形命名字符串 ID。
 func TestAssignmentResultUsesStableSnakeCaseStringIDs(t *testing.T) {
 	raw, err := json.Marshal(AssignmentResult{DeliveryOrderID: "9007199254740993", OrderID: "2", ShopID: "3", RiderID: "4", Status: "accepted"})
 	if err != nil {
@@ -97,7 +97,7 @@ func TestAssignmentResultUsesStableSnakeCaseStringIDs(t *testing.T) {
 	}
 }
 
-// TestOfferRejectRequestDoesNotRequireAssignmentVersion 验证Offer Reject 请求 Does 不 Require 分配版本的预期行为。
+// TestOfferRejectRequestDoesNotRequireAssignmentVersion 验证拒绝派单请求不要求分配版本。
 func TestOfferRejectRequestDoesNotRequireAssignmentVersion(t *testing.T) {
 	var req OfferRejectReq
 	if err := json.Unmarshal([]byte(`{"expected_offer_version":2,"reason_code":"busy"}`), &req); err != nil {
@@ -108,7 +108,7 @@ func TestOfferRejectRequestDoesNotRequireAssignmentVersion(t *testing.T) {
 	}
 }
 
-// TestCandidateDTOUsesStringIDsAndDecodedExclusions 验证Candidate DTO Uses 字符串 I Ds And Decoded Exclusions的预期行为。
+// TestCandidateDTOUsesStringIDsAndDecodedExclusions 验证候选 DTO 使用字符串 ID 和已解码排除项。
 func TestCandidateDTOUsesStringIDsAndDecodedExclusions(t *testing.T) {
 	dto := candidateDTO(Candidate{ID: 11, RiderID: 22, ExclusionCodes: jsonData([]string{"RIDER_OFFLINE"})})
 	if dto.ID != "11" || dto.RiderID != "22" || len(dto.ExclusionCodes) != 1 || dto.ExclusionCodes[0] != "RIDER_OFFLINE" {
@@ -116,7 +116,7 @@ func TestCandidateDTOUsesStringIDsAndDecodedExclusions(t *testing.T) {
 	}
 }
 
-// TestHeartbeatSequenceIsScopedToDevice 验证Heartbeat 序列 Is Scoped To Device的预期行为。
+// TestHeartbeatSequenceIsScopedToDevice 验证心跳序列按设备隔离。
 func TestHeartbeatSequenceIsScopedToDevice(t *testing.T) {
 	oldDevice := "old-device-hash"
 	if got := heartbeatSequence(&oldDevice, 100, oldDevice, true, 110); got != 110 {

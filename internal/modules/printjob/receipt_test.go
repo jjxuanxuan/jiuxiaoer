@@ -100,8 +100,7 @@ func TestEnqueueAutoBuildsAndPersistsImmutableReceiptV1(t *testing.T) {
 		}
 	}
 
-	// Mutating all live source rows after task creation must not rewrite the
-	// already persisted print snapshot.
+	// 任务创建后修改所有实时源记录，不得改写已经持久化的打印快照。
 	if err := db.Exec(`UPDATE shops SET name='新门店名',address='新地址',phone='13900000000' WHERE id=100`).Error; err != nil {
 		t.Fatal(err)
 	}

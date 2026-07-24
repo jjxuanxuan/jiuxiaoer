@@ -78,8 +78,8 @@ CREATE TABLE mq_dead_letter_replays (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 -- +goose Down
--- Receipt, dead-letter and replay rows are audit/business recovery facts.
--- This additive migration is intentionally irreversible: application rollback
--- disables MQ and restores DB fallback while retaining all new data.
+-- 回执、死信和重放记录都是审计与业务恢复事实。
+-- 此增量迁移刻意不可逆：应用回滚会关闭 MQ 并恢复数据库降级路径，
+-- 同时保留所有新增数据。
 SIGNAL SQLSTATE '45000'
   SET MESSAGE_TEXT = '202607140001 is additive and irreversible; roll back the application, not MQ facts';

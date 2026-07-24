@@ -18,9 +18,8 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/modules/routeplanning"
 )
 
-// TestRiderLoginAcceptAndAmapNavigationE2E exercises the real rider-facing
-// chain with a non-production Amap key. MySQL writes are wrapped in a rollback
-// transaction and Redis uses an isolated test database.
+// TestRiderLoginAcceptAndAmapNavigationE2E 使用非生产高德密钥验证真实的
+// 骑手端链路。MySQL 写入包裹在可回滚事务中，Redis 使用隔离的测试库。
 func TestRiderLoginAcceptAndAmapNavigationE2E(t *testing.T) {
 	if os.Getenv("JXE_RUN_AMAP_E2E") != "1" {
 		t.Skip("set JXE_RUN_AMAP_E2E=1 with a non-production Amap Web Service key")
@@ -72,6 +71,7 @@ func TestRiderLoginAcceptAndAmapNavigationE2E(t *testing.T) {
 	runID := fmt.Sprintf("%d", time.Now().UnixNano())
 
 	phone := fmt.Sprintf("137%08d", time.Now().UnixNano()%100000000)
+	seedCustomerReadyForSMSLogin(t, tx, cfg, phone)
 	performOK(t, router, http.MethodPost, "/api/v1/auth/customer/send-code", "", "", map[string]any{"phone": phone})
 	customerLogin := performOK(t, router, http.MethodPost, "/api/v1/auth/customer/sms-login", "", "", map[string]any{"phone": phone, "code": "123456"})
 	customerToken := stringValue(t, object(t, customerLogin["data"])["access_token"])

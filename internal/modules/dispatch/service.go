@@ -45,10 +45,9 @@ type PaidOrderInput struct {
 	AddressSnapshot datatypes.JSON
 }
 
-// EnsurePaidOrderTask 确保Paid 订单任务存在且处于可用状态。
-// EnsurePaidOrderTask is called inside the payment-success transaction. It
-// creates the durable delivery and dispatch facts synchronously; RabbitMQ only
-// wakes the worker after commit.
+// EnsurePaidOrderTask 确保已支付订单的派单任务存在且可用。
+// EnsurePaidOrderTask 在支付成功事务内调用。它同步创建持久的配送和派单事实；
+// RabbitMQ 只在提交后唤醒工作进程。
 func (s *Service) EnsurePaidOrderTask(ctx context.Context, tx *gorm.DB, input PaidOrderInput) (DeliveryOrder, Job, error) {
 	var existing DeliveryOrder
 	err := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).Where("order_id=?", input.OrderID).First(&existing).Error
@@ -98,7 +97,7 @@ func (s *Service) EnsurePaidOrderTask(ctx context.Context, tx *gorm.DB, input Pa
 	return s.createJobForDelivery(ctx, tx, delivery, input.OrderID, input.ShopID, 1)
 }
 
-// createJobForDelivery 创建任务 For 配送。
+// createJobForDelivery 为配送单创建派单任务。
 func (s *Service) createJobForDelivery(ctx context.Context, tx *gorm.DB, delivery DeliveryOrder, orderID, shopID uint64, seq uint) (DeliveryOrder, Job, error) {
 	policy, snapshot, version, err := s.resolvePolicy(ctx, tx, shopID)
 	if err != nil {
@@ -150,7 +149,7 @@ func (s *Service) createJobForDelivery(ctx context.Context, tx *gorm.DB, deliver
 	return delivery, job, nil
 }
 
-// resolvePolicy 返回resolve 策略。
+// resolvePolicy 解析并返回派单策略。
 func (s *Service) resolvePolicy(ctx context.Context, tx *gorm.DB, shopID uint64) (*Policy, PolicySnapshot, string, error) {
 	var shop shopRow
 	if err := tx.WithContext(ctx).Select("id,city_code").Where("id=?", shopID).First(&shop).Error; err != nil {
@@ -189,7 +188,7 @@ func defaultPolicySnapshot() PolicySnapshot {
 	}
 }
 
-// snapshotFromPolicy 返回快照 From 策略。
+// snapshotFromPolicy 根据策略构造快照。
 func snapshotFromPolicy(policy Policy) PolicySnapshot {
 	weights := defaultPolicySnapshot().ScoreWeights
 	_ = json.Unmarshal(policy.ScoreWeights, &weights)
@@ -233,11 +232,9 @@ func (s *Service) createAudit(ctx context.Context, tx *gorm.DB, actorType string
 	}).Error
 }
 
-// createHeartbeatFailureAudit records a rejected heartbeat on the service's
-// base database handle. It must not use the business transaction: validation,
-// rate-limit and eligibility failures still need an audit fact after that
-// transaction rolls back. Only controlled dimensions are accepted here; the
-// heartbeat payload (coordinates and device identifier) is never persisted.
+// createHeartbeatFailureAudit 使用服务的基础数据库句柄记录被拒绝的心跳。
+// 它不得使用业务事务：校验、限流和资格失败在事务回滚后仍需要审计事实。
+// 此处只接受受控维度；心跳载荷中的坐标和设备标识符绝不会持久化。
 func (s *Service) createHeartbeatFailureAudit(ctx context.Context, claims *auth.Claims, spec heartbeatAuditSpec) {
 	if s == nil || s.db == nil || s.ids == nil {
 		return
@@ -280,8 +277,8 @@ func (s *Service) createHeartbeatFailureAudit(ctx context.Context, claims *auth.
 		"created_at":    time.Now(),
 	}).Error
 	if err != nil && s.log != nil {
-		// Do not log err: a driver error can echo SQL values. The stable audit
-		// dimensions are sufficient for the operational signal.
+		// 不要记录 err：驱动错误可能回显 SQL 值。
+		// 稳定的审计维度已足以提供运维信号。
 		s.log.Warn("heartbeat failure audit write failed", "action", spec.Action, "error_code", spec.ErrorCode, "reason_code", spec.ReasonCode)
 	}
 }
@@ -320,7 +317,7 @@ func jsonData(value any) datatypes.JSON {
 // idString 将数字 ID 转换为字符串。
 func idString(id uint64) string { return strconv.FormatUint(id, 10) }
 
-// optionalID 返回optional ID。
+// optionalID 返回可选 ID 指针。
 func optionalID(id *uint64) string {
 	if id == nil {
 		return ""

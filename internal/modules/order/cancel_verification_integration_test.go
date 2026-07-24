@@ -81,7 +81,7 @@ func TestCustomerCancelInvalidatesEarlyVerificationMySQL(t *testing.T) {
 		t.Fatalf("customer cancel left verification usable: %+v", invalidated)
 	}
 
-	// HTTP idempotency replay must not rewrite the invalidation fact.
+	// HTTP 幂等重放不得改写失效事实。
 	if _, err := service.Cancel(ctx, claims, "POST", path, key, fmt.Sprint(orderID), order.OrderCancelReq{Reason: "customer changed mind", ExpectedVersion: &expectedVersion}); err != nil {
 		t.Fatalf("cancel replay: %v", err)
 	}

@@ -26,7 +26,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/pkg/snowflake"
 )
 
-// TestPaymentCallbackAndExpiryRace1000 验证支付回调 And 过期 Race 1000的预期行为。
+// TestPaymentCallbackAndExpiryRace1000 验证支付回调与过期处理的一千次竞争。
 func TestPaymentCallbackAndExpiryRace1000(t *testing.T) {
 	if os.Getenv("JXE_RUN_INTEGRATION") != "1" {
 		t.Skip("set JXE_RUN_INTEGRATION=1 to run payment and expiry race test")

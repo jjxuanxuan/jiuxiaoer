@@ -33,8 +33,8 @@ func (w *SLAWorker) Run(ctx context.Context) {
 	}
 }
 
-// RunOnce records reminders and deadline breaches only. It never creates a
-// receipt or inventory movement because elapsed time is not a physical fact.
+// RunOnce 只记录提醒和超时，绝不创建收货或库存移动，
+// 因为时间流逝并非实物事实。
 func (w *SLAWorker) RunOnce(ctx context.Context) {
 	service := w.service
 	if service == nil || !service.cfg.DeliveryReturn.Enabled || !service.cfg.DeliveryReturn.SLAWorkerEnabled || service.repo.DB() == nil {

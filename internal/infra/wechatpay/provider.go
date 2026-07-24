@@ -186,10 +186,9 @@ func (p *provider) Shutdown() {
 	}
 }
 
-// OpenBill applies for an official APIv3 bill and returns its response body as
-// a stream. The apply response is signature-verified by client; the download
-// client intentionally uses the SDK's WithoutValidator option because WeChat's
-// bill download response does not contain a response signature.
+// OpenBill 申请官方 APIv3 账单，并以流形式返回响应体。申请响应由客户端
+// 验签；由于微信账单下载响应不含响应签名，下载客户端刻意使用 SDK 的
+// WithoutValidator 选项。
 func (p *provider) OpenBill(ctx context.Context, billDate time.Time, billType string) (reconciliation.BillFile, error) {
 	requestURL := "https://api.mch.weixin.qq.com/v3/bill/tradebill?bill_date=" + url.QueryEscape(billDate.Format("2006-01-02")) + "&bill_type=ALL"
 	operation := "bill.trade.apply"
@@ -554,7 +553,7 @@ func stringValue(value *string) string {
 	return *value
 }
 
-// int64Value 返回int 64 值。
+// int64Value 返回 64 位整数值。
 func int64Value(value *int64) int64 {
 	if value == nil {
 		return 0

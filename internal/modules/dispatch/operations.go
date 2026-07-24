@@ -346,7 +346,7 @@ func jobDTO(row Job) JobDTO {
 	}
 }
 
-// candidateDTO 返回candidate DTO。
+// candidateDTO 返回候选骑手 DTO。
 func candidateDTO(row Candidate) CandidateDTO {
 	exclusions := make([]string, 0)
 	_ = json.Unmarshal(row.ExclusionCodes, &exclusions)
@@ -361,7 +361,7 @@ func candidateDTO(row Candidate) CandidateDTO {
 	}
 }
 
-// offerTimelineDTO 返回offer Timeline DTO。
+// offerTimelineDTO 返回派单时间线 DTO。
 func offerTimelineDTO(row Offer) OfferTimelineDTO {
 	return OfferTimelineDTO{
 		ID: idString(row.ID), DeliveryOrderID: idString(row.DeliveryOrderID), RiderID: idString(row.RiderID),
@@ -370,7 +370,7 @@ func offerTimelineDTO(row Offer) OfferTimelineDTO {
 	}
 }
 
-// assignmentTimelineDTO 返回分配 Timeline DTO。
+// assignmentTimelineDTO 返回分配时间线 DTO。
 func assignmentTimelineDTO(row Assignment) AssignmentTimelineDTO {
 	return AssignmentTimelineDTO{
 		ID: idString(row.ID), DeliveryOrderID: idString(row.DeliveryOrderID), DispatchJobID: idValue(row.DispatchJobID),

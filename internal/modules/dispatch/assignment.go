@@ -288,7 +288,7 @@ func idempotencyRateKey(prefix string, id uint64) string {
 	return prefix + ":" + idString(id)
 }
 
-// recheckRider 返回recheck 骑手。
+// recheckRider 重新检查骑手资格。
 func (s *Service) recheckRider(ctx context.Context, tx *gorm.DB, riderID uint64, delivery DeliveryOrder, job Job, source string, now time.Time) error {
 	var eligibility struct {
 		Status          string

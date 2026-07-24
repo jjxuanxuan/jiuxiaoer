@@ -16,7 +16,7 @@ var (
 	codePattern  = regexp.MustCompile(`^[0-9]{6}$`)
 )
 
-// normalized 返回normalized。
+// normalized 返回规范化后的提交请求。
 func (r SubmitRequest) normalized(maxShops int) (SubmitRequest, []uint64, error) {
 	r.Name = strings.TrimSpace(r.Name)
 	r.Phone = strings.TrimSpace(r.Phone)
@@ -37,7 +37,7 @@ func (r SubmitRequest) normalized(maxShops int) (SubmitRequest, []uint64, error)
 	return r, shops, nil
 }
 
-// normalized 返回normalized。
+// normalized 返回规范化后的登录请求。
 func (r LoginRequest) normalized() (LoginRequest, error) {
 	r.Phone = strings.TrimSpace(r.Phone)
 	if !phonePattern.MatchString(r.Phone) || !codePattern.MatchString(r.Code) {
@@ -46,7 +46,7 @@ func (r LoginRequest) normalized() (LoginRequest, error) {
 	return r, nil
 }
 
-// normalized 返回normalized。
+// normalized 返回规范化后的审核请求。
 func (r UpdateRequest) normalized(maxShops int) (UpdateRequest, []uint64, error) {
 	r.Name = strings.TrimSpace(r.Name)
 	if err := validateName(r.Name); err != nil {
@@ -71,7 +71,7 @@ func (r VersionRequest) validate() error {
 	return nil
 }
 
-// normalized 返回normalized。
+// normalized 返回规范化后的服务范围。
 func (r ReviewRequest) normalized() (ReviewRequest, error) {
 	r.Decision = strings.ToLower(strings.TrimSpace(r.Decision))
 	r.Reason = strings.TrimSpace(r.Reason)

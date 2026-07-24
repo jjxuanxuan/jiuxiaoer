@@ -10,8 +10,8 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/infra/amap"
 )
 
-// This opt-in contract consumes the separately configured customer-LBS Amap
-// quota. Fixed non-customer coordinates keep it safe to run outside CI.
+// 此可选契约测试会消耗单独配置的客户侧 LBS 高德额度。
+// 使用固定的非客户坐标，确保可在 CI 之外安全运行。
 func TestCustomerLBSAmapProviderNonProductionContract(t *testing.T) {
 	if os.Getenv("JXE_RUN_C_LBS_AMAP_CONTRACT") != "1" {
 		t.Skip("set JXE_RUN_C_LBS_AMAP_CONTRACT=1 with a non-production customer-LBS Amap key")

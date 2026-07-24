@@ -35,7 +35,7 @@ type mqAcceptanceFixture struct {
 	log      *slog.Logger
 }
 
-// TestRabbitMQAcceptanceFailureAndRecovery 验证Rabbit 消息队列验收 Failure And Recovery的预期行为。
+// TestRabbitMQAcceptanceFailureAndRecovery 验证 RabbitMQ 验收中的失败和恢复流程。
 func TestRabbitMQAcceptanceFailureAndRecovery(t *testing.T) {
 	if os.Getenv("JXE_RUN_MQ_INTEGRATION") != "1" {
 		t.Skip("set JXE_RUN_MQ_INTEGRATION=1 and use an isolated non-root RabbitMQ vhost")
@@ -93,7 +93,7 @@ func newMQAcceptanceFixture(t *testing.T) *mqAcceptanceFixture {
 	return &mqAcceptanceFixture{ctx: ctx, db: db, rabbit: rabbit, registry: MustDefaultEventRegistry(), ids: snowflake.New(906), log: log}
 }
 
-// parseRabbitVHost 解析Rabbit V Host。
+// parseRabbitVHost 解析 RabbitMQ 虚拟主机。
 func parseRabbitVHost(raw string) (string, error) {
 	parsed, err := url.Parse(raw)
 	if err != nil {
@@ -128,7 +128,7 @@ func (f *mqAcceptanceFixture) purgeQueues(t *testing.T) {
 	}
 }
 
-// transactionWithoutBroker 处理交易 Without Broker相关逻辑。
+// transactionWithoutBroker 验证消息代理不可用时的事务行为。
 func (f *mqAcceptanceFixture) transactionWithoutBroker(t *testing.T) {
 	eventID := uuid.NewString()
 	id := f.ids.Next()
@@ -145,7 +145,7 @@ func (f *mqAcceptanceFixture) transactionWithoutBroker(t *testing.T) {
 	}
 }
 
-// backlogDrains 处理backlog Drains相关逻辑。
+// backlogDrains 验证积压消息清空。
 func (f *mqAcceptanceFixture) backlogDrains(t *testing.T) {
 	f.purgeQueues(t)
 	const count = 100
@@ -180,7 +180,7 @@ func (f *mqAcceptanceFixture) backlogDrains(t *testing.T) {
 	f.purgeQueues(t)
 }
 
-// missingBindingRoutesToUnrouted 处理missing Binding Routes To 未路由消息相关逻辑。
+// missingBindingRoutesToUnrouted 验证缺少绑定时消息进入未路由路径。
 func (f *mqAcceptanceFixture) missingBindingRoutesToUnrouted(t *testing.T) {
 	f.purgeQueues(t)
 	channel := f.channel(t)
@@ -211,7 +211,7 @@ func (f *mqAcceptanceFixture) missingBindingRoutesToUnrouted(t *testing.T) {
 	})
 }
 
-// twoPublishersClaim1000 处理two Publishers 认领 1000相关逻辑。
+// twoPublishersClaim1000 验证两个发布器并发认领一千条事件。
 func (f *mqAcceptanceFixture) twoPublishersClaim1000(t *testing.T) {
 	const count = 1000
 	ids := priorityOutboxIDs(t, f.db, count, f.ids)
@@ -260,7 +260,7 @@ func (f *mqAcceptanceFixture) twoPublishersClaim1000(t *testing.T) {
 	}
 }
 
-// maxAttemptEntersDead 处理max 尝试 Enters 死信相关逻辑。
+// maxAttemptEntersDead 验证达到最大尝试次数后进入死信。
 func (f *mqAcceptanceFixture) maxAttemptEntersDead(t *testing.T) {
 	f.purgeQueues(t)
 	event := f.envelope(t, "cache.invalidate", `{"keys":["acceptance:max-retry"]}`)
@@ -288,7 +288,7 @@ func (f *mqAcceptanceFixture) maxAttemptEntersDead(t *testing.T) {
 	f.cleanupEventEvidence(event.EventID)
 }
 
-// replayIsIdempotent 处理replay Is Idempotent相关逻辑。
+// replayIsIdempotent 验证消息重放具备幂等性。
 func (f *mqAcceptanceFixture) replayIsIdempotent(t *testing.T) {
 	source := OutboxEvent{ID: f.ids.Next(), EventID: uuid.NewString(), EventType: "cache.invalidate", EventVersion: 1, AggregateType: "product", AggregateID: f.ids.Next(), Payload: datatypes.JSON(`{"keys":["acceptance:replay"]}`), Status: "published", CreatedAt: time.Now()}
 	if err := f.db.Create(&source).Error; err != nil {
@@ -338,7 +338,7 @@ func (f *mqAcceptanceFixture) unauthorizedAdminCannotObserveDead(t *testing.T) {
 	}
 }
 
-// succeededReceiptAcksRedelivery 处理succeeded Receipt Acks Redelivery相关逻辑。
+// succeededReceiptAcksRedelivery 验证成功回执会确认重复投递。
 func (f *mqAcceptanceFixture) succeededReceiptAcksRedelivery(t *testing.T) {
 	f.purgeQueues(t)
 	event := f.envelope(t, "cache.invalidate", `{"keys":["acceptance:ack-crash"]}`)
@@ -366,7 +366,7 @@ func (f *mqAcceptanceFixture) succeededReceiptAcksRedelivery(t *testing.T) {
 	f.cleanupEventEvidence(event.EventID)
 }
 
-// poisonSchemaGoesDead 处理poison Schema Goes 死信相关逻辑。
+// poisonSchemaGoesDead 验证有毒模式消息进入死信。
 func (f *mqAcceptanceFixture) poisonSchemaGoesDead(t *testing.T) {
 	f.purgeQueues(t)
 	eventID := uuid.NewString()
@@ -463,7 +463,7 @@ func (f *mqAcceptanceFixture) startDeadSink(ctx context.Context, consumer string
 	return done
 }
 
-// awaitStop 处理await Stop相关逻辑。
+// awaitStop 等待进程停止。
 func (f *mqAcceptanceFixture) awaitStop(t *testing.T, done <-chan struct{}) {
 	t.Helper()
 	select {

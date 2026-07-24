@@ -2,7 +2,7 @@ package reconciliation
 
 import (
 	"context"
-	"crypto/sha1" // #nosec G505 -- test fixture mirrors WeChat's required digest.
+	"crypto/sha1" // #nosec G505 -- 测试夹具模拟微信要求的摘要。
 	"encoding/hex"
 	"errors"
 	"io"
@@ -72,7 +72,7 @@ func (p *billFixtureProvider) OpenBill(ctx context.Context, _ time.Time, _ strin
 	}
 	hash := p.hash
 	if hash == "" {
-		sum := sha1.Sum([]byte(p.body)) // #nosec G401 -- mandated bill fixture digest.
+		sum := sha1.Sum([]byte(p.body)) // #nosec G401 -- 账单夹具强制使用该摘要算法。
 		hash = hex.EncodeToString(sum[:])
 	}
 	return BillFile{Body: io.NopCloser(strings.NewReader(p.body)), HashType: "SHA1", ExpectedHash: hash, ProviderRequestID: p.requestID, DownloadRequestID: p.downloadReqID}, nil

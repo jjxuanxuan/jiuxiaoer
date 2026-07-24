@@ -15,9 +15,8 @@ const (
 	cacheFallbackBatch    = 100
 )
 
-// CacheFallbackWorker reconciles committed cache.invalidate Outbox facts that
-// have no succeeded cache receipt. Redis deletion is idempotent, so a crash
-// after DEL and before receipt commit is safe to retry.
+// CacheFallbackWorker 对账已提交但没有成功缓存回执的 cache.invalidate
+// 发件箱事实。Redis 删除具备幂等性，因此在 DEL 后、回执提交前崩溃也可安全重试。
 type CacheFallbackWorker struct {
 	db       *gorm.DB
 	registry *EventRegistry

@@ -1,6 +1,6 @@
 # Jiuxiaoer Go Backend
 
-The Go modular monolith is the source of truth for the phase-one transaction and fulfilment flow. CP1 adds reliable print tasks, transaction notifications and inbox, pickup/delivery verification codes, account provisioning, controlled order recovery, and the server-side real-name/adult gate for restricted products.
+Go 模块化整体架构是第一阶段交易和履行流程的真实来源。增加了可靠的打印任务、交易通知和收件箱、提货/送货验证码、帐户配置、受控订单恢复以及受限产品的服务器端实名/成人门。
 
 ## Local Run
 
@@ -21,16 +21,18 @@ Endpoints:
 - `GET /api/v1/health`: compatibility readiness endpoint using the API envelope.
 - `GET /metrics`: Prometheus text metrics; production requires `Authorization: Bearer $JXE_METRICS_TOKEN`.
 - `GET /api/v1/swagger/index.html`: API documentation.
-- `POST /api/v1/auth/customer/send-code`: send a customer login code through the configured SMS provider.
-- `POST /api/v1/auth/customer/sms-login`: exchange a phone number and one-time code for a customer session.
-- `POST /api/v1/auth/customer/wechat-login`: exchange a Mini Program code for a customer session.
-- `POST /api/v1/auth/customer/phone-bind`: bind the authenticated customer's WeChat-authorized phone.
-- `POST /api/v1/orders/:id/payments`: idempotently create a provider payment.
+- `POST /api/v1/auth/customer/send-code`: send a login code through the configured SMS provider; this never creates a customer account.
+- `POST /api/v1/auth/customer/sms-login`: authenticate an existing customer that has already completed the current Mini Program login and phone binding.
+- `POST /api/v1/auth/customer/wechat-login`: exchange a Mini Program code for a customer session, creating the customer identity on first login.
+- `POST /api/v1/auth/customer/phone-bind`: bind the authenticated customer's WeChat-authorized phone and enable subsequent SMS login.
+- `POST /api/v1/orders/:id/payments`: idempotently create a provider payment for a customer with an active Mini Program identity and a bound phone.
 - `GET /api/v1/orders/:id/payment`: read the persisted payment state.
 - `POST /api/v1/payments/:provider/callbacks`: receive provider-signed callbacks.
 - `POST /api/v1/identity-verifications`: create an idempotent provider-hosted identity/adult-verification session; the client never submits a name or document number to this API.
 - `GET /api/v1/identity-verifications/:id`: poll one customer-owned verification request.
 - `POST /api/v1/identity-verifications/:provider/callbacks`: verify a provider callback and actively query the authoritative result before updating the adult-authorization fact.
+
+The customer authentication flow is WeChat-first: first Mini Program login → bind the WeChat-authorized phone → use either WeChat login or SMS login on later visits → create the Mini Program payment. SMS login is authentication only and never registers a new customer.
 
 ## Multi-instance Requirements
 
@@ -44,14 +46,10 @@ Outbox workers claim rows using `locked_by` and `locked_until` under `FOR UPDATE
 
 Production SMS uses Tencent Cloud SMS API 3.0. Configure `JXE_SMS_MOCK_ENABLED=false` and the `JXE_SMS_TENCENTCLOUD_*` settings from `.env.example`. The approved verification template must have two variables in this exact order: the six-digit code and its validity in minutes, for example `您的验证码为{1}，{2}分钟内有效。`.
 
-## Verification
+## Basic Test
 
 ```bash
-make verify
-make migrate-check
-make test-integration
-# Complete local phase-one gate (verify + migration + seed + integration + alerts)
-make verify-cp1
+make test
 ```
 
 L2 服务区、首页与订单强校验运行手册：`docs/runbooks/l2-service-area-home.md`。

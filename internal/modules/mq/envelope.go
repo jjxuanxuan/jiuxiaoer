@@ -147,7 +147,7 @@ func ValidateEnvelope(envelope EventEnvelope, definition EventDefinition) error 
 	return nil
 }
 
-// findSensitiveField 查找敏感信息 Field。
+// findSensitiveField 查找敏感字段。
 func findSensitiveField(value any, path string) string {
 	switch typed := value.(type) {
 	case map[string]any:

@@ -33,8 +33,7 @@ func RegisterRoutes(router *gin.RouterGroup, handler *Handler) {
 	router.POST("/orders/:id/complete", handler.Complete)
 }
 
-// Detail returns fulfillment details only for the rider holding the current
-// active assignment.
+// Detail 只为持有当前有效分配的骑手返回履约详情。
 func (h *Handler) Detail(c *gin.Context) {
 	claims, ok := auth.ClaimsFromContext(c)
 	if !ok {

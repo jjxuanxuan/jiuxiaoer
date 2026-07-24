@@ -51,9 +51,8 @@ func (s *Service) WithProvider(provider Provider) *Service {
 	return s
 }
 
-// CreateSettings creates the one allowed print configuration for an
-// authorized shop. The device identifier is encrypted before persistence and
-// never returned by a read API.
+// CreateSettings 为获授权门店创建唯一允许的打印配置。
+// 设备标识符在持久化前加密，且绝不会由读取 API 返回。
 func (s *Service) CreateSettings(ctx context.Context, claims *auth.Claims, method, path, key string, req SettingCreateReq) (SettingDTO, error) {
 	actorID, err := merchantActor(claims, "print_setting:update_shop")
 	if err != nil {
@@ -115,9 +114,8 @@ func (s *Service) CreateSettings(ctx context.Context, claims *auth.Claims, metho
 	return result, err
 }
 
-// TestSettings performs a synchronous provider submission using a stable
-// provider request ID derived from the idempotency key. A provider-side retry
-// therefore cannot create a second physical test print.
+// TestSettings 使用从幂等键派生的稳定服务商请求 ID 执行同步提交，
+// 因此服务商侧重试不会产生第二次实体测试打印。
 func (s *Service) TestSettings(ctx context.Context, claims *auth.Claims, method, path, key, idRaw string) (TestPrintDTO, error) {
 	actorID, err := merchantActor(claims, "print_setting:test_shop")
 	if err != nil {
@@ -389,9 +387,8 @@ func (s *Service) listTasks(ctx context.Context, query pagination.Query, status 
 		return nil, "", problem.InvalidArgument("VALIDATION_INVALID_QUERY", "print task list has a fixed sort and filter contract")
 	}
 	db := s.db.WithContext(ctx).Model(&Task{})
-	// nil is reserved for the explicitly authorized admin/global view. A
-	// non-nil empty slice is a merchant with no currently authorized shops and
-	// must never degrade into an unscoped query.
+	// nil 专用于明确授权的管理员全局视图。非 nil 空切片表示商户当前没有
+	// 获授权门店，绝不能降级为无范围查询。
 	if shopIDs != nil && len(shopIDs) == 0 {
 		return []TaskDTO{}, "", nil
 	}
@@ -576,10 +573,10 @@ func (s *Service) cloneTask(ctx context.Context, claims *auth.Claims, actorID ui
 }
 
 // EnqueueAuto 返回Enqueue Auto。
-// EnqueueAuto is called inside the order transaction. It creates a unique
-// task only when an enabled shop setting subscribes to the event.
+// EnqueueAuto 在订单事务内调用。只有已启用的门店设置订阅该事件时，
+// 才创建唯一任务。
 func EnqueueAuto(ctx context.Context, tx *gorm.DB, ids *snowflake.Generator, shopID, orderID uint64, eventID, eventType string, payload any) error {
-	_ = payload // event payload is not trusted as the printable business snapshot
+	_ = payload // 不信任事件载荷，不将其作为可打印的业务快照
 	var setting Setting
 	if err := tx.WithContext(ctx).Where("shop_id = ? AND enabled = 1", shopID).First(&setting).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil
@@ -616,7 +613,7 @@ func EnqueueAuto(ctx context.Context, tx *gorm.DB, ids *snowflake.Generator, sho
 	})
 }
 
-// enqueueWakeup 返回enqueue Wakeup。
+// enqueueWakeup 写入任务唤醒事件。
 func enqueueWakeup(ctx context.Context, tx *gorm.DB, ids *snowflake.Generator, eventType string, task Task) error {
 	payload, err := json.Marshal(map[string]any{"print_task_id": idString(task.ID), "shop_id": idString(task.ShopID), "task_event_type": task.EventType})
 	if err != nil {
@@ -629,15 +626,15 @@ func enqueueWakeup(ctx context.Context, tx *gorm.DB, ids *snowflake.Generator, e
 	}).Error
 }
 
-// settingDTO 返回setting DTO。
+// settingDTO 返回打印设置 DTO。
 func settingDTO(row Setting) SettingDTO {
 	var events []string
 	_ = json.Unmarshal(row.AutoPrintEvents, &events)
 	return SettingDTO{ID: idString(row.ID), ShopID: idString(row.ShopID), Provider: row.Provider, DeviceIDMask: row.DeviceIDMask, TemplateID: idString(row.TemplateID), Copies: row.Copies, AutoPrintEvents: events, Enabled: row.Enabled, Version: row.Version, DeviceStatus: row.DeviceStatus, LastHealthAt: ts(row.LastHealthAt), LastHealthErrorCode: str(row.LastHealthErrorCode)}
 }
 
-// taskDTO returns a closed, non-sensitive task projection. RenderPayload stays
-// server-side; merchants receive only aggregate counts and its SHA-256 digest.
+// taskDTO 返回封闭且不敏感的任务投影。RenderPayload 保留在服务端；
+// 商户只会收到汇总计数及其 SHA-256 摘要。
 func taskDTO(row Task, paperWidth uint16) TaskDTO {
 	sourceTaskID := ""
 	if row.SourceTaskID != nil {
@@ -730,7 +727,7 @@ func validReceiptTemplate(template Template) bool {
 	return template.TemplateCode == "store_receipt" && template.PayloadSchemaVersion == "receipt.v1"
 }
 
-// merchantActor 返回商户 Actor。
+// merchantActor 返回商户审计主体。
 func merchantActor(c *auth.Claims, perm string) (uint64, error) {
 	if c == nil || c.AccountType != "merchant" || !has(c.Permissions, perm) {
 		return 0, problem.Forbidden("PERM_FORBIDDEN", "merchant permission required")
@@ -738,7 +735,7 @@ func merchantActor(c *auth.Claims, perm string) (uint64, error) {
 	return parseID(c.MerchantUserID)
 }
 
-// adminActor 返回管理端 Actor。
+// adminActor 返回管理端审计主体。
 func adminActor(c *auth.Claims, perm string) (uint64, error) {
 	if c == nil || c.AccountType != "admin" || !has(c.Permissions, perm) {
 		return 0, problem.Forbidden("PERM_FORBIDDEN", "admin permission required")
@@ -782,7 +779,7 @@ func has(v []string, w string) bool {
 	return false
 }
 
-// contains 判断contains。
+// contains 判断集合是否包含指定字符串。
 func contains(v []string, w string) bool { return has(v, w) }
 
 // parseID 解析并校验字符串形式的 ID。
@@ -797,7 +794,7 @@ func parseID(v string) (uint64, error) {
 // idString 将数字 ID 转换为字符串。
 func idString(v uint64) string { return strconv.FormatUint(v, 10) }
 
-// str 返回str。
+// str 返回字符串指针。
 func str(v *string) string {
 	if v == nil {
 		return ""
@@ -805,7 +802,7 @@ func str(v *string) string {
 	return *v
 }
 
-// ts 返回ts。
+// ts 返回格式化时间字符串。
 func ts(v *time.Time) string {
 	if v == nil {
 		return ""
@@ -834,8 +831,8 @@ func cached(ctx context.Context, store idempotencyStore, tx *gorm.DB, actorType 
 	return nil
 }
 
-// testProviderRequestID is stable for one test-print operation while remaining
-// unique across actors and settings even when clients reuse an idempotency key.
+// testProviderRequestID 对一次测试打印操作保持稳定；
+// 即使客户端复用幂等键，不同主体和设置之间仍保持唯一。
 func testProviderRequestID(actorID, settingID uint64, key string) string {
 	scope := fmt.Sprintf("%d:%d:%s", actorID, settingID, key)
 	return "print-test-" + securevalue.Digest(scope)[:32]
@@ -846,8 +843,8 @@ func audit(ctx context.Context, tx *gorm.DB, id uint64, actorType string, actorI
 	return auditWithResult(ctx, tx, id, actorType, actorID, action, resource, resourceID, before, after, "success")
 }
 
-// auditWithResult persists a bounded business outcome. Provider payloads and
-// raw error messages must never be passed to this helper.
+// auditWithResult 持久化有界业务结果。绝不能向此辅助函数传入
+// 服务商载荷或原始错误消息。
 func auditWithResult(ctx context.Context, tx *gorm.DB, id uint64, actorType string, actorID uint64, action, resource string, resourceID uint64, before, after any, result string) error {
 	b, _ := json.Marshal(before)
 	a, _ := json.Marshal(after)

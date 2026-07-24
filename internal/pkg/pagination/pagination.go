@@ -120,8 +120,8 @@ func NextPageToken(query Query) string {
 	return nextPageToken(query, nil)
 }
 
-// NextPageTokenWithCursor creates a signed keyset cursor. Repositories using
-// this form must apply the matching cursor predicate instead of Offset.
+// NextPageTokenWithCursor 创建带签名的键集游标。使用这种形式的仓储层
+// 必须应用对应的游标条件，而不是使用 Offset。
 func NextPageTokenWithCursor(query Query, after ...string) string {
 	return nextPageToken(query, after)
 }
@@ -187,8 +187,8 @@ func pageTokenSigningKey() []byte {
 	return derived[:]
 }
 
-// ApplyTimeIDCursor applies a stable two-column keyset boundary. The token is
-// generated from the final row's RFC3339Nano timestamp and unsigned ID.
+// ApplyTimeIDCursor 应用稳定的双列键集边界。令牌由最后一行的
+// RFC3339Nano 时间戳和无符号 ID 生成。
 func ApplyTimeIDCursor(db *gorm.DB, query Query, timeColumn, idColumn, direction string) (*gorm.DB, error) {
 	if len(query.Cursor) == 0 {
 		return db, nil
@@ -214,7 +214,7 @@ func ApplyTimeIDCursor(db *gorm.DB, query Query, timeColumn, idColumn, direction
 	}
 }
 
-// ApplyIntIDCursor applies a stable numeric business-sort plus ID boundary.
+// ApplyIntIDCursor 应用稳定的数值业务排序与 ID 组合边界。
 func ApplyIntIDCursor(db *gorm.DB, query Query, valueColumn, idColumn, direction string) (*gorm.DB, error) {
 	if len(query.Cursor) == 0 {
 		return db, nil
@@ -240,8 +240,7 @@ func ApplyIntIDCursor(db *gorm.DB, query Query, valueColumn, idColumn, direction
 	}
 }
 
-// ApplyIDCursor applies a stable single-ID boundary for lists ordered only by
-// their immutable primary key.
+// ApplyIDCursor 为仅按不可变主键排序的列表应用稳定的单 ID 边界。
 func ApplyIDCursor(db *gorm.DB, query Query, idColumn, direction string) (*gorm.DB, error) {
 	if len(query.Cursor) == 0 {
 		return db, nil
@@ -263,9 +262,8 @@ func ApplyIDCursor(db *gorm.DB, query Query, idColumn, direction string) (*gorm.
 	}
 }
 
-// OffsetDB preserves compatibility for custom sorts that have not yet been
-// migrated to keyset pagination. Keyset-backed queries deliberately ignore
-// the legacy offset embedded for old callers.
+// OffsetDB 为尚未迁移到键集分页的自定义排序保留兼容性。
+// 基于键集的查询会刻意忽略旧调用方嵌入的传统偏移量。
 func OffsetDB(db *gorm.DB, query Query) *gorm.DB {
 	if len(query.Cursor) != 0 {
 		return db

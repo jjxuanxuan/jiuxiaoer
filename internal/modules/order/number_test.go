@@ -2,7 +2,7 @@ package order
 
 import "testing"
 
-// TestBusinessNumbersKeepFullSnowflakeID 验证Business Numbers Keep Full 雪花 IDID的预期行为。
+// TestBusinessNumbersKeepFullSnowflakeID 验证业务单号保留完整雪花 ID。
 func TestBusinessNumbersKeepFullSnowflakeID(t *testing.T) {
 	const id uint64 = 1234567890123456789
 	if got := orderNo(id); got != "JXE1234567890123456789" {

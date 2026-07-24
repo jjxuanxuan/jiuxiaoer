@@ -22,11 +22,9 @@ func NewRepository(db *gorm.DB) *Repository {
 	return &Repository{db: db}
 }
 
-// CategoryCatalogRevision derives a stable revision from every category fact
-// that can affect the public response. It deliberately includes inactive and
-// soft-deleted rows, so INSERT/UPDATE/status/soft-delete/hard-delete mutations
-// switch the cache key even when the writer is an operational job that cannot
-// call application-level cache invalidation.
+// CategoryCatalogRevision 根据所有可能影响公开响应的分类事实派生稳定版本。
+// 它刻意包含停用和软删除记录，因此即使写入方是无法调用应用层缓存失效的
+// 运维任务，插入、更新、状态变更、软删除或硬删除也会切换缓存键。
 func (r *Repository) CategoryCatalogRevision(ctx context.Context) (string, error) {
 	type revisionRow struct {
 		ID            uint64

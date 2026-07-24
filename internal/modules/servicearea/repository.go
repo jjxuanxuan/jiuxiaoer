@@ -29,8 +29,8 @@ func (r *Repository) Resolve(ctx context.Context, db *gorm.DB, input ResolveInpu
 	return rows[0], nil
 }
 
-// Candidates returns a stable, bounded set of currently serviceable shops.
-// Route-provider refinement is intentionally performed outside this repository.
+// Candidates 返回当前可服务门店的稳定有界集合。
+// 路线服务商的精细筛选刻意在此仓储层之外执行。
 func (r *Repository) Candidates(ctx context.Context, db *gorm.DB, input ResolveInput, now time.Time, limit int) ([]ResolvedShop, error) {
 	if db == nil {
 		db = r.db

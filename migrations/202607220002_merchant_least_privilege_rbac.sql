@@ -1,7 +1,6 @@
 -- +goose Up
--- Merchant users previously inherited every merchant capability solely from
--- accounts.account_type. Bind each user to an explicit merchant-scoped role so
--- the token permission snapshot can be rebuilt from the controlled catalog.
+-- 商户用户此前仅根据 accounts.account_type 继承全部商户能力。
+-- 将每个用户绑定到明确的商户范围角色，使令牌权限快照可从受控目录重建。
 DROP PROCEDURE IF EXISTS assert_merchant_rbac_catalog;
 -- +goose StatementBegin
 CREATE PROCEDURE assert_merchant_rbac_catalog()
@@ -55,24 +54,22 @@ DROP PROCEDURE assert_merchant_rbac_catalog;
 ALTER TABLE merchant_users
   ADD COLUMN role_id BIGINT UNSIGNED NULL AFTER merchant_id;
 
--- Existing users operated as owners before this migration, so owner is the
--- only compatibility-preserving backfill. New application writes must always
--- provide a validated role_id; the column deliberately has no default.
+-- 现有用户在此迁移前均以负责人身份操作，因此负责人是唯一保持兼容的回填值。
+-- 新应用写入必须始终提供已校验的 role_id；该列刻意不设置默认值。
 UPDATE merchant_users SET role_id = 1006 WHERE role_id IS NULL;
 
 ALTER TABLE merchant_users
   MODIFY COLUMN role_id BIGINT UNSIGNED NOT NULL,
   ADD KEY idx_role_status (role_id, status);
 
--- A short-lived pre-RBAC code path could persist zero from a Go struct instead
--- of using the database default. Zero is reserved for legacy JWTs, so normalize
--- those rows before access/refresh verification starts comparing versions.
+-- RBAC 上线前短期存在的代码路径可能从 Go 结构体持久化零值，
+-- 而没有使用数据库默认值。零值为旧版 JWT 保留，因此在访问或刷新验证
+-- 开始比较版本前，先规范化这些记录。
 UPDATE accounts SET credential_version = 1 WHERE credential_version = 0;
 
--- The owner retains the former merchant capability set. The two operational
--- roles are deliberately non-overlapping for the high-risk actions required by
--- phase one: order operators cannot adjust inventory, and inventory clerks
--- cannot accept or prepare orders.
+-- 负责人保留原有商户能力集合。针对一期所需的高风险操作，
+-- 两个运营角色刻意不重叠：订单操作员不能调整库存，
+-- 库存员不能接单或备货。
 DELETE FROM role_permissions WHERE role_id IN (1006, 1007, 1008);
 
 INSERT INTO role_permissions (id, role_id, permission_id)
@@ -102,8 +99,7 @@ JOIN permissions p ON (
 WHERE r.scope = 'merchant' AND r.deleted_at IS NULL AND p.deleted_at IS NULL
 ON DUPLICATE KEY UPDATE deleted_at = NULL, updated_at = CURRENT_TIMESTAMP(3);
 
--- Role management is an administrative provisioning capability, never a
--- merchant self-service permission.
+-- 角色管理属于管理端开通能力，绝不是商户自助权限。
 INSERT INTO role_permissions (id, role_id, permission_id)
 SELECT r.id * 1000 + p.id, r.id, p.id
 FROM roles r

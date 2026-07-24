@@ -17,10 +17,10 @@ type Handler struct{ service *Service }
 // NewHandler 创建并初始化Handler。
 func NewHandler(service *Service) *Handler { return &Handler{service: service} }
 
-// RegisterPublicRoutes 注册公开数据 Routes。
+// RegisterPublicRoutes 注册公开路由。
 func RegisterPublicRoutes(router *gin.RouterGroup, h *Handler) { router.GET("/home", h.Public) }
 
-// RegisterAdminRoutes 注册管理端 Routes。
+// RegisterAdminRoutes 注册管理端路由。
 func RegisterAdminRoutes(router *gin.RouterGroup, h *Handler) {
 	router.GET("/home-slots", h.List)
 	router.POST("/home-slots", h.Create)
@@ -155,7 +155,7 @@ func claims(c *gin.Context) (*auth.Claims, bool) {
 	return v, true
 }
 
-// coordinates 返回coordinates。
+// coordinates 返回请求中的坐标。
 func coordinates(c *gin.Context) (*float64, *float64, error) {
 	a, b := c.Query("lat"), c.Query("lng")
 	if a == "" && b == "" {

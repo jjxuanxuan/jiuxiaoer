@@ -13,14 +13,14 @@ type Handler struct{ service *Service }
 // NewHandler 创建并初始化Handler。
 func NewHandler(s *Service) *Handler { return &Handler{service: s} }
 
-// RegisterCustomerRoutes 注册用户 Routes。
+// RegisterCustomerRoutes 注册客户路由。
 func RegisterCustomerRoutes(g *gin.RouterGroup, h *Handler) {
 	g.GET("", h.ListMessages)
 	g.POST("/:id/read", h.Read)
 	g.POST("/read-all", h.ReadAll)
 }
 
-// RegisterAdminRoutes 注册管理端 Routes。
+// RegisterAdminRoutes 注册管理端路由。
 func RegisterAdminRoutes(g *gin.RouterGroup, h *Handler) {
 	g.GET("/notification-deliveries", h.ListDeliveries)
 	g.POST("/notification-deliveries/:id/retry", h.Retry)
@@ -142,7 +142,7 @@ func (h *Handler) ListTemplates(c *gin.Context) {
 	response.Page(c, x, n)
 }
 
-// CreateTemplate 创建Template。
+// CreateTemplate 创建通知模板。
 func (h *Handler) CreateTemplate(c *gin.Context) {
 	v, ok := getClaims(c)
 	if !ok {

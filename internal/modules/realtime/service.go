@@ -242,8 +242,8 @@ func containsPermission(permissions []string, required string) bool {
 	return false
 }
 
-// merchantAccountHasAuthorizedShop reads the current DB authorization rather
-// than trusting the shop list embedded in a previously issued access token.
+// merchantAccountHasAuthorizedShop 读取当前数据库授权，
+// 而不是信任先前签发的访问令牌中嵌入的门店列表。
 func (s *Service) merchantAccountHasAuthorizedShop(ctx context.Context, accountID uint64) (bool, error) {
 	if s.db == nil || accountID == 0 {
 		return false, fmt.Errorf("realtime database is unavailable")
@@ -257,9 +257,8 @@ func (s *Service) merchantAccountHasAuthorizedShop(ctx context.Context, accountI
 	return count > 0, err
 }
 
-// MerchantAccountAuthorized revalidates the exact account/shop relation at
-// delivery time so a revoked shop grant cannot keep receiving new orders from
-// a still-open WebSocket session.
+// MerchantAccountAuthorized 在投递时重新验证准确的账户与门店关系，
+// 使已撤销门店授权无法通过仍开启的 WebSocket 会话继续接收新订单。
 func (s *Service) MerchantAccountAuthorized(ctx context.Context, accountID, shopID uint64) (bool, error) {
 	if s.db == nil || accountID == 0 || shopID == 0 {
 		return false, fmt.Errorf("realtime database is unavailable")
@@ -396,8 +395,8 @@ func (s *Service) PublishWakeups(ctx context.Context, rows []Delivery) error {
 	return nil
 }
 
-// MerchantPaidOrderEvent builds a safe event from the committed order fact
-// and returns only accounts that currently hold the exact shop grant.
+// MerchantPaidOrderEvent 根据已提交订单事实构建安全事件，
+// 并且只返回当前持有准确门店授权的账户。
 func (s *Service) MerchantPaidOrderEvent(ctx context.Context, eventID string, orderID uint64, occurredAt time.Time) (StoreOrderPaidEvent, []uint64, error) {
 	shopID, accounts, err := merchantPaidOrderRecipients(ctx, s.db, orderID)
 	if err != nil {
@@ -435,9 +434,8 @@ func merchantPaidOrderRecipients(ctx context.Context, db *gorm.DB, orderID uint6
 	return order.ShopID, accountIDs, err
 }
 
-// PublishMerchantPaidOrder fans out only routing metadata plus the fixed safe
-// event. A Redis failure never changes the paid order fact; clients recover by
-// polling GET /store/orders.
+// PublishMerchantPaidOrder 只扇出路由元数据和固定的安全事件。
+// Redis 失败绝不会改变已支付订单事实；客户端通过轮询 GET /store/orders 恢复。
 func (s *Service) PublishMerchantPaidOrder(ctx context.Context, event StoreOrderPaidEvent, accountIDs []uint64) error {
 	if len(accountIDs) == 0 {
 		return nil
@@ -496,7 +494,7 @@ func (s *Service) checkRate(ctx context.Context, dimension string, maximum int64
 	return nil
 }
 
-// canaryAllowed 判断canary 允许状态。
+// canaryAllowed 判断当前主体是否在灰度范围内。
 func (s *Service) canaryAllowed(riderID string) bool {
 	if len(s.cfg.Realtime.CanaryRiderIDs) == 0 {
 		return true
@@ -509,7 +507,7 @@ func (s *Service) canaryAllowed(riderID string) bool {
 	return false
 }
 
-// randomTicket 返回random Ticket。
+// randomTicket 返回随机票据。
 func randomTicket() (string, error) {
 	buffer := make([]byte, 32)
 	if _, err := rand.Read(buffer); err != nil {
@@ -518,7 +516,7 @@ func randomTicket() (string, error) {
 	return "rtk_" + base64.RawURLEncoding.EncodeToString(buffer), nil
 }
 
-// ticketKey 返回ticket 密钥。
+// ticketKey 返回票据缓存键。
 func ticketKey(raw string) string { return ticketKeyPrefix + hashString(raw) }
 
 // hashString 计算字符串的哈希值。
@@ -537,7 +535,7 @@ func realtimeDisabled() error {
 	return problem.New(503, "REALTIME_DISABLED", "Service Unavailable", "realtime service is disabled")
 }
 
-// idFromPayload 返回ID From 载荷。
+// idFromPayload 从载荷中提取 ID。
 func idFromPayload(payload map[string]any, key string) (uint64, error) {
 	value, ok := payload[key]
 	if !ok {
@@ -546,7 +544,7 @@ func idFromPayload(payload map[string]any, key string) (uint64, error) {
 	return parseID(fmt.Sprint(value))
 }
 
-// optionalIDFromPayload 返回optional ID From 载荷。
+// optionalIDFromPayload 从载荷中提取可选 ID。
 func optionalIDFromPayload(payload map[string]any, key string) uint64 {
 	value, ok := payload[key]
 	if !ok || value == nil || strings.TrimSpace(fmt.Sprint(value)) == "" {

@@ -14,8 +14,8 @@ import (
 )
 
 // Seal 加密并封装byte列表。
-// Seal encrypts a small sensitive value with AES-GCM. Production deployments
-// provide the key through secret management; the database never stores it.
+// Seal 使用 AES-GCM 加密小型敏感值。生产部署通过密钥管理系统提供密钥，
+// 数据库绝不存储该密钥。
 func Seal(key string, plaintext string) ([]byte, error) {
 	block, err := aes.NewCipher(deriveKey(key))
 	if err != nil {

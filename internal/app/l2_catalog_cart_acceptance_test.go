@@ -11,7 +11,7 @@ type acceptanceCatalog struct {
 	name                                                         string
 }
 
-// createCatalog 创建Catalog。
+// createCatalog 创建测试商品目录。
 func (f *l2AcceptanceFixture) createCatalog(t *testing.T, qtyA, qtyB int) acceptanceCatalog {
 	t.Helper()
 	v := acceptanceCatalog{
@@ -37,7 +37,7 @@ func (f *l2AcceptanceFixture) createCatalog(t *testing.T, qtyA, qtyB int) accept
 	return v
 }
 
-// TestL2CatalogAndCartMissingAcceptanceScenarios 验证L 2 Catalog And 购物车 Missing 验收 Scenarios的预期行为。
+// TestL2CatalogAndCartMissingAcceptanceScenarios 验证 L2 商品目录和购物车缺失项的验收场景。
 func TestL2CatalogAndCartMissingAcceptanceScenarios(t *testing.T) {
 	f := newL2AcceptanceFixture(t)
 	defer f.close()

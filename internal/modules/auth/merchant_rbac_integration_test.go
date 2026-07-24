@@ -93,8 +93,8 @@ func TestMerchantLeastPrivilegeRBACMySQL(t *testing.T) {
 		}
 	}
 
-	// Role/shop scope is embedded in the token. Advancing credential_version in
-	// the same transaction as a role change must revoke the already-issued token.
+	// 角色和门店范围嵌入令牌中。角色变更时必须在同一事务内推进
+	// credential_version，以吊销已经签发的令牌。
 	if err := tx.Exec("UPDATE merchant_users SET role_id=1006 WHERE id=?", merchantUserID).Error; err != nil {
 		t.Fatal(err)
 	}

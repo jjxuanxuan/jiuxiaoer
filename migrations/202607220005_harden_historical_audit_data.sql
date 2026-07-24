@@ -1,6 +1,6 @@
 -- +goose Up
--- Complete the structured backfill for historical writers that serialized Go
--- structs (CamelCase) rather than maps (snake_case).
+-- 完成对历史写入器的结构化回填；这些写入器序列化的是 Go 结构体
+-- （CamelCase），而不是映射（snake_case）。
 UPDATE audit_logs
 SET
   before_status = COALESCE(
@@ -115,9 +115,8 @@ SET
     END
   );
 
--- Fill relational dimensions from the authoritative business tables. These
--- joins are deliberately nullable so deleted legacy actors remain reportable
--- rather than making the migration fail.
+-- 从权威业务表填充关系维度。这些关联刻意允许为空，
+-- 使已删除的旧版主体仍可报告，而不是导致迁移失败。
 UPDATE audit_logs a
 LEFT JOIN delivery_orders d ON d.id = a.delivery_id
 LEFT JOIN orders o ON o.id = COALESCE(a.order_id, d.order_id)
@@ -141,10 +140,9 @@ SET
     END
   );
 
--- Historical full domain snapshots may contain customer contact details,
--- exact coordinates, verification values or unbounded operator/provider text.
--- Remove those keys in-place while preserving controlled statuses, IDs and
--- stable error/reason codes needed for investigations.
+-- 历史完整领域快照可能包含客户联系方式、精确坐标、验证值，
+-- 或不受限制的操作人员与服务商文本。原地移除这些键，
+-- 同时保留调查所需的受控状态、ID 以及稳定的错误码和原因码。
 UPDATE audit_logs
 SET
   before_data = CASE WHEN before_data IS NULL THEN NULL ELSE JSON_REMOVE(before_data,
@@ -179,7 +177,6 @@ SET
   ) END;
 
 -- +goose Down
--- Privacy scrubbing is intentionally irreversible. Structured values remain
--- valid if this migration is rolled back, so no destructive down action is
--- performed.
+-- 隐私清理刻意不可逆。即使回滚此迁移，结构化值仍然有效，
+-- 因此不执行破坏性的向下迁移操作。
 SELECT 1;

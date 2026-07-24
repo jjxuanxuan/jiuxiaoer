@@ -33,8 +33,8 @@ func newLBSMetrics(registry *metrics.Registry) *lbsMetrics {
 	return m
 }
 
-// ObserveReadComparison records only bounded classifications and never raw
-// coordinates, addresses, sessions, or context identifiers.
+// ObserveReadComparison 只记录有界分类，绝不记录原始坐标、地址、
+// 会话或上下文标识符。
 func (s *Service) ObserveReadComparison(endpoint, legacyCity, legacyShop string, value LocationContext) {
 	if s == nil || s.metrics == nil {
 		return

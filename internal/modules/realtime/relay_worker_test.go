@@ -11,7 +11,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/pkg/snowflake"
 )
 
-// TestRelayWorkerRelaysLiveAndExpiresStaleRows 验证转发工作器 Relays Live And 过期时间 Stale Rows的预期行为。
+// TestRelayWorkerRelaysLiveAndExpiresStaleRows 验证中继工作进程转发有效记录并使过期记录失效。
 func TestRelayWorkerRelaysLiveAndExpiresStaleRows(t *testing.T) {
 	db := realtimeSQLite(t)
 	mini := miniredis.RunT(t)

@@ -161,9 +161,8 @@ func (s *Service) approveReturnLocked(ctx context.Context, tx *gorm.DB, row *Ret
 	}); err != nil {
 		return err
 	}
-	// Approval ends the original last-mile fulfilment. Any delivery code that
-	// has not already been verified must never remain usable during reverse
-	// logistics.
+	// 批准会结束原始末端履约。任何尚未验证的送达码，
+	// 在逆向物流期间都绝不能继续使用。
 	if err := deliveryverification.Invalidate(ctx, tx, s.ids, delivery.ID, "delivery_return_approved"); err != nil {
 		return err
 	}
@@ -358,8 +357,8 @@ func (s *Service) Receive(ctx context.Context, claims *auth.Claims, method, rout
 		if _, err := s.repo.LockOrder(ctx, tx, ref.OrderID); err != nil {
 			return problem.Conflict("INVALID_RETURN_STATE", "delivery return order is unavailable")
 		}
-		// Refund callbacks lock the after-sale before the return closure hook.
-		// Keep the same relative order here to avoid callback-vs-receipt cycles.
+		// 退款回调会在退回关闭钩子前锁定售后单。
+		// 此处保持相同的相对顺序，避免回调与收货之间形成循环等待。
 		afterSale, err := s.repo.AfterSale(ctx, tx, *ref.AfterSaleID, true)
 		if err != nil {
 			return problem.Conflict("INVALID_RETURN_STATE", "system after-sale link is invalid")
@@ -522,9 +521,8 @@ func (s *Service) Receive(ctx context.Context, claims *auth.Claims, method, rout
 	if err != nil {
 		return DTO{}, err
 	}
-	// The receipt transaction may have started before a concurrent refund
-	// callback committed. Recompute closure in a fresh transaction so MySQL
-	// REPEATABLE READ cannot strand a fully-complete return at received.
+	// 收货事务可能在并发退款回调提交前已经开始。使用新事务重新计算关闭状态，
+	// 避免 MySQL REPEATABLE READ 让已完全结束的退回滞留在 received 状态。
 	if persisted.ErrorCode == "" && persisted.DTO.AfterSaleID != "" {
 		if afterSaleID, parseErr := parseID(persisted.DTO.AfterSaleID); parseErr == nil {
 			_ = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -566,8 +564,8 @@ func (s *Service) TryCloseByAfterSaleWithTx(ctx context.Context, tx *gorm.DB, af
 	return s.writeFacts(ctx, tx, row, "system", nil, "close", from, StatusClosed, "")
 }
 
-// ReconcileRefundWithTx is called by both the provider callback and polling
-// worker after the local refund state has been written.
+// ReconcileRefundWithTx 在本地退款状态写入后，
+// 由服务商回调和轮询工作进程共同调用。
 func (s *Service) ReconcileRefundWithTx(ctx context.Context, tx *gorm.DB, afterSaleID uint64) error {
 	status, err := s.repo.RefundStatus(ctx, tx, afterSaleID)
 	if err != nil {
@@ -595,8 +593,8 @@ func (s *Service) ReconcileRefundWithTx(ctx context.Context, tx *gorm.DB, afterS
 	return s.writeFacts(ctx, tx, row, "system", nil, "refund_exception", from, StatusException, "")
 }
 
-// CreateApproveFromIncidentWithTx implements the atomic incident
-// return_required entry point. The caller owns idempotency and incident facts.
+// CreateApproveFromIncidentWithTx 实现原子的异常 return_required 入口。
+// 幂等性和异常事实由调用方负责。
 func (s *Service) CreateApproveFromIncidentWithTx(ctx context.Context, tx *gorm.DB, incidentID, deliveryID, actorID uint64, note string) (uint64, error) {
 	if !s.cfg.DeliveryReturn.Enabled || !s.cfg.DeliveryReturn.ApprovalEnabled || s.afterSales == nil {
 		return 0, problem.New(http.StatusServiceUnavailable, "DELIVERY_RETURN_DISABLED", "Service Unavailable", "delivery return approval is disabled")

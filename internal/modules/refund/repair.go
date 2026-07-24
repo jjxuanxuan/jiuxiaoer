@@ -36,8 +36,8 @@ type RepairCandidatePage struct {
 	NextAfterID string `json:"next_after_id,omitempty"`
 }
 
-// RepairCandidates performs the read-only local scan required before a stored
-// refund repair. It deliberately does not call or mutate the provider.
+// RepairCandidates 执行修复存量退款前所需的只读本地扫描，
+// 刻意不调用或修改服务商状态。
 func (s *Service) RepairCandidates(ctx context.Context, claims *auth.Claims, afterID uint64, size int) (RepairCandidatePage, error) {
 	if _, err := adminPermission(claims, "refund:view"); err != nil {
 		return RepairCandidatePage{}, err
@@ -60,9 +60,8 @@ func (s *Service) RepairCandidates(ctx context.Context, claims *auth.Claims, aft
 	return page, nil
 }
 
-// RepairStored previews or applies one controlled stored-refund repair. The
-// provider is always queried first. It never submits a refund or accepts an
-// administrator-supplied success state.
+// RepairStored 预览或应用一次受控的存量退款修复。始终先查询服务商，
+// 绝不提交退款，也不接受管理员提供的成功状态。
 func (s *Service) RepairStored(ctx context.Context, claims *auth.Claims, method, path, key, refundNo string, apply bool) (RepairResult, error) {
 	permission := "refund:view"
 	if apply {
@@ -170,10 +169,8 @@ func (s *Service) RepairStored(ctx context.Context, claims *auth.Claims, method,
 					return s.idem.Succeed(ctx, tx, claims.AccountType, actorID, path, key, result)
 				}
 				now := time.Now()
-				// RESOURCE_NOT_EXISTS is the result of the mandatory query, not a
-				// permanent error from the original submission. Clear the old
-				// failure code so the worker is allowed to query once more and then
-				// resubmit the exact immutable request.
+				// RESOURCE_NOT_EXISTS 是强制查询的结果，不是原始提交产生的永久错误。
+				// 清除旧失败码，使工作进程可以再次查询，随后重新提交完全相同的不可变请求。
 				values := map[string]any{"status": "submission_unknown", "next_retry_at": now, "locked_by": nil, "locked_until": nil, "failure_code": nil, "failure_detail": "stored repair query confirmed provider record does not exist"}
 				if updateErr := s.repo.Update(ctx, tx, current.ID, values); updateErr != nil {
 					return updateErr
@@ -190,8 +187,8 @@ func (s *Service) RepairStored(ctx context.Context, claims *auth.Claims, method,
 				return s.idem.Succeed(ctx, tx, claims.AccountType, actorID, path, key, result)
 			}
 
-			// A failed provider query is itself an auditable repair result. The
-			// local financial state remains unchanged and the operator may retry.
+			// 服务商查询失败本身也是可审计的修复结果。
+			// 本地资金状态保持不变，操作人员可以重试。
 			result.AfterStatus = current.Status
 			result.Result = "failure"
 			if auditErr := s.auditResult(ctx, tx, actorID, "refund.stored_repair", current, result, "failure"); auditErr != nil {

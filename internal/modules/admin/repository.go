@@ -125,7 +125,7 @@ func (r *Repository) ListStocks(ctx context.Context, shopID uint64, query pagina
 	return rows, err
 }
 
-// LockStockByShopProduct 加锁并获取库存 By 门店商品。
+// LockStockByShopProduct 按门店商品加锁并获取库存。
 func (r *Repository) LockStockByShopProduct(ctx context.Context, tx *gorm.DB, shopProductID uint64) (ProductStock, error) {
 	var row ProductStock
 	err := tx.WithContext(ctx).

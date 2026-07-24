@@ -10,7 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// TestRegistryRendersBoundedHTTPLabels 验证注册表 Renders Bounded HTTP标签的预期行为。
+// TestRegistryRendersBoundedHTTPLabels 验证注册表渲染有界的 HTTP 标签。
 func TestRegistryRendersBoundedHTTPLabels(t *testing.T) {
 	registry := New("instance-1", "")
 	registry.ObserveHTTP(http.MethodGet, "/api/v1/orders/:id", http.StatusOK, "", 25*time.Millisecond)
@@ -30,7 +30,7 @@ func TestRegistryRendersBoundedHTTPLabels(t *testing.T) {
 	}
 }
 
-// TestMetricsHandlerRequiresConfiguredToken 验证指标 Handler Requires Configured 令牌的预期行为。
+// TestMetricsHandlerRequiresConfiguredToken 验证指标处理器要求使用已配置令牌。
 func TestMetricsHandlerRequiresConfiguredToken(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	registry := New("instance-1", "0123456789abcdef")

@@ -11,7 +11,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/config"
 )
 
-// TestSubmitStrictJSONRejectsLegacySecondPhone 验证Submit Strict JSON Rejects Legacy Second 手机号的预期行为。
+// TestSubmitStrictJSONRejectsLegacySecondPhone 验证严格 JSON 提交拒绝旧版第二手机号字段。
 func TestSubmitStrictJSONRejectsLegacySecondPhone(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := config.Load()
@@ -29,7 +29,7 @@ func TestSubmitStrictJSONRejectsLegacySecondPhone(t *testing.T) {
 	}
 }
 
-// TestRiderApplicationFeatureIsDisabledByDefault 验证骑手申请 Feature Is Disabled By 默认项的预期行为。
+// TestRiderApplicationFeatureIsDisabledByDefault 验证骑手申请功能默认关闭。
 func TestRiderApplicationFeatureIsDisabledByDefault(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := config.Load()

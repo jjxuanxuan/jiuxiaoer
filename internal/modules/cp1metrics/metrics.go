@@ -55,7 +55,7 @@ func collect(db *gorm.DB) []metrics.Sample {
 	return samples
 }
 
-// appendStatusBy 追加状态 By。
+// appendStatusBy 按维度追加状态指标。
 func appendStatusBy(samples []metrics.Sample, db *gorm.DB, table, name, help, dimension string) []metrics.Sample {
 	var rows []statusCount
 	_ = db.Table(table).Select("status," + dimension + ",COUNT(*) count").Group("status," + dimension).Scan(&rows).Error

@@ -187,7 +187,7 @@ func (s *Service) Create(ctx context.Context, claims *auth.Claims, method, path,
 	return out, err
 }
 
-// returnPolicy 返回return 策略。
+// returnPolicy 返回退货策略。
 func returnPolicy(snapshot datatypes.JSON) (known bool, eligible bool) {
 	var value struct {
 		ReturnPolicy *struct {
@@ -307,7 +307,7 @@ func (s *Service) DetailAdmin(ctx context.Context, claims *auth.Claims, idRaw st
 	return s.detail(ctx, row, e)
 }
 
-// detail 返回detail。
+// detail 返回售后详情。
 func (s *Service) detail(ctx context.Context, row AfterSale, err error) (DTO, error) {
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return DTO{}, problem.NotFound("AFTER_SALE_NOT_FOUND", "after-sale not found")
@@ -628,7 +628,7 @@ func (s *Service) review(ctx context.Context, claims *auth.Claims, actorType str
 	return out, e
 }
 
-// resolutionAllowed 判断resolution 允许状态。
+// resolutionAllowed 判断处理结果是否允许。
 func resolutionAllowed(kind, resolution string) bool {
 	switch kind {
 	case "unopened_return":
@@ -988,7 +988,7 @@ func (s *Service) cached(ctx context.Context, tx *gorm.DB, actorType string, act
 
 type evidenceClaims = evidencetoken.Claims
 
-// evidence 返回evidence。
+// evidence 返回证据列表。
 func (s *Service) evidence(afterID, ownerID uint64, tokens []string) ([]Evidence, error) {
 	rows := make([]Evidence, 0, len(tokens))
 	for _, token := range tokens {
@@ -1016,7 +1016,7 @@ func (s *Service) evidence(afterID, ownerID uint64, tokens []string) ([]Evidence
 	return rows, nil
 }
 
-// history 返回history。
+// history 返回售后历史。
 func (s *Service) history(id uint64, actorType string, actorID uint64, action string, from, to *string, reason, remark string) History {
 	return History{ID: s.ids.Next(), AfterSaleID: id, ActorType: actorType, ActorID: actorID, Action: action, FromStatus: from, ToStatus: to, ReasonCode: optional(reason), Remark: optional(remark), RequestID: nil}
 }
@@ -1034,7 +1034,7 @@ func (s *Service) outbox(ctx context.Context, event string, id uint64, payload a
 // jsonData 将输入值序列化为 JSON 数据。
 func jsonData(v any) datatypes.JSON { b, _ := json.Marshal(v); return b }
 
-// optional 返回optional。
+// optional 返回可选字符串指针。
 func optional(v string) *string {
 	if strings.TrimSpace(v) == "" {
 		return nil
@@ -1043,7 +1043,7 @@ func optional(v string) *string {
 	return &x
 }
 
-// strPtr 返回str Ptr。
+// strPtr 返回字符串指针。
 func strPtr(v string) *string { return &v }
 
 // parseID 解析并校验字符串形式的 ID。
@@ -1065,7 +1065,7 @@ func optionalIDString(v *uint64) string {
 	return idString(*v)
 }
 
-// customerActor 返回用户 Actor。
+// customerActor 返回客户审计主体。
 func customerActor(c *auth.Claims) (uint64, error) {
 	if c == nil || c.AccountType != "customer" {
 		return 0, problem.Forbidden("PERM_FORBIDDEN", "customer account required")
@@ -1087,7 +1087,7 @@ func hasPermission(c *auth.Claims, p string) bool {
 	return false
 }
 
-// adminActor 返回管理端 Actor。
+// adminActor 返回管理端审计主体。
 func adminActor(c *auth.Claims, p string) (uint64, error) {
 	if c == nil || c.AccountType != "admin" || !hasPermission(c, p) {
 		return 0, problem.Forbidden("PERM_FORBIDDEN", "permission denied")
@@ -1099,7 +1099,7 @@ func adminActor(c *auth.Claims, p string) (uint64, error) {
 	return id, nil
 }
 
-// storeActor 返回门店 Actor。
+// storeActor 返回门店审计主体。
 func storeActor(c *auth.Claims, p string) (storeIdentity, error) {
 	if c == nil || c.AccountType != "merchant" {
 		return storeIdentity{}, problem.Forbidden("PERM_FORBIDDEN", "merchant account required")
@@ -1129,7 +1129,7 @@ func storeActor(c *auth.Claims, p string) (storeIdentity, error) {
 	return storeIdentity{u, m, shops}, nil
 }
 
-// rowsDTO 返回rows DTO。
+// rowsDTO 返回明细行 DTO。
 func (s *Service) rowsDTO(rows []AfterSale) []DTO {
 	out := make([]DTO, 0, len(rows))
 	for _, r := range rows {

@@ -30,7 +30,7 @@ func (*registryProvider) Query(context.Context, string) (ProviderResult, error) 
 	return ProviderResult{}, nil
 }
 
-// TestFakeProviderSessionCallbackAndQuery 验证Fake 提供器会话回调 And 查询的预期行为。
+// TestFakeProviderSessionCallbackAndQuery 验证模拟服务商的会话、回调和查询。
 func TestFakeProviderSessionCallbackAndQuery(t *testing.T) {
 	provider := NewFakeProvider(testIdentityCallbackSecret)
 	session, err := provider.CreateSession(context.Background(), ProviderSessionRequest{
@@ -58,7 +58,7 @@ func TestFakeProviderSessionCallbackAndQuery(t *testing.T) {
 	}
 }
 
-// TestFakeProviderRejectsInvalidCallback 验证Fake 提供器 Rejects 无效回调的预期行为。
+// TestFakeProviderRejectsInvalidCallback 验证模拟服务商拒绝无效回调。
 func TestFakeProviderRejectsInvalidCallback(t *testing.T) {
 	provider := NewFakeProvider(testIdentityCallbackSecret)
 	session, err := provider.CreateSession(context.Background(), ProviderSessionRequest{

@@ -19,7 +19,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/pkg/snowflake"
 )
 
-// TestConcurrentPublishersClaimDifferentEvents 验证Concurrent Publishers 认领 Different Events的预期行为。
+// TestConcurrentPublishersClaimDifferentEvents 验证并发发布器认领不同事件。
 func TestConcurrentPublishersClaimDifferentEvents(t *testing.T) {
 	if os.Getenv("JXE_RUN_INTEGRATION") != "1" {
 		t.Skip("set JXE_RUN_INTEGRATION=1 to run outbox lease integration test")
@@ -131,7 +131,7 @@ func TestPublisherReclaimsExpiredLease(t *testing.T) {
 	}
 }
 
-// priorityOutboxIDs 返回priority 发件箱事件 I Ds。
+// priorityOutboxIDs 返回高优先级发件箱事件 ID 列表。
 func priorityOutboxIDs(t *testing.T, db *gorm.DB, count int, generator *snowflake.Generator) []uint64 {
 	t.Helper()
 	var minimum uint64

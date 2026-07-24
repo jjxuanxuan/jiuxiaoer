@@ -43,7 +43,7 @@ func (*wiringComplianceProvider) Query(context.Context, string) (compliance.Prov
 	return compliance.ProviderResult{}, nil
 }
 
-// TestOpenAPICoversRegisteredBusinessRoutes 验证打开 API Covers Registered Business Routes的预期行为。
+// TestOpenAPICoversRegisteredBusinessRoutes 验证 OpenAPI 覆盖已注册的业务路由。
 func TestOpenAPICoversRegisteredBusinessRoutes(t *testing.T) {
 	router := NewRouter(Dependencies{
 		Config: config.Load(),
@@ -81,7 +81,7 @@ func TestOpenAPICoversRegisteredBusinessRoutes(t *testing.T) {
 	}
 }
 
-// TestProductionRouterDoesNotRegisterMockRoutes 验证Production 路由器 Does 不 Register Mock Routes的预期行为。
+// TestProductionRouterDoesNotRegisterMockRoutes 验证生产路由器不会注册模拟路由。
 func TestProductionRouterDoesNotRegisterMockRoutes(t *testing.T) {
 	cfg := config.Load()
 	cfg.App.Env = "production"

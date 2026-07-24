@@ -22,7 +22,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/pkg/snowflake"
 )
 
-// TestExpiredKeyHasSingleConcurrentClaimant 验证已过期密钥 Has Single Concurrent Claimant的预期行为。
+// TestExpiredKeyHasSingleConcurrentClaimant 验证过期键在并发下只有一个认领者。
 func TestExpiredKeyHasSingleConcurrentClaimant(t *testing.T) {
 	if os.Getenv("JXE_RUN_INTEGRATION") != "1" {
 		t.Skip("set JXE_RUN_INTEGRATION=1 to run idempotency claim test")

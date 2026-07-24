@@ -11,7 +11,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/config"
 )
 
-// TestSnowflakeNodeLeaseRejectsConcurrentOwner 验证雪花 ID节点租约 Rejects Concurrent Owner的预期行为。
+// TestSnowflakeNodeLeaseRejectsConcurrentOwner 验证雪花节点租约拒绝并发持有者。
 func TestSnowflakeNodeLeaseRejectsConcurrentOwner(t *testing.T) {
 	if os.Getenv("JXE_RUN_INTEGRATION") != "1" {
 		t.Skip("set JXE_RUN_INTEGRATION=1 to run Redis lease integration test")

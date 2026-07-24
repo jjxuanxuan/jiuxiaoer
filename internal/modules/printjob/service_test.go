@@ -26,7 +26,7 @@ func TestValidPrintEvents(t *testing.T) {
 	}
 }
 
-// TestPrintBackoffIsBounded 验证打印 Backoff Is Bounded的预期行为。
+// TestPrintBackoffIsBounded 验证打印退避时间有上限。
 func TestPrintBackoffIsBounded(t *testing.T) {
 	if got := backoff(0); got != 10*time.Second {
 		t.Fatalf("zero attempt backoff = %v", got)
@@ -36,7 +36,7 @@ func TestPrintBackoffIsBounded(t *testing.T) {
 	}
 }
 
-// TestFakeProvider 验证Fake 提供器的预期行为。
+// TestFakeProvider 验证模拟打印服务商。
 func TestFakeProvider(t *testing.T) {
 	p := &FakeProvider{}
 	result, err := p.Submit(context.Background(), PrintRequest{ProviderRequestID: "print-1"})

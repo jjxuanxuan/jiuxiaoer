@@ -48,8 +48,8 @@ func (s *Service) WithAfterSale(service *aftersale.Service) *Service {
 	return s
 }
 
-// Create records only a rider-reported reverse-logistics request. It never
-// creates an after-sale or refund and never changes the order's financial state.
+// Create 只记录骑手上报的逆向物流请求，绝不创建售后或退款，
+// 也绝不改变订单资金状态。
 func (s *Service) Create(ctx context.Context, claims *auth.Claims, method, route, key, deliveryIDRaw string, req CreateReq) (out DTO, resultErr error) {
 	defer func() {
 		s.auditFailure(ctx, claims, method+" "+route, "delivery_return.request_denied", "delivery_order", deliveryIDRaw, resultErr)
@@ -103,8 +103,8 @@ func (s *Service) Create(ctx context.Context, claims *auth.Claims, method, route
 		}
 	}
 
-	// High-risk writes are fail-closed when the shared Redis limiter is not
-	// authoritative. A process-local fallback cannot enforce a cluster limit.
+	// 共享 Redis 限流器不具权威性时，高风险写入按失败关闭处理。
+	// 进程内降级方案无法执行集群级限制。
 	rate := s.limiter.Allow(ctx, "rate:delivery_return:create:rider:"+idString(riderID), 10*time.Minute, int64(s.cfg.DeliveryReturn.RiderRatePer10Minutes))
 	if rate.Degraded {
 		return DTO{}, problem.New(http.StatusServiceUnavailable, "DELIVERY_RETURN_DEPENDENCY_UNAVAILABLE", "Service Unavailable", "delivery return rate limiter is unavailable")
@@ -203,8 +203,8 @@ func (s *Service) AuditInvalidRequest(ctx context.Context, claims *auth.Claims, 
 		problem.InvalidArgument("VALIDATION_FAILED", "request validation failed"))
 }
 
-// RiderDetail remains available when write switches are disabled so emergency
-// rollback never hides an already-active reverse-logistics fact.
+// RiderDetail 在写入开关关闭时仍保持可用，
+// 确保紧急回滚不会隐藏已生效的逆向物流事实。
 func (s *Service) RiderDetail(ctx context.Context, claims *auth.Claims, idRaw string) (DTO, error) {
 	riderID, err := requireRider(claims, "delivery_return:view_own")
 	if err != nil {
@@ -224,8 +224,8 @@ func (s *Service) RiderDetail(ctx context.Context, claims *auth.Claims, idRaw st
 	return s.dto(aggregate, "rider"), nil
 }
 
-// HasActiveLocked is used by normal and force-complete paths after they have
-// locked the delivery row. The guard applies even when new writes are disabled.
+// HasActiveLocked 供普通和强制完成路径在锁定配送记录后使用。
+// 即使新写入已关闭，此保护仍然生效。
 func (s *Service) HasActiveLocked(ctx context.Context, tx *gorm.DB, deliveryID uint64) (bool, error) {
 	return s.repo.HasActiveLocked(ctx, tx, deliveryID)
 }

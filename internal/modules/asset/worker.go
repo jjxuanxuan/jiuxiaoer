@@ -79,7 +79,7 @@ func (w *Worker) claimCompensation(ctx context.Context) (Compensation, error) {
 	return row, err
 }
 
-// issueCompensation 返回issue Compensation。
+// issueCompensation 发放补偿。
 func (w *Worker) issueCompensation(ctx context.Context, row Compensation) error {
 	if row.AssetType != "balance" || row.Amount <= 0 {
 		code := "ASSET_TYPE_INVALID"

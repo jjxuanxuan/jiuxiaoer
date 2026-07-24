@@ -190,7 +190,7 @@ func (s *Service) ListTemplates(ctx context.Context, c *auth.Claims, q paginatio
 	return out, next, nil
 }
 
-// CreateTemplate 创建Template。
+// CreateTemplate 创建通知模板。
 func (s *Service) CreateTemplate(ctx context.Context, c *auth.Claims, method, path, key string, req TemplateReq) (TemplateDTO, error) {
 	actor, e := adminID(c, "notification_template:create")
 	if e != nil {
@@ -301,7 +301,7 @@ func (s *Service) UpdateTemplate(ctx context.Context, c *auth.Claims, method, pa
 	return out, e
 }
 
-// retirePublished 返回retire Published。
+// retirePublished 停用已发布模板。
 func (s *Service) retirePublished(ctx context.Context, tx *gorm.DB, actor uint64, eventType, channel string, exceptID uint64) error {
 	var active []Template
 	query := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).Where("event_type=? AND channel=? AND status='published'", eventType, channel)
@@ -393,7 +393,7 @@ func parseID(v string) (uint64, error) {
 // idString 将数字 ID 转换为字符串。
 func idString(v uint64) string { return strconv.FormatUint(v, 10) }
 
-// str 返回str。
+// str 返回字符串指针。
 func str(v *string) string {
 	if v == nil {
 		return ""
@@ -401,7 +401,7 @@ func str(v *string) string {
 	return *v
 }
 
-// ts 返回ts。
+// ts 返回格式化时间字符串。
 func ts(v *time.Time) string {
 	if v == nil {
 		return ""
@@ -409,7 +409,7 @@ func ts(v *time.Time) string {
 	return v.Format(time.RFC3339)
 }
 
-// nullString 返回null 字符串。
+// nullString 返回可空字符串值。
 func nullString(v string) *string {
 	if strings.TrimSpace(v) == "" {
 		return nil
@@ -432,7 +432,7 @@ func deliveryDTO(r Delivery) DeliveryDTO {
 	return DeliveryDTO{ID: idString(r.ID), DeliveryNo: r.DeliveryNo, EventID: r.EventID, EventType: r.EventType, RecipientType: r.RecipientType, RecipientID: idString(r.RecipientID), Channel: r.Channel, TemplateID: idString(r.TemplateID), TemplateVersion: r.TemplateVersion, Status: r.Status, Attempts: r.Attempts, LastErrorCode: str(r.LastErrorCode), SentAt: ts(r.SentAt), CreatedAt: r.CreatedAt.Format(time.RFC3339)}
 }
 
-// templateDTO 返回template DTO。
+// templateDTO 返回通知模板 DTO。
 func templateDTO(r Template) TemplateDTO {
 	var f []string
 	_ = json.Unmarshal(r.AllowedFields, &f)

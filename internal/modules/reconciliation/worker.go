@@ -45,8 +45,8 @@ func (w *Worker) Run(ctx context.Context) {
 	}
 }
 
-// RunDue executes both official T+1 bill types once the configured China-local
-// run hour is reached. It is exported for deterministic operational tests.
+// RunDue 在到达配置的中国本地运行时刻后执行两种官方 T+1 账单。
+// 该方法对外公开，以支持结果确定的运维测试。
 func (w *Worker) RunDue(ctx context.Context, now time.Time) []error {
 	return w.runDue(ctx, now)
 }

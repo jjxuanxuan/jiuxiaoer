@@ -73,7 +73,7 @@ func (m *metricState) connection(delta int64) {
 	m.mu.Unlock()
 }
 
-// slowClose 处理slow Close相关逻辑。
+// slowClose 记录缓慢关闭。
 func (m *metricState) slowClose() {
 	if m == nil {
 		return

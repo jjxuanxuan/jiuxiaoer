@@ -80,8 +80,8 @@ func (r *Repository) SaleableShopProduct(ctx context.Context, tx *gorm.DB, shopP
 	return row, nil
 }
 
-// CartItemQuantity locks the current cart line so an additive request can
-// validate the resulting quantity instead of silently truncating it to 99.
+// CartItemQuantity 锁定当前购物车明细，使增量请求可以校验结果数量，
+// 而不是悄然将其截断为 99。
 func (r *Repository) CartItemQuantity(ctx context.Context, tx *gorm.DB, cartID, shopProductID uint64) (int, error) {
 	var item CartItem
 	err := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).
@@ -93,7 +93,7 @@ func (r *Repository) CartItemQuantity(ctx context.Context, tx *gorm.DB, cartID, 
 	return item.Quantity, err
 }
 
-// LockCustomerCartItem resolves ownership inside SQL before a quantity update.
+// LockCustomerCartItem 在更新数量前于 SQL 内解析所有权。
 func (r *Repository) LockCustomerCartItem(ctx context.Context, tx *gorm.DB, customerID, itemID uint64) (CartItem, error) {
 	var item CartItem
 	err := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).

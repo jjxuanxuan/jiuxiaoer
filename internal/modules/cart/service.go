@@ -401,8 +401,8 @@ func cartAvailability(row CartItemRow) string {
 	return "available"
 }
 
-// cartUnavailableMutationError maps the stable read-side reason to the same
-// write-side business error used by add/update operations.
+// cartUnavailableMutationError 将稳定的读取侧原因映射到新增或更新操作
+// 使用的同一写入侧业务错误。
 func cartUnavailableMutationError(reason string) error {
 	switch reason {
 	case "shop_closed":

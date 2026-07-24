@@ -139,7 +139,7 @@ func (c *identityClient) ResolvePhone(ctx context.Context, phoneCode string) (st
 	return response.PhoneInfo.PurePhoneNumber, nil
 }
 
-// accessToken 返回access 令牌。
+// accessToken 获取微信访问令牌。
 func (c *identityClient) accessToken(ctx context.Context) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -175,7 +175,7 @@ func (c *identityClient) accessToken(ctx context.Context) (string, error) {
 	return c.token, nil
 }
 
-// doJSON 返回do JSON。
+// doJSON 发送 JSON 请求并解析响应。
 func (c *identityClient) doJSON(request *http.Request, target any) error {
 	response, err := c.http.Do(request)
 	if err != nil {

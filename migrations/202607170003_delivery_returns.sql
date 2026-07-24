@@ -97,5 +97,5 @@ ALTER TABLE stock_records
   ADD UNIQUE KEY uk_stock_business_action (business_action_key);
 
 -- +goose Down
--- Forward-only by design. Disable delivery-return write switches to roll back the
--- application. Do not drop financial, inventory, receipt, or audit facts.
+-- 按设计仅向前迁移。回滚应用时关闭配送退回写入开关，
+-- 不要删除资金、库存、收货或审计事实。

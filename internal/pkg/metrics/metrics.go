@@ -25,8 +25,8 @@ type HTTPValue struct {
 	DurationSum float64
 }
 
-// Registry is intentionally small and dependency-free. It exposes the core L0
-// RED and worker metrics in Prometheus text format.
+// Registry 刻意保持轻量且无依赖，以 Prometheus 文本格式公开核心 L0
+// RED 指标和工作进程指标。
 type Registry struct {
 	mu           sync.RWMutex
 	http         map[HTTPKey]HTTPValue
@@ -303,7 +303,7 @@ func copyCounterMap(source map[string]uint64) map[string]uint64 {
 	return result
 }
 
-// writeTwoLabelCounter 写入Two 标签计数器。
+// writeTwoLabelCounter 写入双标签计数器。
 func writeTwoLabelCounter(builder *strings.Builder, name, help, firstLabel, secondLabel string, values map[string]uint64) {
 	fmt.Fprintf(builder, "# HELP %s %s\n# TYPE %s counter\n", name, help, name)
 	keys := make([]string, 0, len(values))
@@ -350,7 +350,7 @@ func formatLabels(labels map[string]string) string {
 	return "{" + strings.Join(parts, ",") + "}"
 }
 
-// quote 返回quote。
+// quote 返回符合指标文本格式的转义字符串。
 func quote(value string) string {
 	return strconv.Quote(value)
 }

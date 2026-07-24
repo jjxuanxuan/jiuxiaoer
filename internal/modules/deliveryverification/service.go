@@ -29,28 +29,26 @@ const (
 	verificationSecretKeyVersion = "v1"
 )
 
-// GeneratePair is retained for callers compiled against the original CP1 API.
-// The phase-one contract intentionally creates only the pickup code when the
-// store becomes ready; the delivery code is activated after successful pickup.
+// GeneratePair 为针对原始 CP1 API 编译的调用方保留。
+// 一期契约刻意只在门店备货完成时创建取货码，送达码在取货成功后才激活。
 func GeneratePair(ctx context.Context, tx *gorm.DB, cfg config.CP1Config, ids *snowflake.Generator, deliveryID uint64) error {
 	return GeneratePickup(ctx, tx, cfg, ids, deliveryID)
 }
 
-// GeneratePickup creates the pickup credential at the store-ready boundary.
+// GeneratePickup 在门店备货完成边界创建取货凭据。
 func GeneratePickup(ctx context.Context, tx *gorm.DB, cfg config.CP1Config, ids *snowflake.Generator, deliveryID uint64) error {
 	return generateStage(ctx, tx, cfg, ids, deliveryID, "pickup", false, "pickup_ready")
 }
 
-// ActivateDelivery rotates any legacy early-created credential and starts the
-// delivery credential TTL only after pickup has been verified successfully.
+// ActivateDelivery 轮换所有旧版提前创建的凭据，并只在取货验证成功后
+// 启动送达凭据的 TTL。
 func ActivateDelivery(ctx context.Context, tx *gorm.DB, cfg config.CP1Config, ids *snowflake.Generator, deliveryID uint64) error {
 	return generateStage(ctx, tx, cfg, ids, deliveryID, "delivery", true, "pickup_verified")
 }
 
 // VerifyLocked 核验Locked是否有效。
-// VerifyLocked must run while the delivery row is locked. A rejection is
-// returned separately so the caller can commit the failed-attempt audit before
-// sending the business error to the client.
+// VerifyLocked 必须在配送记录被锁定时运行。拒绝结果单独返回，
+// 使调用方能在向客户端发送业务错误前提交失败尝试审计。
 func VerifyLocked(ctx context.Context, tx *gorm.DB, cfg config.CP1Config, ids *snowflake.Generator, deliveryID uint64, stage, code string, actorID, accountID uint64, deviceSubject string) (*problem.Details, error) {
 	mode := verificationMode(cfg, stage)
 	if mode == "off" || mode == "" {
@@ -322,7 +320,7 @@ func (s *Service) GetCustomer(ctx context.Context, c *auth.Claims, orderRaw stri
 	return s.reveal(ctx, "customer", customer, delivery, "delivery")
 }
 
-// reveal 返回reveal。
+// reveal 返回可展示的验证凭据。
 func (s *Service) reveal(ctx context.Context, actorType string, actor, delivery uint64, stage string) (VerificationDTO, error) {
 	limited, e := s.sensitiveViewRateLimited(ctx, actorType, actor, delivery, time.Now())
 	if e != nil {
@@ -505,10 +503,9 @@ func validateUnlockState(deliveryStatus, pickupReadyStatus, stage, verificationS
 	return problem.Conflict("VERIFICATION_INVALID_STATUS", "only a locked or expired verification can be unlocked")
 }
 
-// InvalidateAndRegenerate invalidates credentials that are not valid for the
-// current fulfilment phase and rotates the one credential still needed after a
-// reassignment. Before pickup this means pickup only; after pickup it means
-// delivery only.
+// InvalidateAndRegenerate 使不适用于当前履约阶段的凭据失效，
+// 并在改派后轮换仍需使用的凭据。取货前只保留取货凭据，
+// 取货后只保留送达凭据。
 func InvalidateAndRegenerate(ctx context.Context, tx *gorm.DB, cfg config.CP1Config, ids *snowflake.Generator, delivery uint64) error {
 	var status string
 	if err := tx.WithContext(ctx).Table("delivery_orders").Select("status").Where("id=?", delivery).Scan(&status).Error; err != nil {
@@ -532,16 +529,15 @@ func InvalidateAndRegenerate(ctx context.Context, tx *gorm.DB, cfg config.CP1Con
 	return generateStage(ctx, tx, cfg, ids, delivery, stage, true, "assignment_changed")
 }
 
-// Invalidate makes every unused credential for a delivery permanently
-// unusable. It is called by terminal order flows such as cancellation.
+// Invalidate 使配送单所有未使用凭据永久不可用。
+// 取消等订单终态流程会调用它。
 func Invalidate(ctx context.Context, tx *gorm.DB, ids *snowflake.Generator, delivery uint64, reasonCode string) error {
 	return InvalidateMany(ctx, tx, ids, []uint64{delivery}, reasonCode)
 }
 
-// InvalidateMany permanently invalidates every still-usable credential for
-// the supplied deliveries. Restricting the update to active/locked rows makes
-// the operation safe to repeat and preserves the terminal fact for credentials
-// that were already verified, expired, overridden, or invalidated.
+// InvalidateMany 永久失效指定配送单中所有仍可使用的凭据。
+// 将更新限制为 active 或 locked 记录，使操作可安全重复，
+// 并保留已验证、过期、被覆盖或已失效凭据的终态事实。
 func InvalidateMany(ctx context.Context, tx *gorm.DB, ids *snowflake.Generator, deliveries []uint64, reasonCode string) error {
 	if len(deliveries) == 0 {
 		return nil
@@ -587,10 +583,8 @@ func invalidateVerificationRows(ctx context.Context, tx *gorm.DB, ids *snowflake
 	return nil
 }
 
-// InvalidateByOrder is the order-terminal boundary used by cancellation and
-// full-refund flows. Looking up all delivery attempts also covers a historical
-// retry/re-dispatch without requiring those modules to know verification table
-// details.
+// InvalidateByOrder 是取消和全额退款流程使用的订单终态边界。
+// 查询所有配送尝试还可覆盖历史重试或重新派单，而无需这些模块了解验证表细节。
 func InvalidateByOrder(ctx context.Context, tx *gorm.DB, ids *snowflake.Generator, orderID uint64, reasonCode string) error {
 	var deliveryIDs []uint64
 	if err := tx.WithContext(ctx).Table("delivery_orders").
@@ -719,9 +713,9 @@ func verificationTTL(cfg config.CP1Config, stage string) time.Duration {
 	return cfg.VerificationTTL
 }
 
-// deliveryVerificationTTL starts from the configured two-hour floor, extends
-// it to route ETA plus one hour, and caps the result. A missing or malformed
-// historical promise snapshot safely falls back to the configured floor.
+// deliveryVerificationTTL 从配置的两小时下限开始，将其延长到预计路线时间
+// 加一小时，并限制最大值。历史承诺快照缺失或格式错误时，
+// 会安全回退到配置下限。
 func deliveryVerificationTTL(ctx context.Context, tx *gorm.DB, cfg config.CP1Config, delivery uint64) (time.Duration, error) {
 	var row struct {
 		Snapshot datatypes.JSON `gorm:"column:delivery_promise_snapshot"`
@@ -762,8 +756,7 @@ func deliveryVerificationTTLFromSnapshot(cfg config.CP1Config, snapshot []byte) 
 	if err != nil || seconds <= 0 {
 		return minimum
 	}
-	// Compare in seconds before converting to time.Duration so a corrupt
-	// oversized snapshot cannot overflow and accidentally shorten validity.
+	// 转换为 time.Duration 前先按秒比较，避免损坏的超大快照溢出并意外缩短有效期。
 	maxSeconds := int64(maximum / time.Second)
 	if maxSeconds <= 3600 || seconds >= maxSeconds-3600 {
 		return maximum

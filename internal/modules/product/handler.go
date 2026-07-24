@@ -144,7 +144,7 @@ func productLocationActor(c *gin.Context, locations *customerlocation.Service) (
 	return locations.BuildActor(customerID, c.GetHeader(locations.SessionHeader()))
 }
 
-// locationQuery 返回location 查询。
+// locationQuery 返回位置查询参数。
 func locationQuery(c *gin.Context) (*float64, *float64, error) {
 	latRaw, lngRaw := c.Query("lat"), c.Query("lng")
 	if latRaw == "" && lngRaw == "" {

@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// TestRiderApplicationDefaultsRemainDisabled 验证骑手申请 Defaults Remain Disabled的预期行为。
+// TestRiderApplicationDefaultsRemainDisabled 验证骑手申请默认保持关闭。
 func TestRiderApplicationDefaultsRemainDisabled(t *testing.T) {
 	t.Setenv("JXE_RIDER_APPLICATION_ENABLED", "false")
 	cfg := Load()
@@ -17,7 +17,7 @@ func TestRiderApplicationDefaultsRemainDisabled(t *testing.T) {
 	}
 }
 
-// TestRiderApplicationRequiresMySQLAndRedisWhenEnabled 验证骑手申请 Requires My SQL And Redis When 启用状态的预期行为。
+// TestRiderApplicationRequiresMySQLAndRedisWhenEnabled 验证启用骑手申请时必须配置 MySQL 和 Redis。
 func TestRiderApplicationRequiresMySQLAndRedisWhenEnabled(t *testing.T) {
 	cfg := Load()
 	cfg.RiderApplication.Enabled = true

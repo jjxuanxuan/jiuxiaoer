@@ -6,7 +6,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/modules/auth"
 )
 
-// TestRandomSecretAndAdminPermission 验证Random 密钥 And 管理端权限的预期行为。
+// TestRandomSecretAndAdminPermission 验证随机密钥和管理员权限。
 func TestRandomSecretAndAdminPermission(t *testing.T) {
 	a, err := randomSecret()
 	if err != nil {

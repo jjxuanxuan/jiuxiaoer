@@ -33,7 +33,7 @@ type connection struct {
 	seenOrder  []string
 }
 
-// stop 处理stop相关逻辑。
+// stop 停止连接中心。
 func (c *connection) stop(code websocket.StatusCode, reason string) {
 	c.closeOnce.Do(func() {
 		go func() {
@@ -43,9 +43,8 @@ func (c *connection) stop(code websocket.StatusCode, reason string) {
 	})
 }
 
-// markEvent suppresses duplicate merchant event_ids on a live connection. The
-// durable MQ consumer receipt prevents normal redelivery; this bounded cache
-// also protects clients from duplicated Redis wakeups.
+// markEvent 在活动连接上抑制重复的商户 event_id。持久 MQ 消费者回执
+// 防止正常重复投递；此有界缓存还保护客户端免受重复 Redis 唤醒影响。
 func (c *connection) markEvent(eventID string) bool {
 	if eventID == "" {
 		return false
@@ -156,8 +155,8 @@ func (h *Hub) Deliver(ctx context.Context, wakeup Wakeup) error {
 	return nil
 }
 
-// DeliverMerchant rechecks the current account/shop grant immediately before
-// sending. It never trusts a stale shop list from the WebSocket ticket.
+// DeliverMerchant 在发送前立即重新检查当前账户与门店授权，
+// 绝不信任 WebSocket 票据中的过期门店列表。
 func (h *Hub) DeliverMerchant(ctx context.Context, wakeup MerchantWakeup) error {
 	if !validMerchantWakeup(wakeup) {
 		return fmt.Errorf("merchant wakeup is invalid")
@@ -247,7 +246,7 @@ func (h *Hub) Serve(ctx context.Context, ws *websocket.Conn, info TicketInfo) er
 	}
 }
 
-// writeLoop 写入Loop。
+// writeLoop 运行连接写循环。
 func (h *Hub) writeLoop(ctx context.Context, target *connection) error {
 	heartbeat := time.NewTicker(h.cfg.HeartbeatInterval)
 	sessionCheck := time.NewTicker(h.cfg.SessionCheckInterval)
@@ -366,8 +365,8 @@ func (h *Hub) readLoop(ctx context.Context, target *connection) error {
 func (h *Hub) handleResume(ctx context.Context, target *connection, frame ClientFrame) error {
 	recipientType, _ := target.info.recipient()
 	if recipientType == recipientMerchant {
-		// Merchant WS events are wakeups, never the order fact. On every
-		// reconnect the client is explicitly told to refresh the scoped list.
+		// 商户 WebSocket 事件只是唤醒信号，绝不是订单事实。
+		// 每次重连都会明确通知客户端刷新限定范围的列表。
 		resync := frameNow(FrameEvent)
 		resync.EventType = "realtime.resync_required"
 		resync.Data = json.RawMessage(`{"reason_code":"store_order_list_required"}`)
@@ -422,7 +421,7 @@ func (h *Hub) handleResume(ctx context.Context, target *connection, frame Client
 	return nil
 }
 
-// initialResume 返回initial Resume。
+// initialResume 返回初始续传帧。
 func (h *Hub) initialResume(ctx context.Context, target *connection, frame ClientFrame) error {
 	executed := false
 	var result error
@@ -460,7 +459,7 @@ func (h *Hub) sendError(target *connection, requestID, code, detail string) {
 	}
 }
 
-// enqueue 判断enqueue。
+// enqueue 尝试将消息加入发送队列。
 func (h *Hub) enqueue(target *connection, frame ServerFrame) bool {
 	select {
 	case target.send <- frame:
@@ -514,7 +513,7 @@ func (h *Hub) Accepting() bool {
 	return !h.draining
 }
 
-// unregister 处理unregister相关逻辑。
+// unregister 注销连接。
 func (h *Hub) unregister(target *connection) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -582,7 +581,7 @@ func (h *Hub) logError(message string, err error) {
 	}
 }
 
-// normalizeCloseError 规范化Close 错误。
+// normalizeCloseError 规范化关闭错误。
 func normalizeCloseError(err error) error {
 	if err == nil || errors.Is(err, context.Canceled) {
 		return nil

@@ -35,8 +35,8 @@ func NewWorker(cfg config.CP1Config, db *gorm.DB, ids *snowflake.Generator, p Pr
 	return &Worker{cfg: cfg, db: db, ids: ids, provider: p, owner: owner, log: log}
 }
 
-// WithDeliveryIncidentNotifications enables the dedicated merchant/admin route.
-// Incident events never use the customer inbox or customer template fallback.
+// WithDeliveryIncidentNotifications 启用专用的商户和管理端路径。
+// 异常事件绝不使用客户收件箱或客户模板降级方案。
 func (w *Worker) WithDeliveryIncidentNotifications(enabled bool) *Worker {
 	w.incidentNotifications = enabled
 	return w
@@ -70,8 +70,7 @@ func (w *Worker) RunWithFallback(ctx context.Context, fallbackEnabled bool) {
 }
 
 // RunOnce 运行Once处理流程。
-// RunOnce materializes and delivers one bounded batch. It is also the safe
-// primitive used by smoke tests and operational recovery tooling.
+// RunOnce 物化并投递一个有界批次，也是冒烟测试和运维恢复工具使用的安全原语。
 func (w *Worker) RunOnce(ctx context.Context) {
 	w.fanout(ctx)
 	w.deliver(ctx)
@@ -122,15 +121,15 @@ var eventNames = map[string][2]string{
 
 var canonicalTemplateEvent = map[string]string{"order.paid": "payment.succeeded"}
 
-// fanout 处理fanout相关逻辑。
+// fanout 执行通知扇出。
 func (w *Worker) fanout(ctx context.Context) {
 	events := make([]string, 0, len(eventNames))
 	for e := range eventNames {
 		events = append(events, e)
 	}
 	var rows []outboxRow
-	// Exclude events already materialized into the inbox before applying LIMIT.
-	// Otherwise an old full batch would be selected forever and starve newer events.
+	// 应用 LIMIT 前排除已物化到收件箱的事件，
+	// 否则旧的满批次会一直被选中，导致新事件饥饿。
 	if e := w.db.WithContext(ctx).Table("outbox_events AS o").
 		Select("o.event_id,o.event_type,o.aggregate_type,o.aggregate_id,o.payload,o.created_at").
 		Joins("LEFT JOIN message_inboxes AS m ON m.source_event_id = o.event_id").
@@ -147,16 +146,15 @@ func (w *Worker) fanout(ctx context.Context) {
 	}
 }
 
-// createForEvent 创建For 事件。
+// createForEvent 为事件创建通知记录。
 func (w *Worker) createForEvent(ctx context.Context, event outboxRow) error {
 	return w.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := w.materializeForEvent(ctx, tx, event); err != nil {
 			return err
 		}
 		now := time.Now()
-		// The DB sweeper uses the same receipt identity as the MQ path. This
-		// makes rollback/fallback converge instead of leaving a permanent
-		// "business result without receipt" reconciliation difference.
+		// 数据库扫描器与 MQ 路径使用相同的回执标识，
+		// 使回滚和降级路径能够收敛，避免永久留下“有业务结果但无回执”的对账差异。
 		return tx.Table("mq_consumer_receipts").Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "consumer_name"}, {Name: "event_id"}},
 			DoUpdates: clause.Assignments(map[string]any{
@@ -171,7 +169,7 @@ func (w *Worker) createForEvent(ctx context.Context, event outboxRow) error {
 	})
 }
 
-// materializeForEvent 返回materialize For 事件。
+// materializeForEvent 为事件执行通知物化。
 func (w *Worker) materializeForEvent(ctx context.Context, tx *gorm.DB, event outboxRow) error {
 	if strings.HasPrefix(event.EventType, "delivery.return_") {
 		return w.materializeDeliveryReturnEvent(tx, event)
@@ -415,7 +413,7 @@ func (w *Worker) materializeIncidentEvent(tx *gorm.DB, event outboxRow) error {
 	return nil
 }
 
-// materializeAccountEvent 返回materialize 账户事件。
+// materializeAccountEvent 物化账户事件。
 func (w *Worker) materializeAccountEvent(tx *gorm.DB, event outboxRow) error {
 	if !w.cfg.NotificationEnabled {
 		return nil
@@ -434,8 +432,8 @@ func (w *Worker) materializeAccountEvent(tx *gorm.DB, event outboxRow) error {
 }
 
 // MaterializeEvent 返回Materialize 事件。
-// MaterializeEvent is used by the MQ runtime. The caller owns the transaction,
-// so the notification side effect and consumer receipt commit atomically.
+// MaterializeEvent 供 MQ 运行时使用。事务由调用方持有，
+// 因此通知副作用和消费者回执会原子提交。
 func (w *Worker) MaterializeEvent(ctx context.Context, tx *gorm.DB, eventID, eventType, aggregateType string, aggregateID uint64, payload datatypes.JSON, occurredAt time.Time) error {
 	if _, ok := eventNames[eventType]; !ok {
 		return fmt.Errorf("notification event %s is not supported", eventType)
@@ -463,7 +461,7 @@ func payloadID(payload map[string]any, key string) uint64 {
 	return 0
 }
 
-// deliver 处理deliver相关逻辑。
+// deliver 投递通知。
 func (w *Worker) deliver(ctx context.Context) {
 	for i := 0; i < w.cfg.WorkerBatchSize; i++ {
 		task, ok, e := w.claim(ctx)

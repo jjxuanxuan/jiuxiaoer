@@ -39,13 +39,11 @@ CREATE TABLE identity_verification_callbacks (
   KEY idx_identity_callback_status (process_status, received_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
--- Existing fake/synchronous verification records are development evidence and
--- must not be promoted to production. A production cutover requires users to
--- create a provider-hosted session and receive a new cp1-v2 result.
+-- 现有模拟或同步验证记录属于开发证据，不得提升到生产环境。
+-- 生产切换要求用户创建服务商托管会话并获得新的 cp1-v2 结果。
 
 -- +goose Down
--- Identity callback rows and result hashes are security/audit evidence. Keep
--- the additive schema and roll back the application flow instead of deleting
--- verification facts.
+-- 身份回调记录和结果哈希属于安全与审计证据。
+-- 应保留增量模式并回滚应用流程，而不是删除验证事实。
 SIGNAL SQLSTATE '45000'
   SET MESSAGE_TEXT = '202607140002 is additive and irreversible; roll back the application, not identity verification evidence';

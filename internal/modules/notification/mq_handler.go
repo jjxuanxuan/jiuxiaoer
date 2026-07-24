@@ -14,7 +14,7 @@ type MQHandler struct {
 	worker *Worker
 }
 
-// NewMQHandler 创建并初始化消息队列 Handler。
+// NewMQHandler 创建并初始化消息队列处理器。
 func NewMQHandler(worker *Worker) *MQHandler { return &MQHandler{worker: worker} }
 
 // Handle 处理消费者结果请求。

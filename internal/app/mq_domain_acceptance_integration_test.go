@@ -41,7 +41,7 @@ type mqDomainFixture struct {
 	log      *slog.Logger
 }
 
-// TestRabbitMQDomainAcceptanceIntegration 验证Rabbit 消息队列 Domain 验收集成的预期行为。
+// TestRabbitMQDomainAcceptanceIntegration 验证 RabbitMQ 领域验收集成。
 func TestRabbitMQDomainAcceptanceIntegration(t *testing.T) {
 	if os.Getenv("JXE_RUN_MQ_INTEGRATION") != "1" {
 		t.Skip("set JXE_RUN_MQ_INTEGRATION=1 and use an isolated RabbitMQ vhost")
@@ -147,8 +147,8 @@ func (f *mqDomainFixture) notificationLifecycle(t *testing.T) {
 			}
 		}
 		envelope := f.envelope(t, eventID, eventType, aggregateType, aggregateID, payload)
-		// Every lifecycle node is deliberately delivered twice. The receipt and
-		// inbox/delivery unique keys must collapse the redelivery.
+		// 每个生命周期节点都刻意投递两次。回执以及收件箱或投递唯一键
+		// 必须合并重复投递。
 		f.publish(t, envelope, 2)
 	}
 
@@ -160,8 +160,8 @@ func (f *mqDomainFixture) notificationLifecycle(t *testing.T) {
 		return receipts == wantMessages && messages == wantMessages
 	})
 
-	// Delivery is intentionally a DB worker after MQ materialization. Run it
-	// twice to prove normal MQ and fallback polling converge without duplicates.
+	// 投递在 MQ 物化后刻意由数据库工作进程执行。运行两次，
+	// 以证明正常 MQ 路径和降级轮询能够无重复地收敛。
 	worker.RunOnce(f.ctx)
 	worker.RunOnce(f.ctx)
 	waitDomain(t, 10*time.Second, func() bool {
@@ -215,7 +215,7 @@ func (f *mqDomainFixture) notificationFallback(t *testing.T) {
 	}
 }
 
-// printWakeupAndDuplicates 处理打印 Wakeup And Duplicates相关逻辑。
+// printWakeupAndDuplicates 验证打印唤醒和重复消息处理。
 func (f *mqDomainFixture) printWakeupAndDuplicates(t *testing.T) {
 	f.purge(t, acceptancePrintQueue)
 	provider := &countingPrintProvider{}
@@ -245,7 +245,7 @@ func (f *mqDomainFixture) printWakeupAndDuplicates(t *testing.T) {
 	f.awaitStop(t, done)
 }
 
-// printUnknownReconciles 处理打印 Unknown Reconciles相关逻辑。
+// printUnknownReconciles 验证未知打印状态的对账处理。
 func (f *mqDomainFixture) printUnknownReconciles(t *testing.T) {
 	f.purge(t, acceptancePrintQueue)
 	provider := &countingPrintProvider{unknownFirst: true}
@@ -385,7 +385,7 @@ func (f *mqDomainFixture) cleanupPrint(t *testing.T, taskID uint64, eventID stri
 	f.purge(t, acceptancePrintQueue)
 }
 
-// priorityOutboxID 返回priority 发件箱事件ID。
+// priorityOutboxID 返回高优先级发件箱事件 ID。
 func (f *mqDomainFixture) priorityOutboxID(t *testing.T) uint64 {
 	t.Helper()
 	var minimum uint64
@@ -462,7 +462,7 @@ func (f *mqDomainFixture) startConsumer(ctx context.Context, name string, handle
 	return done
 }
 
-// waitConsumers 处理wait Consumers相关逻辑。
+// waitConsumers 等待消费者就绪。
 func (f *mqDomainFixture) waitConsumers(t *testing.T, queue string, want int) {
 	t.Helper()
 	waitDomain(t, 5*time.Second, func() bool {
@@ -497,7 +497,7 @@ func (f *mqDomainFixture) purge(t *testing.T, queue string) {
 	}
 }
 
-// awaitStop 处理await Stop相关逻辑。
+// awaitStop 等待进程停止。
 func (f *mqDomainFixture) awaitStop(t *testing.T, done <-chan struct{}) {
 	t.Helper()
 	select {
@@ -507,7 +507,7 @@ func (f *mqDomainFixture) awaitStop(t *testing.T, done <-chan struct{}) {
 	}
 }
 
-// waitDomain 处理wait Domain相关逻辑。
+// waitDomain 等待领域事件处理完成。
 func waitDomain(t *testing.T, timeout time.Duration, condition func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)

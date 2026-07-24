@@ -2,7 +2,7 @@ package snowflake
 
 import "testing"
 
-// TestNewRejectsOutOfRangeNode 验证New Rejects Out Of Range 节点的预期行为。
+// TestNewRejectsOutOfRangeNode 验证构造器拒绝超出范围的节点编号。
 func TestNewRejectsOutOfRangeNode(t *testing.T) {
 	defer func() {
 		if recover() == nil {
@@ -12,7 +12,7 @@ func TestNewRejectsOutOfRangeNode(t *testing.T) {
 	New(1024)
 }
 
-// TestClockRollbackKeepsIDsMonotonicAndUnique 验证时钟回拨 Keeps I Ds Monotonic And 唯一值的预期行为。
+// TestClockRollbackKeepsIDsMonotonicAndUnique 验证时钟回拨时 ID 仍保持单调且唯一。
 func TestClockRollbackKeepsIDsMonotonicAndUnique(t *testing.T) {
 	generator := New(1)
 	times := []int64{1704067201000, 1704067201000, 1704067200990, 1704067200991, 1704067201001}
@@ -37,7 +37,7 @@ func TestClockRollbackKeepsIDsMonotonicAndUnique(t *testing.T) {
 	}
 }
 
-// TestSequenceOverflowAdvancesLogicalMillisecond 验证序列 Overflow Advances Logical Millisecond的预期行为。
+// TestSequenceOverflowAdvancesLogicalMillisecond 验证序列溢出会推进逻辑毫秒。
 func TestSequenceOverflowAdvancesLogicalMillisecond(t *testing.T) {
 	generator := New(1)
 	generator.nowMS = func() int64 { return 1704067201000 }
@@ -53,7 +53,7 @@ func TestSequenceOverflowAdvancesLogicalMillisecond(t *testing.T) {
 	}
 }
 
-// TestDifferentNodesProduceDifferentIDs 验证Different Nodes Produce Different I Ds的预期行为。
+// TestDifferentNodesProduceDifferentIDs 验证不同节点生成不同的 ID。
 func TestDifferentNodesProduceDifferentIDs(t *testing.T) {
 	first := New(1).Next()
 	second := New(2).Next()

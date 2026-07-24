@@ -2,7 +2,7 @@ package member
 
 import "testing"
 
-// TestEvaluateTierBoundaries 验证Evaluate Tier Boundaries的预期行为。
+// TestEvaluateTierBoundaries 验证会员等级计算边界。
 func TestEvaluateTierBoundaries(t *testing.T) {
 	rules := []Rule{{TierCode: "normal", TierName: "普通会员", MinGrowth: 0}, {TierCode: "silver", TierName: "银卡会员", MinGrowth: 1000}, {TierCode: "gold", TierName: "金卡会员", MinGrowth: 5000}}
 	tests := []struct {

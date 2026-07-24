@@ -27,9 +27,8 @@ type DeliveryOrderDTO struct {
 	GrabExpiresAt       string                       `json:"grab_expires_at,omitempty"`
 }
 
-// CandidateDeliverySummaryDTO is deliberately narrower than an assigned
-// delivery. It contains enough information to decide whether to grab the job,
-// but no precise pickup/recipient snapshot.
+// CandidateDeliverySummaryDTO 刻意比已分配配送的信息范围更窄。
+// 它包含判断是否抢单所需的足够信息，但不含精确取货或收件人快照。
 type CandidateDeliverySummaryDTO struct {
 	ViewType            string `json:"view_type"`
 	ID                  string `json:"id"`
@@ -43,9 +42,8 @@ type CandidateDeliverySummaryDTO struct {
 	AssignmentVersion   uint   `json:"assignment_version"`
 }
 
-// AssignedDeliverySummaryDTO is returned only after rider ownership has been
-// checked by the list query. Its typed snapshots cannot carry verification or
-// provider secrets stored in historical JSON.
+// AssignedDeliverySummaryDTO 仅在列表查询检查骑手所有权后返回。
+// 其强类型快照无法携带历史 JSON 中存储的验证信息或服务商秘密。
 type AssignedDeliverySummaryDTO struct {
 	ViewType          string                       `json:"view_type"`
 	ID                string                       `json:"id"`
@@ -66,9 +64,8 @@ type AssignedDeliverySummaryDTO struct {
 	CreatedAt         string                       `json:"created_at"`
 }
 
-// DeliveryDetailDTO is the assigned rider's fulfillment view. Sensitive
-// contact and address data is returned only after the repository verifies the
-// current active assignment in the same read transaction.
+// DeliveryDetailDTO 是已分配骑手的履约视图。只有仓储层在同一读取事务中
+// 验证当前有效分配后，才会返回敏感联系人和地址数据。
 type DeliveryDetailDTO struct {
 	ID                  string                        `json:"id"`
 	OrderID             string                        `json:"order_id"`

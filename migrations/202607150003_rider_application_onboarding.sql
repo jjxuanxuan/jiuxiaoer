@@ -1,8 +1,8 @@
 -- +goose Up
--- Rider applications have a separate lifecycle from formal riders. A rider
--- row is created only when an administrator approves an application.
+-- 骑手申请与正式骑手具有独立生命周期。
+-- 只有管理员批准申请后才会创建骑手记录。
 
--- The approved-flow source value is `rider_application` (17 characters).
+-- 批准流程的来源值为 `rider_application`，共 17 个字符。
 ALTER TABLE rider_service_shops MODIFY COLUMN source VARCHAR(32) NOT NULL;
 
 CREATE TABLE IF NOT EXISTS rider_applications (
@@ -63,10 +63,10 @@ CREATE TABLE IF NOT EXISTS rider_application_reviews (
   CONSTRAINT chk_rider_application_review_reason CHECK (CHAR_LENGTH(reason) BETWEEN 2 AND 255)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
--- Local development must run `make provision-runtime-user` after migration so
--- the runtime account receives CRUD grants for these new tables.
+-- 本地开发在迁移后必须运行 `make provision-runtime-user`，
+-- 使运行时账户获得这些新表的增删改查权限。
 
 -- +goose Down
--- Non-destructive rollback: disable JXE_RIDER_APPLICATION_ENABLED and retain
--- application and review audit data.
+-- 非破坏性回滚：关闭 JXE_RIDER_APPLICATION_ENABLED，
+-- 并保留申请与审核的审计数据。
 SELECT 1;

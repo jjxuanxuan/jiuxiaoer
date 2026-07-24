@@ -411,13 +411,13 @@ func seedPermissions(tx *gorm.DB) error {
 			return err
 		}
 	}
-	// Recheck inside the same transaction so a concurrent catalog writer cannot
-	// race the initial preflight and leave the seed bound to a different row.
+	// 在同一事务内再次检查，避免并发目录写入与初始预检竞争，
+	// 导致种子数据绑定到其他记录。
 	return assertPermissionCatalog(tx)
 }
 
-// assertPermissionCatalog prevents a unique-key upsert from silently attaching
-// a seed permission ID to a different code (or the expected code to another ID).
+// assertPermissionCatalog 防止唯一键更新插入操作悄然将种子权限 ID
+// 绑定到其他代码，或将预期代码绑定到其他 ID。
 func assertPermissionCatalog(tx *gorm.DB) error {
 	var rows []permissionCatalogRow
 	if err := tx.Table("permissions").Select("id, code").Find(&rows).Error; err != nil {
@@ -454,17 +454,16 @@ func validatePermissionCatalog(expected []permissionSeed, actual []permissionCat
 	return nil
 }
 
-// Permission codes are canonical ASCII identifiers. Fold case and trailing
-// spaces so visually equivalent variants cannot bypass the catalog preflight
-// when environments use different collation padding semantics.
+// 权限代码是规范的 ASCII 标识符。统一大小写并清理尾随空格，
+// 防止不同环境采用不同排序规则填充语义时，视觉等价的变体绕过目录预检。
 func permissionCodeKey(code string) string {
 	return strings.ToLower(strings.TrimRight(code, " "))
 }
 
 // seedRolePermissions 写入角色权限种子数据。
 func seedRolePermissions(tx *gorm.DB) error {
-	// Keep the force-complete maker/checker split stable when seed is rerun
-	// after a previous catalog version granted every new permission broadly.
+	// 重新执行种子数据时保持强制完成的申请人与复核人职责分离，
+	// 以修正旧版权限目录曾将所有新权限广泛授予的情况。
 	if err := tx.Exec(`
 		DELETE FROM role_permissions
 		WHERE (role_id = ? AND permission_id = ?)
@@ -472,8 +471,8 @@ func seedRolePermissions(tx *gorm.DB) error {
 	`, roleAdminManager, uint64(2143), roleOperation, uint64(2144)).Error; err != nil {
 		return err
 	}
-	// Merchant roles are a controlled least-privilege matrix. Remove stale or
-	// manually broadened mappings before recreating the exact assignments below.
+	// 商户角色采用受控的最小权限矩阵。重新创建下方精确授权前，
+	// 先移除过期或被手工扩大的映射。
 	if err := tx.Exec(`DELETE FROM role_permissions WHERE role_id IN (?, ?, ?)`, roleMerchantOwner, roleMerchantOrder, roleMerchantStock).Error; err != nil {
 		return err
 	}
@@ -506,7 +505,7 @@ func rolePermissionAssignments() []rolePermissionAssignment {
 	}
 }
 
-// withoutPermissions 返回without 权限。
+// withoutPermissions 返回移除指定权限后的集合。
 func withoutPermissions(values []uint64, excluded ...uint64) []uint64 {
 	blocked := make(map[uint64]bool, len(excluded))
 	for _, value := range excluded {
@@ -521,7 +520,7 @@ func withoutPermissions(values []uint64, excluded ...uint64) []uint64 {
 	return result
 }
 
-// permissionIDs 返回权限 I Ds。
+// permissionIDs 返回权限 ID 列表。
 func permissionIDs() []uint64 {
 	ids := make([]uint64, 0, len(permissions))
 	for _, perm := range permissions {
@@ -530,7 +529,7 @@ func permissionIDs() []uint64 {
 	return ids
 }
 
-// seedAccounts 写入Accounts种子数据。
+// seedAccounts 写入账户种子数据。
 func seedAccounts(tx *gorm.DB, cfg config.Config) error {
 	adminHash, err := bcryptHash(cfg.Security.AdminBootstrapPassword)
 	if err != nil {
@@ -560,7 +559,7 @@ func seedAccounts(tx *gorm.DB, cfg config.Config) error {
 	return tx.Exec("UPDATE accounts SET credential_version=1 WHERE credential_version=0").Error
 }
 
-// seedMerchantAndShop 写入商户 And 门店种子数据。
+// seedMerchantAndShop 写入商户和门店种子数据。
 func seedMerchantAndShop(tx *gorm.DB) error {
 	if err := tx.Exec(`
 		INSERT INTO merchants (id, code, name, contact_name, contact_phone, status, review_status)
@@ -718,7 +717,7 @@ func seedDispatch(tx *gorm.DB) error {
 	`, adminUserDemo, adminUserDemo, adminUserDemo).Error
 }
 
-// seedCatalog 写入Catalog种子数据。
+// seedCatalog 写入商品目录种子数据。
 func seedCatalog(tx *gorm.DB) error {
 	for _, category := range categories {
 		if err := tx.Exec(`
@@ -759,7 +758,7 @@ func seedCatalog(tx *gorm.DB) error {
 	return nil
 }
 
-// seedConfigs 写入Configs种子数据。
+// seedConfigs 写入配置种子数据。
 func seedConfigs(tx *gorm.DB) error {
 	configs := []struct {
 		id    uint64
@@ -794,7 +793,7 @@ func upsertAccount(tx *gorm.DB, id uint64, accountType string, username string, 
 	`, id, accountType, username, phone, passwordHash).Error
 }
 
-// bcryptHash 返回bcrypt 哈希。
+// bcryptHash 返回 bcrypt 哈希。
 func bcryptHash(password string) (string, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {

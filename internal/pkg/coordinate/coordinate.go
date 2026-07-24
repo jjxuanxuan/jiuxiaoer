@@ -19,7 +19,7 @@ const (
 	chinaEE = 0.00669342162296594323
 )
 
-// Normalize validates a coordinate and converts it to the internal GCJ-02 contract.
+// Normalize 校验坐标并将其转换为内部 GCJ-02 坐标契约。
 func Normalize(latitude, longitude float64, system string) (float64, float64, error) {
 	if !Valid(latitude, longitude) {
 		return 0, 0, ErrInvalid

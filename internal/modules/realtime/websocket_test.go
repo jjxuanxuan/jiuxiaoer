@@ -16,7 +16,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/pkg/snowflake"
 )
 
-// TestWebSocketHelloResumeAndSyncComplete 验证Web Socket Hello Resume And Sync Complete的预期行为。
+// TestWebSocketHelloResumeAndSyncComplete 验证 WebSocket 握手、续传和同步完成流程。
 func TestWebSocketHelloResumeAndSyncComplete(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	mini := miniredis.RunT(t)

@@ -204,8 +204,8 @@ func (h *Handler) actionError(c *gin.Context, claims *auth.Claims, action, order
 	response.Error(c, cause)
 }
 
-// ConfirmPayment queries WeChat Pay and returns the backend-confirmed payment
-// state. Miniapp client callbacks are never treated as the financial result.
+// ConfirmPayment 查询微信支付并返回后端确认的支付状态。
+// 小程序客户端回调绝不会被视为资金结果。
 func (h *Handler) ConfirmPayment(c *gin.Context) {
 	claims, ok := auth.ClaimsFromContext(c)
 	if !ok {

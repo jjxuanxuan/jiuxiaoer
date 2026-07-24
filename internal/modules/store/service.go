@@ -126,9 +126,9 @@ func (s *Service) DetailOrder(ctx context.Context, claims *auth.Claims, orderIDR
 	return result, err
 }
 
-// loadStoreOrderDetail reloads the complete merchant-safe projection from the
-// current transaction. Action responses use it after every mutation so the
-// returned status, version, logs and delivery facts are all post-action facts.
+// loadStoreOrderDetail 从当前事务重新加载完整且对商户安全的投影。
+// 每次修改后的操作响应都使用它，确保返回的状态、版本、日志和配送事实
+// 均为操作后的最新事实。
 func (s *Service) loadStoreOrderDetail(ctx context.Context, db *gorm.DB, identity merchantIdentity, orderID uint64) (StoreOrderDetailDTO, error) {
 	row, err := s.repo.AuthorizedOrder(ctx, db, identity.MerchantID, identity.ShopIDs, orderID)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -827,9 +827,8 @@ func storeOrderActionRequestHash(orderID uint64, action string, req StoreOrderAc
 	})
 }
 
-// lockRequiredDelivery enforces the paid-order invariant used by merchant
-// fulfilment transitions: every successful action holds both the order and its
-// delivery row lock before changing state.
+// lockRequiredDelivery 强制执行商户履约状态变更使用的已支付订单不变量：
+// 每次成功操作在改变状态前都同时持有订单及其配送记录的锁。
 func (s *Service) lockRequiredDelivery(ctx context.Context, tx *gorm.DB, orderID uint64) (DeliveryOrder, error) {
 	delivery, err := s.repo.LockDeliveryByOrder(ctx, tx, orderID)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -868,7 +867,7 @@ func (s *Service) createOutbox(ctx context.Context, tx *gorm.DB, eventType strin
 	return s.createOutboxWithID(ctx, tx, uuid.NewString(), eventType, aggregateType, aggregateID, payload)
 }
 
-// createOutboxWithID 创建发件箱事件 With ID。
+// createOutboxWithID 使用指定 ID 创建发件箱事件。
 func (s *Service) createOutboxWithID(ctx context.Context, tx *gorm.DB, eventID string, eventType string, aggregateType string, aggregateID uint64, payload any) error {
 	return s.repo.CreateOutbox(ctx, tx, OutboxEvent{
 		ID:            s.idGen.Next(),
@@ -906,10 +905,9 @@ func (s *Service) createAudit(ctx context.Context, tx *gorm.DB, actorID uint64, 
 	})
 }
 
-// auditStoreOrderActionFailure persists rejected merchant actions outside the
-// rolled-back business transaction. It deliberately records only coarse
-// request metadata and the stable error code; request bodies, order snapshots
-// and customer data never enter a failure audit.
+// auditStoreOrderActionFailure 在已回滚业务事务之外持久化被拒绝的商户操作。
+// 它刻意只记录粗粒度请求元数据和稳定错误码；请求体、订单快照和客户数据
+// 绝不会进入失败审计。
 func (s *Service) auditStoreOrderActionFailure(ctx context.Context, claims *auth.Claims, method, path, action, orderIDRaw string, observedVersion *int, requestErr error) {
 	if requestErr == nil || s == nil || s.repo == nil || s.repo.DB() == nil || s.idGen == nil {
 		return
@@ -1426,7 +1424,7 @@ func storedAddressSummary(raw datatypes.JSON) (string, string) {
 	return strings.TrimSpace(address), maskContactPhone(stored.ContactPhone)
 }
 
-// pickupSnapshot 返回pickup 快照。
+// pickupSnapshot 返回取货快照。
 func pickupSnapshot(shop Shop) map[string]any {
 	return map[string]any{
 		"shop_id":           idString(shop.ID),
@@ -1451,7 +1449,7 @@ func parseID(raw string) (uint64, error) {
 	return id, nil
 }
 
-// containsID 判断contains ID。
+// containsID 判断集合是否包含指定 ID。
 func containsID(values []uint64, expected uint64) bool {
 	for _, value := range values {
 		if value == expected {

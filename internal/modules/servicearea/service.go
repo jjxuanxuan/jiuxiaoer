@@ -40,14 +40,13 @@ func (s *Service) Resolve(ctx context.Context, input ResolveInput) (ResolveDTO, 
 	return s.resolve(ctx, s.db, input, true)
 }
 
-// ResolveWithDB 返回Resolve With 数据库。
+// ResolveWithDB 使用指定数据库解析服务区。
 func (s *Service) ResolveWithDB(ctx context.Context, db *gorm.DB, input ResolveInput) (ResolveDTO, error) {
 	return s.resolve(ctx, db, input, false)
 }
 
-// Candidates returns at most limit stable straight-line candidates for the
-// customer LBS resolver. It performs the same validation and availability
-// classification as Resolve but does not use the single-shop cache.
+// Candidates 为客户侧 LBS 解析器返回最多 limit 个稳定的直线距离候选项。
+// 它执行与 Resolve 相同的校验和可用性分类，但不使用单门店缓存。
 func (s *Service) Candidates(ctx context.Context, input ResolveInput, limit int) ([]ResolvedShop, error) {
 	return s.CandidatesWithDB(ctx, s.db, input, limit)
 }
@@ -75,7 +74,7 @@ func (s *Service) CandidatesWithDB(ctx context.Context, db *gorm.DB, input Resol
 	return rows, nil
 }
 
-// resolve 返回resolve。
+// resolve 解析服务区。
 func (s *Service) resolve(ctx context.Context, db *gorm.DB, input ResolveInput, allowCache bool) (ResolveDTO, error) {
 	if err := validateInput(input); err != nil {
 		s.metrics.IncServiceArea("location_required", "bypass")
@@ -120,7 +119,7 @@ func (s *Service) resolve(ctx context.Context, db *gorm.DB, input ResolveInput, 
 	return result, nil
 }
 
-// classifyUnavailable 返回classify Unavailable。
+// classifyUnavailable 对不可用原因分类。
 func (s *Service) classifyUnavailable(ctx context.Context, db *gorm.DB, cityCode string, now time.Time) (ResolveDTO, error) {
 	configured, err := s.repo.HasConfiguredCity(ctx, db, cityCode)
 	if err != nil {

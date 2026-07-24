@@ -21,7 +21,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/pkg/snowflake"
 )
 
-// TestCacheBackbonePublishConsumeAndDuplicate100 验证缓存主干 Publish Consume And 重复项 100的预期行为。
+// TestCacheBackbonePublishConsumeAndDuplicate100 验证缓存骨干发布、消费及一百次重复投递。
 func TestCacheBackbonePublishConsumeAndDuplicate100(t *testing.T) {
 	if os.Getenv("JXE_RUN_MQ_INTEGRATION") != "1" {
 		t.Skip("set JXE_RUN_MQ_INTEGRATION=1 and use a clean RabbitMQ test vhost")
@@ -267,7 +267,7 @@ func TestCacheBackbonePublishConsumeAndDuplicate100(t *testing.T) {
 	})
 }
 
-// waitFor 处理wait For相关逻辑。
+// waitFor 等待条件满足。
 func waitFor(t *testing.T, timeout time.Duration, condition func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)

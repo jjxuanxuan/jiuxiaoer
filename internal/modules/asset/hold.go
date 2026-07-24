@@ -329,7 +329,7 @@ func (s *Service) applyHold(ctx context.Context, cmd HoldCommand, commit bool) (
 	return out, err
 }
 
-// holdDTO 返回hold DTO。
+// holdDTO 返回冻结记录 DTO。
 func holdDTO(row Hold) HoldDTO {
 	return HoldDTO{ID: idString(row.ID), HoldNo: row.HoldNo, ReservationKey: row.ReservationKey, AssetType: row.AssetType, Unit: row.Unit, Status: row.Status, OriginalAmount: row.OriginalAmount, CommittedAmount: row.CommittedAmount, ReleasedAmount: row.ReleasedAmount, Version: row.Version}
 }

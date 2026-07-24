@@ -45,7 +45,7 @@ func (s *Service) Profile(ctx context.Context, claims *auth.Claims) (ProfileDTO,
 	return s.profileFor(ctx, customerID)
 }
 
-// profileFor 返回资料 For。
+// profileFor 返回指定客户的会员资料。
 func (s *Service) profileFor(ctx context.Context, customerID uint64) (ProfileDTO, error) {
 	var growth int64
 	err := s.db.WithContext(ctx).Table("asset_accounts a").Select("COALESCE(MAX(b.amount),0)").Joins("LEFT JOIN asset_balances b ON b.account_id=a.id AND b.bucket='available'").Where("a.owner_type='customer' AND a.owner_id=? AND a.asset_type='growth_value'", customerID).Scan(&growth).Error
@@ -135,7 +135,7 @@ func (s *Service) AdminMember(ctx context.Context, claims *auth.Claims, raw stri
 	return s.profileFor(ctx, id)
 }
 
-// CreateRuleSet 创建Rule Set。
+// CreateRuleSet 创建规则集。
 func (s *Service) CreateRuleSet(ctx context.Context, claims *auth.Claims, method, path, key string, req RuleSetCreateReq) (RuleSetDTO, error) {
 	adminID, err := adminActor(claims, "member_rule:create")
 	if err != nil {
@@ -286,7 +286,7 @@ func (s *Service) ListRuleSets(ctx context.Context, claims *auth.Claims, q pagin
 	return out, next, nil
 }
 
-// effectiveRules 返回effective Rules。
+// effectiveRules 返回当前生效的规则。
 func (s *Service) effectiveRules(ctx context.Context, db *gorm.DB) (RuleSet, []Rule, error) {
 	var set RuleSet
 	err := db.WithContext(ctx).Where("status='active' AND effective_at<=?", s.now().UTC()).Order("effective_at DESC,id DESC").Take(&set).Error
@@ -298,7 +298,7 @@ func (s *Service) effectiveRules(ctx context.Context, db *gorm.DB) (RuleSet, []R
 	return set, rules, err
 }
 
-// evaluate 返回evaluate。
+// evaluate 计算会员等级。
 func evaluate(growth int64, rules []Rule) (Rule, *Rule, int64) {
 	current := rules[0]
 	var next *Rule
@@ -317,7 +317,7 @@ func evaluate(growth int64, rules []Rule) (Rule, *Rule, int64) {
 	return current, next, next.MinGrowth - growth
 }
 
-// ruleSetDTO 返回rule Set DTO。
+// ruleSetDTO 返回规则集 DTO。
 func ruleSetDTO(row RuleSet, rules []Rule) RuleSetDTO {
 	dto := RuleSetDTO{ID: idString(row.ID), Version: row.Version, Status: row.Status, EffectiveAt: row.EffectiveAt.UTC().Format(time.RFC3339Nano), Reason: row.Reason, CreatedBy: idString(row.CreatedBy), CreatedAt: row.CreatedAt.UTC().Format(time.RFC3339Nano), UpdatedAt: row.UpdatedAt.UTC().Format(time.RFC3339Nano)}
 	if row.ActivatedBy != nil {
@@ -331,7 +331,7 @@ func ruleSetDTO(row RuleSet, rules []Rule) RuleSetDTO {
 	return dto
 }
 
-// customerActor 返回用户 Actor。
+// customerActor 返回客户审计主体。
 func customerActor(c *auth.Claims) (uint64, error) {
 	if c == nil || c.AccountType != "customer" {
 		return 0, problem.Forbidden("PERM_FORBIDDEN", "customer account required")
@@ -343,7 +343,7 @@ func customerActor(c *auth.Claims) (uint64, error) {
 	return id, nil
 }
 
-// adminActor 返回管理端 Actor。
+// adminActor 返回管理端审计主体。
 func adminActor(c *auth.Claims, permission string) (uint64, error) {
 	if c == nil || c.AccountType != "admin" {
 		return 0, problem.Forbidden("PERM_FORBIDDEN", "admin account required")

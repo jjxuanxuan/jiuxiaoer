@@ -748,7 +748,7 @@ func rawJSON(value datatypes.JSON) json.RawMessage {
 	return json.RawMessage(value)
 }
 
-// parseProductIDFromStockDTO 解析商品ID From 库存DTO。
+// parseProductIDFromStockDTO 从库存 DTO 中解析商品 ID。
 func parseProductIDFromStockDTO(dto StockDTO) uint64 {
 	id, _ := strconv.ParseUint(dto.ProductID, 10, 64)
 	return id

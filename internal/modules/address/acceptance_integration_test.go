@@ -16,7 +16,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/pkg/snowflake"
 )
 
-// TestL2AddressMissingAcceptanceScenarios 验证L 2 地址 Missing 验收 Scenarios的预期行为。
+// TestL2AddressMissingAcceptanceScenarios 验证 L2 地址能力缺失项的验收场景。
 func TestL2AddressMissingAcceptanceScenarios(t *testing.T) {
 	if os.Getenv("JXE_RUN_INTEGRATION") != "1" {
 		t.Skip("set JXE_RUN_INTEGRATION=1 to run L2 address acceptance tests")

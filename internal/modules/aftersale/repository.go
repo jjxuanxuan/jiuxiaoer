@@ -66,7 +66,7 @@ func (r *Repository) ActiveConflicts(ctx context.Context, tx *gorm.DB, orderID u
 	return len(rows) > 0, err
 }
 
-// RefundByAfterSale is used only for an idempotent source replay.
+// RefundByAfterSale 仅用于幂等的来源重放。
 func (r *Repository) RefundByAfterSale(ctx context.Context, tx *gorm.DB, afterSaleID uint64) (Refund, error) {
 	var row Refund
 	err := tx.WithContext(ctx).Where("after_sale_id=? AND deleted_at IS NULL", afterSaleID).Order("id").Take(&row).Error
@@ -255,7 +255,7 @@ func (r *Repository) AddEvidence(ctx context.Context, tx *gorm.DB, rows []Eviden
 	return tx.WithContext(ctx).Create(&rows).Error
 }
 
-// CreateHistory 创建History。
+// CreateHistory 创建售后历史记录。
 func (r *Repository) CreateHistory(ctx context.Context, tx *gorm.DB, row History) error {
 	return tx.WithContext(ctx).Create(&row).Error
 }
@@ -284,9 +284,8 @@ func (r *Repository) LockPayment(ctx context.Context, tx *gorm.DB, orderID uint6
 
 // ReservedRefund 返回Reserved 退款。
 func (r *Repository) ReservedRefund(ctx context.Context, tx *gorm.DB, paymentID uint64) (int64, error) {
-	// A plain aggregate is a snapshot read under MySQL REPEATABLE READ. After
-	// waiting on the payment lock it could miss a refund committed by the prior
-	// owner, so use a locking current read and sum the reserved rows locally.
+	// 普通聚合在 MySQL REPEATABLE READ 下属于快照读。等待支付锁后，
+	// 它可能看不到前一个持有者提交的退款，因此使用加锁当前读并在本地汇总预留记录。
 	var rows []struct{ Amount int64 }
 	err := tx.WithContext(ctx).Table("refunds").Select("amount").Clauses(clause.Locking{Strength: "UPDATE"}).Where("payment_id=? AND status IN ? AND deleted_at IS NULL", paymentID, []string{"creating", "submission_unknown", "pending", "exception"}).Order("id").Find(&rows).Error
 	var amount int64
@@ -317,7 +316,7 @@ func (r *Repository) ApproveItems(ctx context.Context, tx *gorm.DB, items []Item
 	return nil
 }
 
-// CreateReplacement 创建Replacement。
+// CreateReplacement 创建替代退款记录。
 func (r *Repository) CreateReplacement(ctx context.Context, tx *gorm.DB, row Replacement) error {
 	return tx.WithContext(ctx).Create(&row).Error
 }
@@ -333,7 +332,7 @@ func (r *Repository) Replacement(ctx context.Context, tx *gorm.DB, afterSaleID u
 	return row, err
 }
 
-// CreateReturnReceipt 创建Return Receipt。
+// CreateReturnReceipt 创建退货收货记录。
 func (r *Repository) CreateReturnReceipt(ctx context.Context, tx *gorm.DB, row ReturnReceipt) error {
 	return tx.WithContext(ctx).Create(&row).Error
 }
@@ -373,10 +372,10 @@ func (r *Repository) UpdateReplacement(ctx context.Context, tx *gorm.DB, id uint
 	return result.RowsAffected == 1, result.Error
 }
 
-// CreateCompensation 创建Compensation。
+// CreateCompensation 创建补偿记录。
 func (r *Repository) CreateCompensation(ctx context.Context, tx *gorm.DB, row Compensation) error {
 	return tx.WithContext(ctx).Create(&row).Error
 }
 
-// nowPtr 返回now Ptr。
+// nowPtr 返回当前时间指针。
 func nowPtr(t time.Time) *time.Time { return &t }

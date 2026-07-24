@@ -2,9 +2,8 @@ package delivery
 
 import "math"
 
-// Snapshot projections deliberately copy only the documented fulfillment
-// fields. Stored JSON may contain internal verification, provider or identity
-// evidence and must never be returned wholesale to a rider client.
+// 快照投影刻意只复制文档规定的履约字段。已存储 JSON 可能包含内部验证、
+// 服务商或身份凭证，绝不能完整返回给骑手客户端。
 func deliveryPickupSnapshotDTO(snapshot map[string]any) *DeliveryPickupSnapshotDTO {
 	if len(snapshot) == 0 {
 		return nil

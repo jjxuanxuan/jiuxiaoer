@@ -123,7 +123,7 @@ func retryQueueName(consumer string, delay time.Duration) string {
 func DeclareTopology(channel *amqp.Channel, topology Topology) error {
 	for _, exchange := range topology.Exchanges {
 		args := exchangeArguments(exchange)
-		// Alternate exchanges must exist before the main exchange references them.
+		// 备用交换机必须先于引用它们的主交换机存在。
 		if exchange.Name == exchangeName {
 			continue
 		}
@@ -153,7 +153,7 @@ func DeclareTopology(channel *amqp.Channel, topology Topology) error {
 	return nil
 }
 
-// exchangeArguments 返回exchange Arguments。
+// exchangeArguments 返回交换机参数。
 func exchangeArguments(exchange ExchangeSpec) amqp.Table {
 	if exchange.Alternate == "" {
 		return nil
@@ -215,10 +215,9 @@ type managedBinding struct {
 }
 
 // VerifyManagedTopology 核验Managed 拓扑是否有效。
-// VerifyManagedTopology uses RabbitMQ's read-only Management API because AMQP
-// passive declarations do not expose alternate exchange, DLX, or TTL values.
-// The boolean is false when management state is unavailable and callers should
-// return a partial response or fall back to the weaker passive check.
+// VerifyManagedTopology 使用 RabbitMQ 只读管理 API，因为 AMQP 被动声明
+// 不会公开备用交换机、死信交换机或 TTL 值。管理状态不可用时布尔值为 false，
+// 调用方应返回部分响应或降级到较弱的被动检查。
 func VerifyManagedTopology(ctx context.Context, manager *rabbitmq.Manager, topology Topology) ([]TopologyDrift, map[string]QueueObservation, bool) {
 	var exchanges []managedExchange
 	var queues []managedQueue
@@ -297,12 +296,12 @@ func VerifyManagedTopology(ctx context.Context, manager *rabbitmq.Manager, topol
 	return drift, observations, true
 }
 
-// bindingIdentity 返回binding 身份。
+// bindingIdentity 返回绑定标识。
 func bindingIdentity(exchange, queue, routingKey string) string {
 	return exchange + "->" + queue + ":" + routingKey
 }
 
-// topologyArgumentEqual 判断拓扑参数 Equal。
+// topologyArgumentEqual 判断拓扑参数是否相等。
 func topologyArgumentEqual(actual, expected any) bool {
 	if actual == nil || expected == nil {
 		return actual == nil && expected == nil
@@ -315,7 +314,7 @@ func topologyArgumentEqual(actual, expected any) bool {
 	return fmt.Sprint(actual) == fmt.Sprint(expected)
 }
 
-// numericArgument 返回numeric 参数。
+// numericArgument 返回数值参数。
 func numericArgument(value any) (float64, bool) {
 	switch typed := value.(type) {
 	case int:
@@ -343,7 +342,7 @@ func numericArgument(value any) (float64, bool) {
 	}
 }
 
-// unixTimestamp 返回unix Timestamp。
+// unixTimestamp 返回 Unix 时间戳。
 func unixTimestamp(value any) int64 {
 	var timestamp int64
 	switch typed := value.(type) {
@@ -365,8 +364,7 @@ func unixTimestamp(value any) int64 {
 }
 
 // VerifyTopology 核验拓扑是否有效。
-// VerifyTopology is deliberately passive: the admin verify endpoint must not
-// create, delete, or repair broker resources.
+// VerifyTopology 刻意采用被动方式：管理验证接口不得创建、删除或修复代理资源。
 func VerifyTopology(connection *amqp.Connection, topology Topology) []TopologyDrift {
 	drift := make([]TopologyDrift, 0)
 	for _, exchange := range topology.Exchanges {

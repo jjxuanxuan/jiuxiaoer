@@ -66,7 +66,7 @@ func (h Handler) CompatibleHealth(c *gin.Context) {
 	response.WithStatus(c, code, result)
 }
 
-// readiness 返回readiness。
+// readiness 返回依赖就绪状态。
 func (h Handler) readiness(ctx context.Context) (CheckResponse, int) {
 	checks := map[string]string{
 		"mysql":               h.checkMySQL(ctx),

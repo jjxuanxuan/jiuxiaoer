@@ -17,7 +17,8 @@ paths:
         default: { $ref: "#/components/responses/Problem" }
   /auth/customer/send-code:
     post:
-      summary: 发送 C 端 mock 验证码
+      summary: 发送 C 端登录验证码
+      description: 仅发送一次性验证码，不创建 C 端账号；后续短信登录仍要求该手机号已通过当前微信小程序首次登录并完成绑定。
       security: []
       requestBody:
         required: true
@@ -29,7 +30,8 @@ paths:
         default: { $ref: "#/components/responses/Problem" }
   /auth/customer/sms-login:
     post:
-      summary: C 端验证码登录
+      summary: C 端已绑定账号验证码登录
+      description: 仅供已完成当前微信小程序首次登录和手机号绑定的 C 端账号使用。本接口不注册、不创建新账号。
       security: []
       requestBody:
         required: true
@@ -38,10 +40,12 @@ paths:
             schema: { $ref: "#/components/schemas/SmsLoginReq" }
       responses:
         "200": { $ref: "#/components/responses/Token" }
+        "403": { $ref: "#/components/responses/WeChatLoginRequired" }
         default: { $ref: "#/components/responses/Problem" }
   /auth/customer/wechat-login:
     post:
       summary: 微信小程序登录
+      description: C 端首次登录入口；根据当前小程序身份创建或查找账号。响应中 phone_bound 表示是否已绑定手机号；未绑定时应继续调用 phone-bind。
       security: []
       requestBody:
         required: true
@@ -49,11 +53,12 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/WeChatLoginReq" }
       responses:
-        "200": { $ref: "#/components/responses/Token" }
+        "200": { $ref: "#/components/responses/WeChatToken" }
         default: { $ref: "#/components/responses/Problem" }
   /auth/customer/phone-bind:
     post:
       summary: 绑定微信授权手机号
+      description: 为已通过当前微信小程序登录的 C 端账号绑定手机号；绑定成功后，后续可选择微信登录或短信登录。
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -701,6 +706,7 @@ paths:
   /orders/{id}/payments:
     post:
       summary: 创建或复用本人订单的微信支付单
+      description: 要求当前 C 端账号具有当前微信小程序的有效身份且已绑定手机号。缺少有效微信身份时返回 409 WECHAT_IDENTITY_REQUIRED；已有微信身份但未绑定手机号时返回 409 PHONE_BINDING_REQUIRED，且不创建支付记录。
       x-permission: payment:create
       x-object-scope: customer.self_order
       parameters:
@@ -713,6 +719,7 @@ paths:
             schema: { $ref: "#/components/schemas/PaymentCreateReq" }
       responses:
         "200": { $ref: "#/components/responses/Success" }
+        "409": { $ref: "#/components/responses/Problem" }
         default: { $ref: "#/components/responses/Problem" }
   /orders/{id}/payment:
     get:
@@ -2738,6 +2745,23 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/TokenEnvelope" }
+    WeChatToken:
+      description: 微信小程序登录成功，并返回手机号绑定状态
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/WeChatLoginEnvelope" }
+    WeChatLoginRequired:
+      description: 手机号尚未完成当前微信小程序首次登录和绑定，固定返回 AUTH_WECHAT_LOGIN_REQUIRED，且不创建新账号
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/ProblemDetails" }
+          example:
+            type: https://api.jiuxiaoer.com/problems/AUTH_WECHAT_LOGIN_REQUIRED
+            title: Forbidden
+            status: 403
+            detail: complete wechat login and phone binding before sms login
+            error_code: AUTH_WECHAT_LOGIN_REQUIRED
+            request_id: req_xxx
     RealtimeTicket:
       description: 一次性 WebSocket 票据签发成功
       content:
@@ -3092,6 +3116,18 @@ components:
             account_id: { type: string }
             profile: { type: object, additionalProperties: true }
         request_id: { type: string }
+    WeChatLoginEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/TokenEnvelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [phone_bound]
+              properties:
+                phone_bound:
+                  type: boolean
+                  description: 当前 C 端账号是否已绑定手机号
     HealthEnvelope:
       type: object
       required: [code, message, data, request_id]

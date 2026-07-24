@@ -14,7 +14,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/infra/mysql"
 )
 
-// TestConcurrentResolveReturnsStableShop 验证Concurrent Resolve Returns Stable 门店的预期行为。
+// TestConcurrentResolveReturnsStableShop 验证并发解析返回稳定的门店结果。
 func TestConcurrentResolveReturnsStableShop(t *testing.T) {
 	if os.Getenv("JXE_RUN_INTEGRATION") != "1" {
 		t.Skip("set JXE_RUN_INTEGRATION=1 to run MySQL/Redis concurrency test")

@@ -12,7 +12,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/pkg/snowflake"
 )
 
-// TestReturnPolicy 验证Return 策略的预期行为。
+// TestReturnPolicy 验证退货策略。
 func TestReturnPolicy(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -35,7 +35,7 @@ func TestReturnPolicy(t *testing.T) {
 	}
 }
 
-// TestResolutionAllowed 验证Resolution 允许状态的预期行为。
+// TestResolutionAllowed 验证允许的处理结果。
 func TestResolutionAllowed(t *testing.T) {
 	allowed := [][2]string{{"unopened_return", "return_and_refund"}, {"damaged", "refund_only"}, {"damaged", "replacement"}, {"missing_item", "replacement"}, {"out_of_stock", "refund_only"}, {"late_delivery", "compensation"}, {"other", "return_and_refund"}}
 	for _, value := range allowed {
@@ -51,7 +51,7 @@ func TestResolutionAllowed(t *testing.T) {
 	}
 }
 
-// TestEvidenceTokenValidation 验证Evidence 令牌校验的预期行为。
+// TestEvidenceTokenValidation 验证证据令牌。
 func TestEvidenceTokenValidation(t *testing.T) {
 	cfg := config.Load()
 	now := time.Now().UTC()
@@ -85,7 +85,7 @@ func TestEvidenceTokenValidation(t *testing.T) {
 	}
 }
 
-// TestEligibleWindowsAndOrderState 验证Eligible Windows And 订单状态的预期行为。
+// TestEligibleWindowsAndOrderState 验证可申请时间窗口和订单状态。
 func TestEligibleWindowsAndOrderState(t *testing.T) {
 	cfg := config.Load()
 	cfg.AfterSale.StandardWindow = 48 * time.Hour
@@ -125,7 +125,7 @@ func TestEligibleWindowsAndOrderState(t *testing.T) {
 	}
 }
 
-// completed 返回completed。
+// completed 返回已完成的售后记录。
 func completed(at time.Time) OrderRow {
 	return OrderRow{Status: "completed", PayStatus: "succeeded", CompletedAt: &at}
 }

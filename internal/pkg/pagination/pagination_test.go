@@ -9,7 +9,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/pkg/problem"
 )
 
-// TestFromGinAcceptsWhitelistedOrderAndSimpleFilter 验证From Gin Accepts Whitelisted 订单 And 简单操作筛选条件的预期行为。
+// TestFromGinAcceptsWhitelistedOrderAndSimpleFilter 验证 Gin 参数解析接受白名单排序和简单筛选条件。
 func TestFromGinAcceptsWhitelistedOrderAndSimpleFilter(t *testing.T) {
 	c := testContext("/items?page_size=10&order_by=created_at%20desc,id%20asc&filter=status:paid,created_at>=2026-01-01")
 
@@ -25,7 +25,7 @@ func TestFromGinAcceptsWhitelistedOrderAndSimpleFilter(t *testing.T) {
 	}
 }
 
-// TestFromGinRejectsUnknownOrderField 验证From Gin Rejects Unknown 订单 Field的预期行为。
+// TestFromGinRejectsUnknownOrderField 验证 Gin 参数解析拒绝未知排序字段。
 func TestFromGinRejectsUnknownOrderField(t *testing.T) {
 	c := testContext("/items?order_by=deleted_at%20desc")
 
@@ -61,7 +61,7 @@ func TestPageTokenRejectsTamperingAndDifferentActorScope(t *testing.T) {
 	}
 }
 
-// TestFromGinRejectsInvalidFilterSyntax 验证From Gin Rejects 无效筛选条件 Syntax的预期行为。
+// TestFromGinRejectsInvalidFilterSyntax 验证 Gin 参数解析拒绝无效筛选语法。
 func TestFromGinRejectsInvalidFilterSyntax(t *testing.T) {
 	c := testContext("/items?filter=status==(paid")
 
@@ -72,7 +72,7 @@ func TestFromGinRejectsInvalidFilterSyntax(t *testing.T) {
 	assertProblemCode(t, err, "VALIDATION_INVALID_QUERY")
 }
 
-// TestFromGinAcceptsAdditionalWhitelistedOrderFields 验证From Gin Accepts Additional Whitelisted 订单 Fields的预期行为。
+// TestFromGinAcceptsAdditionalWhitelistedOrderFields 验证 Gin 参数解析接受额外的白名单排序字段。
 func TestFromGinAcceptsAdditionalWhitelistedOrderFields(t *testing.T) {
 	c := testContext("/items?order_by=available_qty%20desc,status%20asc")
 
@@ -85,7 +85,7 @@ func TestFromGinAcceptsAdditionalWhitelistedOrderFields(t *testing.T) {
 	}
 }
 
-// TestPageTokenKeepsExactNextOffset 验证分页令牌 Keeps Exact Next Offset的预期行为。
+// TestPageTokenKeepsExactNextOffset 验证分页令牌保留准确的下一页偏移量。
 func TestPageTokenKeepsExactNextOffset(t *testing.T) {
 	first := testContext("/items?page_size=2&order_by=created_at%20desc&filter=status:paid")
 	query, err := FromGin(first)
@@ -103,7 +103,7 @@ func TestPageTokenKeepsExactNextOffset(t *testing.T) {
 	}
 }
 
-// TestPageTokenRejectsChangedQuery 验证分页令牌 Rejects Changed 查询的预期行为。
+// TestPageTokenRejectsChangedQuery 验证分页令牌拒绝发生变化的查询条件。
 func TestPageTokenRejectsChangedQuery(t *testing.T) {
 	first := testContext("/items?page_size=2&filter=status:paid")
 	query, err := FromGin(first)
@@ -119,7 +119,7 @@ func TestPageTokenRejectsChangedQuery(t *testing.T) {
 	assertProblemCode(t, err, "PAGE_TOKEN_INVALID")
 }
 
-// testContext 返回test 上下文。
+// testContext 返回测试上下文。
 func testContext(target string) *gin.Context {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()

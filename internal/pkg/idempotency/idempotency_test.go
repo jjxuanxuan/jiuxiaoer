@@ -14,7 +14,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/pkg/problem"
 )
 
-// TestStartValidatesKeyBeforeUsingDatabase 验证Start Validates 密钥 Before Using Database的预期行为。
+// TestStartValidatesKeyBeforeUsingDatabase 验证 Start 在访问数据库前先校验幂等键。
 func TestStartValidatesKeyBeforeUsingDatabase(t *testing.T) {
 	store := NewStore(nil)
 	for _, key := range []string{"", "short"} {

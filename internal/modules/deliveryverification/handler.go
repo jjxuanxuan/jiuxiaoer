@@ -12,22 +12,22 @@ type Handler struct{ service *Service }
 // NewHandler 创建并初始化Handler。
 func NewHandler(s *Service) *Handler { return &Handler{service: s} }
 
-// RegisterStoreRoutes 注册门店 Routes。
+// RegisterStoreRoutes 注册门店路由。
 func RegisterStoreRoutes(g *gin.RouterGroup, h *Handler) {
 	g.GET("/orders/:id/verification", h.GetStore)
 }
 
-// RegisterCustomerRoutes 注册用户 Routes。
+// RegisterCustomerRoutes 注册客户路由。
 func RegisterCustomerRoutes(g *gin.RouterGroup, h *Handler) {
 	g.GET("/:id/verification", h.GetCustomer)
 }
 
-// RegisterAdminRoutes 注册管理端 Routes。
+// RegisterAdminRoutes 注册管理端路由。
 func RegisterAdminRoutes(g *gin.RouterGroup, h *Handler) {
 	g.POST("/deliveries/:id/verification/unlock", h.Unlock)
 }
 
-// vc 返回vc。
+// vc 返回验证控制器。
 func vc(c *gin.Context) (*auth.Claims, bool) {
 	v, ok := auth.ClaimsFromContext(c)
 	if !ok {

@@ -261,9 +261,8 @@ func (s *Service) AuthorizeShops(ctx context.Context, c *auth.Claims, method, pa
 				return e
 			}
 		}
-		// Shop scope is embedded in access tokens. Invalidate every existing
-		// token in the same transaction so removed shops lose access immediately
-		// instead of remaining writable until the normal token TTL expires.
+		// 门店范围嵌入访问令牌中。在同一事务内使所有现有令牌失效，
+		// 让被移除的门店立即失去访问权，而不是一直可写到正常令牌 TTL 到期。
 		if e := invalidateAccountTokens(tx, merchantUser.AccountID, actor, now); e != nil {
 			return e
 		}
@@ -589,8 +588,8 @@ func (s *Service) updateRider(ctx context.Context, actor uint64, method, path, k
 			now := time.Now()
 			invalidBefore := now
 			if status == "active" {
-				// JWT issued-at precision is one second. Keep a freshly activated
-				// rider's first login valid while still revoking pre-activation tokens.
+				// JWT 的签发时间精度为一秒。既要保留刚激活骑手的首次登录有效性，
+				// 又要吊销激活前签发的令牌。
 				invalidBefore = now.Add(-time.Second)
 			}
 			if e := tx.Table("accounts").Where("id=?", row.AccountID).Updates(map[string]any{"status": status, "token_invalid_before": invalidBefore}).Error; e != nil {
@@ -751,7 +750,7 @@ func identityConflict(e error) error {
 	return e
 }
 
-// randomSecret 返回random 密钥。
+// randomSecret 返回随机密钥。
 func randomSecret() (string, error) {
 	b := make([]byte, 32)
 	if _, e := rand.Read(b); e != nil {
@@ -811,7 +810,7 @@ func parseIDs(v []string) ([]uint64, error) {
 // idString 将数字 ID 转换为字符串。
 func idString(v uint64) string { return strconv.FormatUint(v, 10) }
 
-// null 返回null。
+// null 返回可空字符串值。
 func null(v string) any {
 	if strings.TrimSpace(v) == "" {
 		return nil

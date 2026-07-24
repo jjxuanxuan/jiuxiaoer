@@ -20,12 +20,12 @@ func NewRepository(db *gorm.DB) *Repository {
 	return &Repository{db: db}
 }
 
-// DBConfigured 判断数据库 Configured。
+// DBConfigured 判断数据库是否已配置。
 func (r *Repository) DBConfigured() bool {
 	return r.db != nil
 }
 
-// FindAccountByUsername 查找账户 By Username。
+// FindAccountByUsername 按用户名查找账户。
 func (r *Repository) FindAccountByUsername(ctx context.Context, accountType string, username string) (Account, error) {
 	var account Account
 	err := r.db.WithContext(ctx).
@@ -43,7 +43,7 @@ func (r *Repository) FindAccountByPhone(ctx context.Context, accountType string,
 	return account, err
 }
 
-// FindAccountByID 查找账户 By ID。
+// FindAccountByID 按 ID 查找账户。
 func (r *Repository) FindAccountByID(ctx context.Context, accountID uint64) (Account, error) {
 	var account Account
 	err := r.db.WithContext(ctx).
@@ -52,54 +52,38 @@ func (r *Repository) FindAccountByID(ctx context.Context, accountID uint64) (Acc
 	return account, err
 }
 
-// FindOrCreateCustomerByPhone 查找Or Create 用户 By 手机号。
-func (r *Repository) FindOrCreateCustomerByPhone(ctx context.Context, phone string, nextID func() uint64) (Account, Customer, error) {
-	var account Account
+// FindCustomerForSMSLogin 只查找已完成当前小程序微信首登和手机号绑定的顾客。
+// 短信登录不能在这里创建账号；微信身份条件与支付侧保持一致。
+func (r *Repository) FindCustomerForSMSLogin(ctx context.Context, phone string, appID string) (Account, Customer, error) {
 	var customer Customer
+	err := r.db.WithContext(ctx).
+		Model(&Customer{}).
+		Select("customers.*").
+		Joins("JOIN accounts AS a ON a.id = customers.account_id AND a.deleted_at IS NULL").
+		Where("customers.phone = ? AND customers.deleted_at IS NULL", phone).
+		Where("a.account_type = 'customer' AND a.phone = ?", phone).
+		Where(`EXISTS (
+			SELECT 1
+			FROM customer_identities AS ci
+			WHERE ci.customer_id = customers.id
+				AND ci.provider = 'wechat_miniapp'
+				AND ci.app_id = ?
+				AND ci.status = 'active'
+				AND ci.deleted_at IS NULL
+		)`, appID).
+		First(&customer).Error
+	if err != nil {
+		return Account{}, Customer{}, err
+	}
 
-	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		err := tx.Where("account_type = ? AND phone = ? AND deleted_at IS NULL", "customer", phone).First(&account).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			phoneCopy := phone
-			account = Account{
-				ID:                nextID(),
-				AccountType:       "customer",
-				Phone:             &phoneCopy,
-				Status:            "active",
-				CredentialVersion: 1,
-			}
-			if err := tx.Create(&account).Error; err != nil {
-				return err
-			}
-		} else if err != nil {
-			return err
-		}
-
-		err = tx.Where("account_id = ? AND deleted_at IS NULL", account.ID).First(&customer).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			customer = Customer{
-				ID:        nextID(),
-				AccountID: account.ID,
-				Phone:     phone,
-				Status:    "active",
-			}
-			if err := tx.Create(&customer).Error; err != nil {
-				return err
-			}
-
-			cart := Cart{ID: nextID(), CustomerID: customer.ID}
-			if err := tx.Create(&cart).Error; err != nil {
-				return err
-			}
-			return nil
-		}
-		return err
-	})
-
+	var account Account
+	err = r.db.WithContext(ctx).
+		Where("id = ? AND account_type = 'customer' AND phone = ? AND deleted_at IS NULL", customer.AccountID, phone).
+		First(&account).Error
 	return account, customer, err
 }
 
-// FindOrCreateCustomerByIdentity 查找Or Create 用户 By 身份。
+// FindOrCreateCustomerByIdentity 按身份查找或创建客户。
 func (r *Repository) FindOrCreateCustomerByIdentity(ctx context.Context, result WeChatIdentityResult, nextID func() uint64) (Account, Customer, CustomerIdentity, error) {
 	var account Account
 	var customer Customer
@@ -197,7 +181,7 @@ func (r *Repository) BindCustomerPhone(ctx context.Context, tx *gorm.DB, custome
 	return customer, nil
 }
 
-// TouchLastLogin 返回Touch Last Login。
+// TouchLastLogin 更新最近登录时间。
 func (r *Repository) TouchLastLogin(ctx context.Context, accountID uint64) error {
 	now := time.Now()
 	return r.db.WithContext(ctx).Model(&Account{}).
@@ -224,7 +208,7 @@ func (r *Repository) AdminProfile(ctx context.Context, accountID uint64) (AdminU
 	return admin, roleCode, perms, nil
 }
 
-// PermissionCodesByRole 返回权限 Codes By 角色。
+// PermissionCodesByRole 返回角色对应的权限代码。
 func (r *Repository) PermissionCodesByRole(ctx context.Context, roleID uint64) ([]string, error) {
 	var codes []string
 	err := r.db.WithContext(ctx).

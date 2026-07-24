@@ -11,10 +11,9 @@ import (
 	"testing"
 )
 
-// TestPathResourceCommandsUseResourceScopedRequestHash is a static contract
-// for commands whose Gin path contains a resource parameter. FullPath is a
-// route template, so every listed command must put the concrete resource ID in
-// the request hash instead of relying on path uniqueness.
+// TestPathResourceCommandsUseResourceScopedRequestHash 是针对 Gin 路径中
+// 含资源参数命令的静态契约。FullPath 是路由模板，因此列出的每个命令
+// 都必须把具体资源 ID 纳入请求哈希，而不能依赖路径唯一性。
 func TestPathResourceCommandsUseResourceScopedRequestHash(t *testing.T) {
 	type command struct {
 		file, function, action, resource string

@@ -38,7 +38,7 @@ func requestIDMiddleware() gin.HandlerFunc {
 	}
 }
 
-// accessLogMiddleware 返回access 日志中间件。
+// accessLogMiddleware 返回访问日志中间件。
 func accessLogMiddleware(log *slog.Logger, registry *metrics.Registry) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		startedAt := time.Now()
@@ -80,9 +80,8 @@ func requestLimitsMiddleware(timeout time.Duration, maxBodyBytes int64) gin.Hand
 		if c.Request.Body != nil {
 			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBodyBytes)
 		}
-		// A WebSocket is intentionally long-lived. Keep the header/body limits,
-		// but do not attach the ordinary API request deadline to the upgraded
-		// connection; the realtime runtime owns heartbeat and session deadlines.
+		// WebSocket 按设计是长连接。保留请求头和请求体限制，但不要把普通
+		// API 请求截止时间附加到升级后的连接；心跳和会话截止时间由实时运行时管理。
 		if strings.EqualFold(c.GetHeader("Upgrade"), "websocket") && strings.Contains(strings.ToLower(c.GetHeader("Connection")), "upgrade") {
 			c.Next()
 			return
@@ -116,7 +115,7 @@ func accountType(c *gin.Context) string {
 	return claims.AccountType
 }
 
-// recoveryMiddleware 返回recovery 中间件。
+// recoveryMiddleware 返回异常恢复中间件。
 func recoveryMiddleware(log *slog.Logger) gin.HandlerFunc {
 	return gin.CustomRecovery(func(c *gin.Context, recovered any) {
 		// panic 会被转换为 problem 响应；后续可在这里补充堆栈采集。

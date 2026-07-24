@@ -8,7 +8,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/pkg/problem"
 )
 
-// TestIsStateMismatch 验证Is 状态 Mismatch的预期行为。
+// TestIsStateMismatch 验证状态不匹配判断。
 func TestIsStateMismatch(t *testing.T) {
 	for _, code := range []string{"REFUND_AMOUNT_MISMATCH", "REFUND_PROVIDER_ID_MISMATCH", "REFUND_PAYMENT_MISMATCH", "REFUND_AMOUNT_EXCEEDED", "REFUND_ITEM_AMOUNT_EXCEEDED"} {
 		if !isStateMismatch(problem.Conflict(code, "mismatch")) {

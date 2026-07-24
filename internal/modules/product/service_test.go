@@ -214,8 +214,7 @@ func TestCategoryCacheSwitchesRevisionAfterEveryCategoryMutation(t *testing.T) {
 	assertCategoryNames(t, service, nil)
 	assertRedisKeyExists(t, redisClient, categoryCacheKey(revision))
 
-	// The version switch deliberately leaves old entries to expire naturally;
-	// their continued existence proves no post-mutation request reused them.
+	// 版本切换刻意让旧记录自然过期；它们仍然存在可证明修改后的请求没有复用它们。
 	assertRedisKeyExists(t, redisClient, categoryCacheKey(initialRevision))
 }
 

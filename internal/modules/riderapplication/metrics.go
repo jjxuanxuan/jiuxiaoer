@@ -34,7 +34,7 @@ func newMetricState(db *gorm.DB, registry *metrics.Registry) *metricState {
 	return state
 }
 
-// incSubmission 递增Submission指标计数。
+// incSubmission 递增提交指标计数。
 func (m *metricState) incSubmission(result string) {
 	if m == nil {
 		return
@@ -44,7 +44,7 @@ func (m *metricState) incSubmission(result string) {
 	m.mu.Unlock()
 }
 
-// incReview 递增Review指标计数。
+// incReview 递增审核指标计数。
 func (m *metricState) incReview(decision, result string) {
 	if m == nil {
 		return
@@ -127,7 +127,7 @@ func (m *metricState) collect() []metrics.Sample {
 	return samples
 }
 
-// copyCounts 复制Counts。
+// copyCounts 复制计数映射。
 func copyCounts(source map[string]uint64) map[string]uint64 {
 	target := make(map[string]uint64, len(source))
 	for key, value := range source {
@@ -136,7 +136,7 @@ func copyCounts(source map[string]uint64) map[string]uint64 {
 	return target
 }
 
-// splitMetricKey 返回split 指标密钥。
+// splitMetricKey 拆分指标键。
 func splitMetricKey(value string) [2]string {
 	for index := 0; index < len(value); index++ {
 		if value[index] == 0 {

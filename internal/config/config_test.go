@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// TestProductionConfigRejectsMocksAndDefaultSecrets 验证Production 配置 Rejects Mocks And 默认项 Secrets的预期行为。
+// TestProductionConfigRejectsMocksAndDefaultSecrets 验证生产配置拒绝模拟实现和默认密钥。
 func TestProductionConfigRejectsMocksAndDefaultSecrets(t *testing.T) {
 	cfg := validProductionConfig()
 	cfg.Feature.PaymentMockEnabled = true
@@ -22,7 +22,7 @@ func TestProductionConfigRejectsMocksAndDefaultSecrets(t *testing.T) {
 	}
 }
 
-// TestProductionConfigAcceptsExplicitSafeValues 验证Production 配置 Accepts Explicit Safe Values的预期行为。
+// TestProductionConfigAcceptsExplicitSafeValues 验证生产配置接受显式提供的安全值。
 func TestProductionConfigAcceptsExplicitSafeValues(t *testing.T) {
 	if err := validProductionConfig().Validate(); err != nil {
 		t.Fatalf("expected production config to pass: %v", err)
@@ -128,8 +128,7 @@ func TestCP1ReleaseProfileLoadsFromEnvironment(t *testing.T) {
 func TestCP1CoreOrderGatesLoadFromDocumentedEnvironment(t *testing.T) {
 	t.Setenv("JXE_ORDER_IDEMPOTENCY_ENABLED", "false")
 	t.Setenv("JXE_STOCK_RESERVE_ENABLED", "false")
-	// These look-alike names are intentionally unsupported. Setting them must
-	// never shadow the long-standing runtime configuration keys above.
+	// 这些相似名称刻意不受支持，设置它们绝不能覆盖上方长期使用的运行时配置键。
 	t.Setenv("JXE_FEATURE_ORDER_IDEMPOTENCY_ENABLED", "true")
 	t.Setenv("JXE_FEATURE_STOCK_RESERVE_ENABLED", "true")
 	cfg := Load()
@@ -275,7 +274,7 @@ func TestProductionConfigRequiresTencentCloudSMS(t *testing.T) {
 	}
 }
 
-// TestConfigRejectsInvalidSnowflakeNode 验证配置 Rejects 无效雪花 ID节点的预期行为。
+// TestConfigRejectsInvalidSnowflakeNode 验证配置拒绝无效的雪花节点编号。
 func TestConfigRejectsInvalidSnowflakeNode(t *testing.T) {
 	cfg := Load()
 	cfg.App.SnowflakeNodeID = 1024
@@ -284,7 +283,7 @@ func TestConfigRejectsInvalidSnowflakeNode(t *testing.T) {
 	}
 }
 
-// TestAssetFeatureDependencies 验证资产 Feature Dependencies的预期行为。
+// TestAssetFeatureDependencies 验证资产功能的依赖关系。
 func TestAssetFeatureDependencies(t *testing.T) {
 	cfg := Load()
 	cfg.Asset.WriteEnabled = false

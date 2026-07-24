@@ -7,7 +7,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/config"
 )
 
-// TestTokenPairSharesSessionAndKeepsTokenTypesSeparate 验证令牌配对 Shares 会话 And Keeps 令牌 Types Separate的预期行为。
+// TestTokenPairSharesSessionAndKeepsTokenTypesSeparate 验证令牌对共享会话且令牌类型相互分离。
 func TestTokenPairSharesSessionAndKeepsTokenTypesSeparate(t *testing.T) {
 	manager := NewTokenManager(config.JWTConfig{
 		AccessSecret:  "test-access-secret",
@@ -46,7 +46,7 @@ func TestSessionKeyMatchesPRDShape(t *testing.T) {
 	}
 }
 
-// TestApplicationTokenIsRestrictedAndHasNoRefreshToken 验证申请令牌 Is Restricted And Has 无 Refresh 令牌的预期行为。
+// TestApplicationTokenIsRestrictedAndHasNoRefreshToken 验证申请令牌权限受限且没有刷新令牌。
 func TestApplicationTokenIsRestrictedAndHasNoRefreshToken(t *testing.T) {
 	manager := NewTokenManager(config.JWTConfig{
 		AccessSecret:  "test-access-secret",

@@ -18,15 +18,12 @@ var (
 	providerNamePattern      = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,31}$`)
 )
 
-// ProviderFactory constructs a provider from the validated process
-// configuration. Vendor adapters register their factory during application
-// composition; the registry deliberately does not contain a placeholder
-// production adapter.
+// ProviderFactory 根据已校验的进程配置构造服务商。供应商适配器在应用装配时
+// 注册其工厂；注册表刻意不包含生产占位适配器。
 type ProviderFactory func(context.Context, config.Config) (Provider, error)
 
-// ProviderRegistry owns the provider factories available to a process. A
-// registry may be read while another package registers an adapter, which is
-// useful for modular startup and race-tested integration tests.
+// ProviderRegistry 管理进程可用的服务商工厂。其他包注册适配器时仍可读取注册表，
+// 这有利于模块化启动以及通过竞争检测的集成测试。
 type ProviderRegistry struct {
 	mu        sync.RWMutex
 	factories map[string]ProviderFactory
@@ -36,8 +33,8 @@ func NewProviderRegistry() *ProviderRegistry {
 	return &ProviderRegistry{factories: make(map[string]ProviderFactory)}
 }
 
-// Register adds one named provider factory. Replacing an existing factory is
-// rejected so startup order cannot silently change which adapter is used.
+// Register 添加一个具名服务商工厂。替换现有工厂会被拒绝，
+// 防止启动顺序悄然改变所使用的适配器。
 func (r *ProviderRegistry) Register(name string, factory ProviderFactory) error {
 	name = strings.TrimSpace(name)
 	if !providerNamePattern.MatchString(name) {
@@ -59,8 +56,8 @@ func (r *ProviderRegistry) Register(name string, factory ProviderFactory) error 
 	return nil
 }
 
-// Build constructs the provider named by cfg. Factories execute outside the
-// registry lock so a slow SDK constructor cannot block unrelated lookups.
+// Build 构造 cfg 指定的服务商。工厂在注册表锁之外执行，
+// 避免缓慢的 SDK 构造器阻塞无关查询。
 func (r *ProviderRegistry) Build(ctx context.Context, cfg config.Config) (Provider, error) {
 	name := strings.TrimSpace(cfg.CP1.PrintProvider)
 	if !providerNamePattern.MatchString(name) {
@@ -106,13 +103,13 @@ var defaultProviderRegistry = func() *ProviderRegistry {
 	return registry
 }()
 
-// RegisterProvider exposes the process registry to approved adapter packages.
-// Registration is concurrency-safe and duplicate names are rejected.
+// RegisterProvider 向获批准的适配器包公开进程注册表。
+// 注册过程并发安全，并拒绝重复名称。
 func RegisterProvider(name string, factory ProviderFactory) error {
 	return defaultProviderRegistry.Register(name, factory)
 }
 
-// BuildProvider constructs the provider configured for this process.
+// BuildProvider 构造为当前进程配置的服务商。
 func BuildProvider(ctx context.Context, cfg config.Config) (Provider, error) {
 	return defaultProviderRegistry.Build(ctx, cfg)
 }

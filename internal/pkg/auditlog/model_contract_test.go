@@ -17,10 +17,9 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/modules/store"
 )
 
-// TestTypedAuditModelsExposeStructuredColumns prevents a module-local model
-// from silently bypassing fields populated by the global GORM audit callback.
-// Map-based writers do not need a model and are covered by auditlog's callback
-// tests; every typed writer must expose this common column contract.
+// TestTypedAuditModelsExposeStructuredColumns 防止模块内模型悄然绕过
+// 全局 GORM 审计回调所填充的字段。基于映射的写入器无需模型，
+// 并由 auditlog 的回调测试覆盖；所有强类型写入器都必须公开这套通用列契约。
 func TestTypedAuditModelsExposeStructuredColumns(t *testing.T) {
 	models := map[string]any{
 		"admin":            admin.AuditLog{},

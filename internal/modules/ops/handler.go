@@ -22,7 +22,7 @@ func RegisterRoutes(g *gin.RouterGroup, h *Handler) {
 	g.GET("/deliveries/:id/assignments", h.Assignments)
 }
 
-// oc 返回oc。
+// oc 返回运营控制器。
 func oc(c *gin.Context) (*auth.Claims, bool) {
 	v, ok := auth.ClaimsFromContext(c)
 	if !ok {

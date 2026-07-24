@@ -20,7 +20,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/pkg/snowflake"
 )
 
-// TestMySQLRiderApplicationRejectEditResubmitApproveFlow 验证My SQL 骑手申请 Reject Edit Resubmit Approve Flow的预期行为。
+// TestMySQLRiderApplicationRejectEditResubmitApproveFlow 验证 MySQL 骑手申请的拒绝、编辑、重提和批准流程。
 func TestMySQLRiderApplicationRejectEditResubmitApproveFlow(t *testing.T) {
 	if os.Getenv("JXE_RUN_INTEGRATION") != "1" {
 		t.Skip("set JXE_RUN_INTEGRATION=1 to run rider application integration test")
@@ -259,7 +259,7 @@ func TestMySQLRiderApplicationRejectEditResubmitApproveFlow(t *testing.T) {
 	}
 }
 
-// TestMySQLConcurrentSubmitAndApproveCreateExactlyOneRider 验证My SQL Concurrent Submit And Approve Create Exactly One 骑手的预期行为。
+// TestMySQLConcurrentSubmitAndApproveCreateExactlyOneRider 验证 MySQL 并发提交和批准只创建一个骑手。
 func TestMySQLConcurrentSubmitAndApproveCreateExactlyOneRider(t *testing.T) {
 	if os.Getenv("JXE_RUN_INTEGRATION") != "1" {
 		t.Skip("set JXE_RUN_INTEGRATION=1 to run rider application integration test")
@@ -413,7 +413,7 @@ func TestMySQLConcurrentSubmitAndApproveCreateExactlyOneRider(t *testing.T) {
 	}
 }
 
-// mustTestID 返回must Test ID。
+// mustTestID 解析测试 ID，失败时终止测试。
 func mustTestID(t *testing.T, raw string) uint64 {
 	t.Helper()
 	id, err := strconv.ParseUint(raw, 10, 64)
@@ -441,9 +441,8 @@ func deleteRedisPattern(ctx context.Context, client *goredis.Client, pattern str
 	}
 }
 
-// sendFreshRiderCode resets only the per-minute send cooldown so the integration
-// scenario can exercise independent one-time-code consumptions without sleeping.
-// The daily counter remains intact and continues to cover the production limit.
+// sendFreshRiderCode 只重置每分钟发送冷却时间，使集成场景无需等待即可验证
+// 多次独立的一次性验证码消耗。每日计数器保持不变，继续覆盖生产限制。
 func sendFreshRiderCode(t *testing.T, ctx context.Context, client *goredis.Client, service *auth.Service, phone string) {
 	t.Helper()
 	if err := client.Del(ctx, "rate:sms:login:rider:cooldown:"+phone).Err(); err != nil {

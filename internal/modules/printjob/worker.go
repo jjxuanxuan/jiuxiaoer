@@ -44,14 +44,13 @@ func (w *Worker) Run(ctx context.Context) {
 }
 
 // RunOnce 运行Once处理流程。
-// RunOnce processes one bounded batch for tests, smoke checks, and manual
-// recovery commands without starting a long-lived loop.
+// RunOnce 为测试、冒烟检查和人工恢复命令处理一个有界批次，
+// 不会启动长时间运行的循环。
 func (w *Worker) RunOnce(ctx context.Context) { w.runBatch(ctx) }
 
 // RunTask 运行任务处理流程。
-// RunTask immediately claims a specific MQ-woken task. If another worker has
-// already claimed or completed it, the operation is a safe no-op; the regular
-// DB worker remains the compensation path.
+// RunTask 立即认领由 MQ 唤醒的指定任务。若其他工作进程已认领或完成，
+// 此操作会安全地不执行任何动作；常规数据库工作进程仍作为补偿路径。
 func (w *Worker) RunTask(ctx context.Context, taskID uint64) error {
 	task, setting, ok, err := w.claimTask(ctx, taskID)
 	if err != nil || !ok {
@@ -119,7 +118,7 @@ func (w *Worker) claimTask(ctx context.Context, taskID uint64) (Task, Setting, b
 	return task, setting, task.ID != 0, nil
 }
 
-// execute 处理execute相关逻辑。
+// execute 执行打印任务。
 func (w *Worker) execute(ctx context.Context, task Task, setting Setting) {
 	started := time.Now()
 	if task.ProviderRequestID != nil && task.SubmittedAt != nil {
@@ -246,9 +245,9 @@ func (w *Worker) finish(ctx context.Context, task Task, started time.Time, opera
 	}
 }
 
-// recordUnknownSubmission persists the provider request before any Query. If a
-// worker stops after this transaction, the lease-recovery path queries first
-// instead of submitting a second physical print.
+// recordUnknownSubmission 在任何查询前持久化服务商请求。
+// 如果工作进程在此事务后停止，租约恢复路径会先查询，
+// 而不是再次提交实体打印。
 func (w *Worker) recordUnknownSubmission(ctx context.Context, task Task, started time.Time, providerID string, result PrintResult, callErr error) error {
 	now := time.Now()
 	providerStatus := result.Status
@@ -313,7 +312,7 @@ func taskLeaseOwner(task Task, fallback string) string {
 	return fallback
 }
 
-// backoff 返回backoff。
+// backoff 返回重试退避时间。
 func backoff(attempt uint) time.Duration {
 	values := []time.Duration{10 * time.Second, 30 * time.Second, 2 * time.Minute, 10 * time.Minute, 30 * time.Minute}
 	if attempt == 0 {

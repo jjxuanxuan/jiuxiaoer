@@ -18,8 +18,8 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/pkg/snowflake"
 )
 
-// TestMerchantTicketUsesCurrentDatabaseShopAuthorization verifies that a
-// signed but stale shop list is not enough to open a merchant realtime socket.
+// TestMerchantTicketUsesCurrentDatabaseShopAuthorization 验证：
+// 仅凭已签名但过期的门店列表不足以打开商户实时连接。
 func TestMerchantTicketUsesCurrentDatabaseShopAuthorization(t *testing.T) {
 	db := realtimeSQLite(t)
 	createMerchantRealtimeTables(t, db)
@@ -60,8 +60,8 @@ func TestMerchantTicketUsesCurrentDatabaseShopAuthorization(t *testing.T) {
 	}
 }
 
-// TestMerchantPaidOrderFanoutUsesAuthorizedAccountsAndSafeEvent verifies the
-// payment outbox consumer boundary without relying on a WebSocket client.
+// TestMerchantPaidOrderFanoutUsesAuthorizedAccountsAndSafeEvent 在不依赖
+// WebSocket 客户端的情况下验证支付发件箱消费者边界。
 func TestMerchantPaidOrderFanoutUsesAuthorizedAccountsAndSafeEvent(t *testing.T) {
 	db := realtimeSQLite(t)
 	createMerchantRealtimeTables(t, db)
@@ -123,8 +123,8 @@ func TestMerchantPaidOrderFanoutUsesAuthorizedAccountsAndSafeEvent(t *testing.T)
 	}
 }
 
-// TestMerchantHubRejectsCrossShopAndDeduplicatesEventID verifies the final
-// delivery-time authorization check and duplicate-popup guard.
+// TestMerchantHubRejectsCrossShopAndDeduplicatesEventID 验证最终投递时的
+// 授权检查和重复弹窗保护。
 func TestMerchantHubRejectsCrossShopAndDeduplicatesEventID(t *testing.T) {
 	db := realtimeSQLite(t)
 	createMerchantRealtimeTables(t, db)
@@ -176,8 +176,8 @@ func TestMerchantHubRejectsCrossShopAndDeduplicatesEventID(t *testing.T) {
 	}
 }
 
-// TestMerchantReconnectExplicitlyRequiresOrderListResync verifies that the
-// transient WS channel never pretends it can replay order facts.
+// TestMerchantReconnectExplicitlyRequiresOrderListResync 验证临时
+// WebSocket 通道绝不会假装能够重放订单事实。
 func TestMerchantReconnectExplicitlyRequiresOrderListResync(t *testing.T) {
 	hub := NewHub(realtimeTestConfig().Realtime, nil, nil, nil, nil)
 	target := &connection{info: TicketInfo{RecipientType: recipientMerchant, RecipientID: 101}, send: make(chan ServerFrame, 3)}

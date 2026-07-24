@@ -21,8 +21,8 @@ const (
 
 var ErrInvalid = errors.New("invalid or expired evidence view token")
 
-// Claims is the encrypted contract consumed by the private media gateway. The
-// object key is never exposed in clear text to API clients.
+// Claims 是私有媒体网关使用的加密契约。对象键绝不会以明文形式
+// 暴露给 API 客户端。
 type Claims struct {
 	Version    int    `json:"v"`
 	Purpose    string `json:"purpose"`
@@ -108,8 +108,8 @@ func (s *Signer) Sign(input Input) (Result, error) {
 	return Result{URL: target.String(), ExpiresAt: expiresAt}, nil
 }
 
-// Open is the media-gateway side of the contract. It decrypts and validates an
-// opaque token without accepting an object key from the caller.
+// Open 是媒体网关侧的契约实现。它解密并校验不透明令牌，
+// 且不接受调用方提供的对象键。
 func Open(secret, token string, now time.Time) (Claims, error) {
 	plaintext, err := securevalue.Open(strings.TrimSpace(secret), []byte(strings.TrimSpace(token)))
 	if err != nil {

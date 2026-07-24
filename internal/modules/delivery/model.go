@@ -65,8 +65,8 @@ type Order struct {
 // TableName 返回当前数据模型对应的数据库表名。
 func (Order) TableName() string { return "orders" }
 
-// OrderItem is a historical order line. ProductSnapshot is deliberately used
-// by delivery detail so later catalog edits do not rewrite what the rider saw.
+// OrderItem 是历史订单明细。配送详情刻意使用 ProductSnapshot，
+// 避免后续商品目录修改改写骑手曾看到的内容。
 type OrderItem struct {
 	ID              uint64
 	OrderID         uint64
@@ -83,8 +83,8 @@ type OrderItem struct {
 // TableName 返回当前数据模型对应的数据库表名。
 func (OrderItem) TableName() string { return "order_items" }
 
-// Shop contains only the store fields needed by an assigned rider. Contact and
-// address history still comes from DeliveryOrder.PickupSnapshot.
+// Shop 只包含已分配骑手所需的门店字段。
+// 联系人与地址历史仍来自 DeliveryOrder.PickupSnapshot。
 type Shop struct {
 	ID               uint64
 	Name             string

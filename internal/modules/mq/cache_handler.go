@@ -24,7 +24,7 @@ type cacheInvalidationPayload struct {
 	Reason   string   `json:"reason"`
 }
 
-// NewCacheInvalidationHandler 创建并初始化缓存 Invalidation Handler。
+// NewCacheInvalidationHandler 创建并初始化缓存失效处理器。
 func NewCacheInvalidationHandler(redisClient *goredis.Client) *CacheInvalidationHandler {
 	return &CacheInvalidationHandler{redis: redisClient}
 }

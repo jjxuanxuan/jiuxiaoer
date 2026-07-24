@@ -11,14 +11,14 @@ import (
 )
 
 var (
-	// ErrInvalid deliberately does not reveal which claim failed validation.
+	// ErrInvalid 刻意不暴露具体哪个声明校验失败。
 	ErrInvalid = errors.New("invalid or expired evidence token")
-	// ErrScanPending lets callers distinguish a retryable security scan.
+	// ErrScanPending 让调用方能够识别可重试的安全扫描。
 	ErrScanPending = errors.New("evidence scan is pending")
 )
 
-// Claims is the upload service contract shared by after-sale and delivery
-// incident evidence. RegisteredClaims carries iss/aud/sub/jti/time claims.
+// Claims 是售后与配送异常证据共用的上传服务契约。
+// RegisteredClaims 承载 iss、aud、sub、jti 和时间声明。
 type Claims struct {
 	Purpose    string `json:"purpose,omitempty"`
 	ObjectKey  string `json:"object_key"`
@@ -33,8 +33,8 @@ type MediaRule struct {
 	MaxBytes uint64
 }
 
-// Policy keeps legacy after-sale semantics and the stricter delivery-incident
-// semantics separate while using one parser and signature implementation.
+// Policy 在共用同一套解析和签名实现的同时，将旧版售后语义与
+// 更严格的配送异常语义分开。
 type Policy struct {
 	Secret            string
 	Issuer            string
@@ -59,8 +59,8 @@ type Metadata struct {
 	ScanStatus string
 }
 
-// Verify validates an upload token without downloading the media. Callers must
-// never log rawToken or Metadata.ObjectKey.
+// Verify 在不下载媒体文件的情况下校验上传令牌。调用方绝不能记录
+// rawToken 或 Metadata.ObjectKey。
 func Verify(rawToken string, policy Policy) (Metadata, error) {
 	if strings.TrimSpace(rawToken) == "" || policy.Secret == "" || policy.Subject == "" {
 		return Metadata{}, ErrInvalid

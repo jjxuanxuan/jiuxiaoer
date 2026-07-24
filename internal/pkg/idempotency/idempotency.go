@@ -59,14 +59,12 @@ func RequestHash(value any) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// ResourceRequestHash binds an idempotent command to the concrete resource it
-// targets. Gin's FullPath returns a route template (for example
-// /orders/:id/cancel), so hashing only the request body would allow the same
-// actor/key/body tuple to replay a response produced for a different order.
+// ResourceRequestHash 将幂等命令绑定到其目标具体资源。Gin 的 FullPath
+// 返回路由模板（例如 /orders/:id/cancel），因此如果只对请求体做哈希，
+// 同一参与者、键和请求体组合可能重放为其他订单生成的响应。
 //
-// action is normalized because it is a protocol discriminator, not user data.
-// resourceID and body retain their JSON representation so callers can use a
-// numeric ID, a stable business number, or a composite resource reference.
+// action 是协议判别值而非用户数据，因此会被规范化。resourceID 和 body
+// 保留其 JSON 表示，使调用方可以使用数字 ID、稳定业务编号或复合资源引用。
 func ResourceRequestHash(action string, resourceID any, body any) string {
 	return RequestHash(struct {
 		Action     string `json:"action"`
@@ -176,10 +174,9 @@ func (s *Store) CachedResponse(ctx context.Context, tx *gorm.DB, actorType strin
 	return true, nil
 }
 
-// ReplayCompleted is a non-mutating fast path used before expensive external
-// precomputation. It rejects a key bound to different request data and an
-// unexpired processing lease early. The transactional Start call remains the
-// authority for new requests and reclaiming expired or failed attempts.
+// ReplayCompleted 是昂贵外部预计算前使用的无修改快速路径。它会提前拒绝
+// 已绑定其他请求数据的键和未过期的处理租约。事务内的 Start 调用仍是
+// 新请求以及重新认领已过期或失败尝试的权威入口。
 func (s *Store) ReplayCompleted(ctx context.Context, db *gorm.DB, actorType string, actorID uint64, path, key, requestHash string, out any) (bool, error) {
 	if key == "" || db == nil {
 		return false, nil
@@ -222,8 +219,7 @@ func existingClaimResult(existing Record, requestHash string, now time.Time) (bo
 	if existing.Status == "processing" && existing.LockedUntil != nil && existing.LockedUntil.After(now) {
 		return false, idempotencyInProgress()
 	}
-	// A no-op upsert for any other non-terminal state means another transaction
-	// won the claim before this transaction could inspect it.
+	// 对其他非终态执行无操作更新插入，表示另一事务已在本事务检查前赢得认领。
 	return false, idempotencyInProgress()
 }
 

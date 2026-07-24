@@ -7,7 +7,7 @@ const (
 	ScopeCity   = "city"
 )
 
-// History stores one normalized keyword per customer.
+// History 为每个客户存储一个规范化关键词。
 type History struct {
 	ID                uint64 `gorm:"primaryKey;autoIncrement:false"`
 	CustomerID        uint64 `gorm:"uniqueIndex:uk_customer_search_history_keyword"`
@@ -21,7 +21,7 @@ type History struct {
 
 func (History) TableName() string { return "customer_search_histories" }
 
-// DailyStat is the durable, anonymous source of truth for hot rankings.
+// DailyStat 是热词排行持久且匿名的事实来源。
 type DailyStat struct {
 	ID                uint64    `gorm:"primaryKey;autoIncrement:false"`
 	StatDate          time.Time `gorm:"uniqueIndex:uk_search_keyword_daily_scope"`

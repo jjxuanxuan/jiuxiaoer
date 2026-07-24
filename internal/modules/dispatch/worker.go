@@ -92,11 +92,11 @@ func (s *Service) ProcessJobID(ctx context.Context, jobID uint64) error {
 	return s.processJob(ctx, jobID, "")
 }
 
-// processJob 返回process 任务。
+// processJob 处理派单任务。
 func (s *Service) processJob(ctx context.Context, jobID uint64, leaseToken string) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Match CommitAssignment's delivery -> job lock order. A non-locking
-		// probe is safe because delivery_order_id is immutable.
+		// 与 CommitAssignment 的“配送 → 任务”加锁顺序保持一致。
+		// 由于 delivery_order_id 不可变，无锁探测是安全的。
 		var probe Job
 		if err := tx.Select("id,delivery_order_id").First(&probe, jobID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil
@@ -184,7 +184,7 @@ func (s *Service) processJob(ctx context.Context, jobID uint64, leaseToken strin
 	})
 }
 
-// scoreCandidates 返回score Candidates。
+// scoreCandidates 为候选骑手评分。
 func (s *Service) scoreCandidates(ctx context.Context, tx *gorm.DB, job Job, policy PolicySnapshot) error {
 	var existing int64
 	if err := tx.Model(&Candidate{}).Where("job_id=?", job.ID).Count(&existing).Error; err != nil {
@@ -240,9 +240,8 @@ func (s *Service) scoreCandidates(ctx context.Context, tx *gorm.DB, job Job, pol
 		if err := baseQuery().Where("r.id IN ?", preselected).Scan(&sources).Error; err != nil {
 			return err
 		}
-		// GEO is an accelerator, never the source of truth. Always inspect a
-		// bounded DB fallback set as well so a partially rebuilt or stale Redis
-		// index cannot suppress every otherwise eligible rider.
+		// GEO 只是加速器，绝不是事实来源。始终还要检查有界的数据库降级集合，
+		// 避免部分重建或过期的 Redis 索引屏蔽所有本应符合条件的骑手。
 		var fallback []sourceRow
 		if err := baseQuery().Where("r.id NOT IN ?", preselected).Scan(&fallback).Error; err != nil {
 			return err
@@ -335,7 +334,7 @@ func (s *Service) scoreCandidates(ctx context.Context, tx *gorm.DB, job Job, pol
 	return nil
 }
 
-// sortScoredCandidates 处理sort Scored Candidates相关逻辑。
+// sortScoredCandidates 对已评分候选骑手排序。
 func sortScoredCandidates(scores []scoredCandidate) {
 	sort.SliceStable(scores, func(i, j int) bool {
 		a, b := scores[i], scores[j]
@@ -355,7 +354,7 @@ func sortScoredCandidates(scores []scoredCandidate) {
 	})
 }
 
-// createNextOfferOrFallback 创建Next Offer Or 降级。
+// createNextOfferOrFallback 创建下一次派单，必要时执行降级处理。
 func (s *Service) createNextOfferOrFallback(ctx context.Context, tx *gorm.DB, job *Job, delivery *DeliveryOrder, policy PolicySnapshot) error {
 	maxRounds := uint(policy.AutoRounds)
 	if uint(policy.OfferCandidateLimit) < maxRounds {
@@ -464,7 +463,7 @@ func (s *Service) recordJobFailure(ctx context.Context, jobID uint64, token stri
 	})
 }
 
-// safeError 返回safe 错误。
+// safeError 返回可安全记录的错误信息。
 func safeError(err error) string {
 	if err == nil {
 		return ""
@@ -476,7 +475,7 @@ func safeError(err error) string {
 	return message
 }
 
-// ageSeconds 返回age Seconds。
+// ageSeconds 返回经过的秒数。
 func ageSeconds(now time.Time, value *time.Time) *uint {
 	if value == nil {
 		return nil
@@ -489,7 +488,7 @@ func ageSeconds(now time.Time, value *time.Time) *uint {
 	return &result
 }
 
-// haversineMeters 返回haversine Meters。
+// haversineMeters 返回 Haversine 距离米数。
 func haversineMeters(lat1, lon1, lat2, lon2 float64) float64 {
 	const radius = 6371000.0
 	toRad := math.Pi / 180
@@ -498,7 +497,7 @@ func haversineMeters(lat1, lon1, lat2, lon2 float64) float64 {
 	return radius * 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
 }
 
-// scoreDistance 返回score Distance。
+// scoreDistance 返回距离评分。
 func scoreDistance(distance *uint, max uint) float64 {
 	if distance == nil || max == 0 {
 		return 0
@@ -506,7 +505,7 @@ func scoreDistance(distance *uint, max uint) float64 {
 	return clamp(100*(1-float64(*distance)/float64(max)), 0, 100)
 }
 
-// clamp 返回clamp。
+// clamp 将数值限制在指定范围内。
 func clamp(value, minimum, maximum float64) float64 {
 	if value < minimum {
 		return minimum
@@ -517,10 +516,10 @@ func clamp(value, minimum, maximum float64) float64 {
 	return value
 }
 
-// round4 返回round 4。
+// round4 将数值四舍五入到四位小数。
 func round4(value float64) float64 { return math.Round(value*10000) / 10000 }
 
-// floatPtr 返回float Ptr。
+// floatPtr 返回浮点数指针。
 func floatPtr(value float64) *float64 { return &value }
 
 // value 返回值。

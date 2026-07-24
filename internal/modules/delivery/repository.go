@@ -26,8 +26,8 @@ func (r *Repository) DB() *gorm.DB {
 // List 查询配送 Order列表列表。
 func (r *Repository) List(ctx context.Context, riderID uint64, status string, query pagination.Query) ([]DeliveryOrder, error) {
 	// 骑手只能看到服务范围内的待接任务，以及已经分配给自己的任务。
-	// The correlated EXISTS keeps the disclosure check in the same SQL statement as
-	// pagination, so an inactive/unapproved rider cannot enumerate pending work.
+	// 关联 EXISTS 将信息披露检查与分页保持在同一 SQL 语句中，
+	// 使停用或未审核骑手无法枚举待处理任务。
 	db := r.db.WithContext(ctx).Model(&DeliveryOrder{}).
 		Select(`delivery_orders.*,
 			shops.name AS shop_name,
@@ -85,10 +85,9 @@ func (r *Repository) List(ctx context.Context, riderID uint64, status string, qu
 	return rows, err
 }
 
-// Detail reads an assigned delivery and all of its immutable fulfillment
-// context in one transaction. The correlated active-assignment predicate is
-// the disclosure boundary: a candidate, a superseded rider, and an unrelated
-// rider are indistinguishable from a missing delivery.
+// Detail 在一个事务中读取已分配配送及其全部不可变履约上下文。
+// 关联的有效分配条件是信息披露边界：对候选骑手、已被替换骑手和无关骑手而言，
+// 该配送均表现为不存在。
 func (r *Repository) Detail(ctx context.Context, riderID uint64, deliveryID uint64) (DeliveryOrder, Order, Shop, []OrderItem, error) {
 	var deliveryRow DeliveryOrder
 	var orderRow Order
@@ -119,8 +118,8 @@ func (r *Repository) Detail(ctx context.Context, riderID uint64, deliveryID uint
 	return deliveryRow, orderRow, shopRow, items, err
 }
 
-// AssignedSummary reloads the post-assignment row so an accept response carries
-// the same typed fulfillment snapshots as an assigned list item.
+// AssignedSummary 重新加载分配后的记录，使接单响应携带与已分配列表项
+// 相同的强类型履约快照。
 func (r *Repository) AssignedSummary(ctx context.Context, riderID, deliveryID uint64) (DeliveryOrder, error) {
 	var row DeliveryOrder
 	err := r.db.WithContext(ctx).

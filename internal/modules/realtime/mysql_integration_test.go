@@ -17,7 +17,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/pkg/snowflake"
 )
 
-// TestMySQLRealtimeAcknowledgementAndResumeContract 验证My SQL 实时消息 Acknowledgement And Resume Contract的预期行为。
+// TestMySQLRealtimeAcknowledgementAndResumeContract 验证 MySQL 实时确认和续传契约。
 func TestMySQLRealtimeAcknowledgementAndResumeContract(t *testing.T) {
 	if os.Getenv("JXE_RUN_INTEGRATION") != "1" {
 		t.Skip("set JXE_RUN_INTEGRATION=1 to run realtime MySQL integration test")
@@ -91,5 +91,5 @@ func TestMySQLRealtimeAcknowledgementAndResumeContract(t *testing.T) {
 	}
 }
 
-// idStringForTest 返回ID字符串 For Test。
+// idStringForTest 返回测试使用的 ID 字符串。
 func idStringForTest(id uint64) string { return snowflake.String(id) }

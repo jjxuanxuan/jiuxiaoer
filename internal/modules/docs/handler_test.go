@@ -11,7 +11,7 @@ import (
 	"github.com/goccy/go-yaml"
 )
 
-// TestOpenAPIAndSwaggerRoutes 验证打开 API And Swagger Routes的预期行为。
+// TestOpenAPIAndSwaggerRoutes 验证 OpenAPI 和 Swagger 路由。
 func TestOpenAPIAndSwaggerRoutes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
@@ -83,9 +83,8 @@ type operationContract struct {
 	responseRef string
 }
 
-// assertPhaseOneBusinessContracts prevents the public document from falling
-// back to permissive Page/Success schemas or losing the exact authorization
-// boundary while handlers continue to enforce it.
+// assertPhaseOneBusinessContracts 防止公开文档退回宽松的 Page 或 Success
+// 模式，也防止在处理器仍强制执行时丢失精确授权边界。
 func assertPhaseOneBusinessContracts(t *testing.T, content []byte) {
 	t.Helper()
 	var document map[string]any
@@ -489,7 +488,7 @@ func assertOpenAPIRefsResolve(t *testing.T, content []byte) {
 	walk(document)
 }
 
-// componentRefExists 判断component Ref Exists。
+// componentRefExists 判断组件引用是否存在。
 func componentRefExists(document map[string]any, ref string) bool {
 	current := any(document)
 	for _, segment := range strings.Split(strings.TrimPrefix(ref, "#/"), "/") {

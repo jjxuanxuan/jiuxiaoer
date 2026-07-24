@@ -24,7 +24,7 @@ import (
 	rabbitinfra "jiuxiaoer-admin/backend-go/internal/infra/rabbitmq"
 )
 
-// TestEventEnvelopeV1AndSensitivePayloadGuard 验证事件消息信封 V 1 And 敏感信息载荷 Guard的预期行为。
+// TestEventEnvelopeV1AndSensitivePayloadGuard 验证 V1 事件信封和敏感载荷保护。
 func TestEventEnvelopeV1AndSensitivePayloadGuard(t *testing.T) {
 	registry := MustDefaultEventRegistry()
 	definition, _ := registry.Lookup("cache.invalidate")
@@ -48,7 +48,7 @@ func TestEventEnvelopeV1AndSensitivePayloadGuard(t *testing.T) {
 	}
 }
 
-// TestEnvelopeIgnoresUnknownOptionalFields 验证消息信封 Ignores Unknown Optional Fields的预期行为。
+// TestEnvelopeIgnoresUnknownOptionalFields 验证消息信封忽略未知可选字段。
 func TestEnvelopeIgnoresUnknownOptionalFields(t *testing.T) {
 	registry := MustDefaultEventRegistry()
 	definition, _ := registry.Lookup("cache.invalidate")
@@ -64,7 +64,7 @@ func TestEnvelopeIgnoresUnknownOptionalFields(t *testing.T) {
 	}
 }
 
-// TestRegistryRoutableEventsHaveConsumerBindings 验证注册表 Routable Events Have 消费者 Bindings的预期行为。
+// TestRegistryRoutableEventsHaveConsumerBindings 验证注册表中可路由事件具有消费者绑定。
 func TestRegistryRoutableEventsHaveConsumerBindings(t *testing.T) {
 	registry := MustDefaultEventRegistry()
 	topology := DefaultTopology()
@@ -89,9 +89,9 @@ func TestRegistryRoutableEventsHaveConsumerBindings(t *testing.T) {
 	}
 }
 
-// TestPaidOrderEventRoutesToRealtime ensures the committed payment fact can
-// reach the merchant WebSocket consumer. The consumer receipt keyed by
-// (consumer_name,event_id) remains the duplicate-delivery fence.
+// TestPaidOrderEventRoutesToRealtime 确保已提交的支付事实可以到达商户
+// WebSocket 消费者。以 (consumer_name,event_id) 为键的消费者回执
+// 仍作为重复投递屏障。
 func TestPaidOrderEventRoutesToRealtime(t *testing.T) {
 	registry := MustDefaultEventRegistry()
 	topology := DefaultTopology()
@@ -121,9 +121,9 @@ func TestPaidOrderEventRoutesToRealtime(t *testing.T) {
 			t.Fatalf("%s has no realtime queue binding", eventType)
 		}
 	}
-	// order.paid is the only event emitted by the current payment success
-	// transaction. Keeping payment.succeeded out of realtime prevents a future
-	// compatibility alias from producing a second popup for the same payment.
+	// order.paid 是当前支付成功事务发出的唯一事件。
+	// 不让 payment.succeeded 进入实时通道，可防止未来兼容别名
+	// 为同一笔支付产生第二个弹窗。
 	legacy, _ := registry.Lookup("payment.succeeded")
 	for _, consumer := range legacy.Consumers {
 		if consumer == "realtime" {
@@ -132,7 +132,7 @@ func TestPaidOrderEventRoutesToRealtime(t *testing.T) {
 	}
 }
 
-// TestAllLiteralOutboxEventsAreRegistered 验证All Literal 发件箱事件 Events Are Registered的预期行为。
+// TestAllLiteralOutboxEventsAreRegistered 验证所有字面量发件箱事件均已注册。
 func TestAllLiteralOutboxEventsAreRegistered(t *testing.T) {
 	registry := MustDefaultEventRegistry()
 	emitted := collectLiteralOutboxEvents(t, "..")
@@ -152,7 +152,7 @@ func TestAllLiteralOutboxEventsAreRegistered(t *testing.T) {
 	}
 }
 
-// TestTopologyHasIsolatedRetryAndDeadQueues 验证拓扑 Has Isolated 重试 And 死信 Queues的预期行为。
+// TestTopologyHasIsolatedRetryAndDeadQueues 验证拓扑具有隔离的重试队列和死信队列。
 func TestTopologyHasIsolatedRetryAndDeadQueues(t *testing.T) {
 	topology := DefaultTopology()
 	seen := map[string]bool{}
@@ -174,7 +174,7 @@ func TestTopologyHasIsolatedRetryAndDeadQueues(t *testing.T) {
 	}
 }
 
-// TestManagedTopologyDetectsAlternateExchangeArgumentDrift 验证Managed 拓扑 Detects Alternate Exchange 参数 Drift的预期行为。
+// TestManagedTopologyDetectsAlternateExchangeArgumentDrift 验证受管拓扑能发现备用交换机参数偏移。
 func TestManagedTopologyDetectsAlternateExchangeArgumentDrift(t *testing.T) {
 	topology := DefaultTopology()
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
@@ -185,7 +185,7 @@ func TestManagedTopologyDetectsAlternateExchangeArgumentDrift(t *testing.T) {
 			for _, exchange := range topology.Exchanges {
 				arguments := exchangeArguments(exchange)
 				if exchange.Name == exchangeName {
-					arguments = nil // Simulate the legacy exchange without alternate-exchange.
+					arguments = nil // 模拟没有备用交换机的旧版交换机。
 				}
 				items = append(items, map[string]any{"name": exchange.Name, "type": exchange.Kind, "durable": exchange.Durable, "arguments": arguments})
 			}
@@ -230,7 +230,7 @@ func TestManagedTopologyDetectsAlternateExchangeArgumentDrift(t *testing.T) {
 	}
 }
 
-// TestRegistrySchemaFilesExistAndAreValidJSON 验证注册表 Schema Files 存在 And Are 有效JSON的预期行为。
+// TestRegistrySchemaFilesExistAndAreValidJSON 验证注册表模式文件存在且为有效 JSON。
 func TestRegistrySchemaFilesExistAndAreValidJSON(t *testing.T) {
 	seen := map[string]bool{}
 	for _, definition := range MustDefaultEventRegistry().Definitions() {
@@ -313,7 +313,7 @@ func addEventLiteral(result map[string]bool, expression ast.Expr) {
 	}
 }
 
-// calledName 返回called Name。
+// calledName 返回已调用的处理器名称。
 func calledName(expression ast.Expr) string {
 	switch typed := expression.(type) {
 	case *ast.Ident:
@@ -325,7 +325,7 @@ func calledName(expression ast.Expr) string {
 	}
 }
 
-// topicMatches 判断topic Matches。
+// topicMatches 判断主题是否匹配。
 func topicMatches(pattern, routingKey string) bool {
 	patternParts, keyParts := strings.Split(pattern, "."), strings.Split(routingKey, ".")
 	for len(patternParts) > 0 {

@@ -150,8 +150,8 @@ func (s *Service) ListDiscrepancies(ctx context.Context, claims *auth.Claims, st
 	return result, nil
 }
 
-// ResolveDiscrepancy records an explicit human disposition. It deliberately
-// does not update payments, refunds, orders, or any balance.
+// ResolveDiscrepancy 记录明确的人工处置结果。
+// 它刻意不更新支付、退款、订单或任何余额。
 func (s *Service) ResolveDiscrepancy(ctx context.Context, claims *auth.Claims, rawID, note string) error {
 	actorID, err := reconciliationAdmin(claims, "refund:exception")
 	if err != nil {

@@ -1,16 +1,15 @@
 -- +goose Up
--- quantity_delta remains the available-to-sell movement so every ledger row
--- satisfies before_available_qty + quantity_delta = after_available_qty.
--- Physical inventory movement is recorded independently: reservation/release
--- only moves buckets, while payment deducts total inventory without changing
--- the already-reserved available quantity.
+-- quantity_delta 仍表示可售数量变动，使每条账本记录都满足
+-- before_available_qty + quantity_delta = after_available_qty。
+-- 实物库存变动独立记录：预留和释放只在桶之间移动，
+-- 支付会扣减总库存，但不改变已经预留的可售数量。
 ALTER TABLE stock_records
   ADD COLUMN total_quantity_delta INT NULL AFTER after_available_qty,
   ADD COLUMN before_total_qty INT NULL AFTER total_quantity_delta,
   ADD COLUMN after_total_qty INT NULL AFTER before_total_qty;
 
--- Preserve the legacy payment deduction before normalising quantity_delta to
--- its now-explicit available-quantity meaning.
+-- 在将 quantity_delta 规范为明确的可售数量含义前，
+-- 先保留旧版支付扣减值。
 UPDATE stock_records
 SET total_quantity_delta = CASE
   WHEN change_type IN ('reserve', 'release') THEN 0
@@ -25,10 +24,9 @@ WHERE deleted_at IS NULL
   AND source_type = 'payment'
   AND before_available_qty = after_available_qty;
 
--- Reconstruct the historical total ledger backwards from the current stock
--- fact. The latest row ends at current total; each earlier row subtracts all
--- later physical deltas. Rows without a live stock fact intentionally remain
--- NULL so the migration fails instead of silently inventing inventory.
+-- 从当前库存事实向后重建历史总库存账本。最新记录终止于当前总量；
+-- 每条更早记录都减去其后的所有实物变动。没有现存库存事实的记录刻意保留 NULL，
+-- 使迁移失败，而不是悄然虚构库存。
 UPDATE stock_records sr
 JOIN (
   SELECT

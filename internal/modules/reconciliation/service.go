@@ -2,7 +2,7 @@ package reconciliation
 
 import (
 	"context"
-	"crypto/sha1" // #nosec G505 -- WeChat fixes bill digest verification to SHA1.
+	"crypto/sha1" // #nosec G505 -- 微信固定使用 SHA1 验证账单摘要。
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -49,8 +49,8 @@ func NewService(cfg config.Config, db *gorm.DB, ids *snowflake.Generator, provid
 	return &Service{cfg: cfg, repo: newRepository(db), ids: ids, provider: provider, idem: idempotency.NewStore(db), log: log, now: time.Now}
 }
 
-// RunBill reconciles one immutable date/type. A successful or no-statement run
-// is idempotent and is not downloaded twice.
+// RunBill 对账一个不可变的日期和类型。成功或无账单的运行具备幂等性，
+// 不会重复下载。
 func (s *Service) RunBill(ctx context.Context, billDate time.Time, billType string) (RunResult, error) {
 	billDate = normalizeBillDate(billDate)
 	if billType != BillTypeTradeAll && billType != BillTypeFundflowBase {
@@ -104,7 +104,7 @@ func (s *Service) processFile(ctx context.Context, run Run, billDate time.Time, 
 	if !strings.EqualFold(strings.TrimSpace(file.HashType), "SHA1") || strings.TrimSpace(file.ExpectedHash) == "" {
 		return RunResult{}, fmt.Errorf("%w: unsupported or empty digest metadata", errDigestMismatch)
 	}
-	hasher := sha1.New() // #nosec G401 -- mandated by the WeChat bill API response.
+	hasher := sha1.New() // #nosec G401 -- 微信账单 API 响应强制要求使用 SHA1。
 	stream := io.TeeReader(file.Body, hasher)
 	var rowCount, discrepancyCount uint64
 	stats := map[string]uint64{}
@@ -136,8 +136,8 @@ func (s *Service) processFile(ctx context.Context, run Run, billDate time.Time, 
 		if err := flush(); err != nil {
 			return err
 		}
-		// parseBill stops after the detail section; consume the summary too so
-		// the hash covers exactly the complete downloaded response.
+		// parseBill 会在明细区结束后停止；还需读取汇总区，
+		// 使哈希准确覆盖完整下载响应。
 		if _, err := io.Copy(io.Discard, stream); err != nil {
 			return fmt.Errorf("finish bill download: %w", err)
 		}
@@ -151,9 +151,8 @@ func (s *Service) processFile(ctx context.Context, run Run, billDate time.Time, 
 			return err
 		}
 		discrepancyCount, stats = count, reconcileStats
-		// Observations are transaction-scoped staging rows. Discrepancies retain
-		// the relevant local/WeChat values and line hash; deleting staging data
-		// avoids retaining every daily bill row indefinitely.
+		// 观测记录是事务范围内的暂存行。差异记录保留相关的本地与微信值及行哈希；
+		// 删除暂存数据可避免无限期保留每日账单的每一行。
 		if err := tx.Where("run_id=?", run.ID).Delete(&Observation{}).Error; err != nil {
 			return err
 		}

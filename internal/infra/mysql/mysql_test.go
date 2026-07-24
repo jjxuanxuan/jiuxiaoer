@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// TestValidateRequiredSchemaColumnsRejectsDriftedSchema 验证Validate Required Schema Columns Rejects Drifted Schema的预期行为。
+// TestValidateRequiredSchemaColumnsRejectsDriftedSchema 验证必需列检查拒绝发生偏移的表结构。
 func TestValidateRequiredSchemaColumnsRejectsDriftedSchema(t *testing.T) {
 	found := make(map[schemaColumn]bool, len(requiredSchemaColumns))
 	for _, column := range requiredSchemaColumns {
@@ -22,7 +22,7 @@ func TestValidateRequiredSchemaColumnsRejectsDriftedSchema(t *testing.T) {
 	}
 }
 
-// TestValidateRequiredSchemaColumnsAcceptsMigratedSchema 验证Validate Required Schema Columns Accepts Migrated Schema的预期行为。
+// TestValidateRequiredSchemaColumnsAcceptsMigratedSchema 验证必需列检查接受已迁移的表结构。
 func TestValidateRequiredSchemaColumnsAcceptsMigratedSchema(t *testing.T) {
 	found := make(map[schemaColumn]bool, len(requiredSchemaColumns))
 	for _, column := range requiredSchemaColumns {

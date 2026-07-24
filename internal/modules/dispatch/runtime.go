@@ -25,9 +25,8 @@ const (
 	heartbeatRejectedAction        = "rider.heartbeat.rejected"
 )
 
-// heartbeatAuditSpec is deliberately made only from server-owned constants.
-// Never add raw request values to it: heartbeat requests contain precise
-// coordinates and a device identifier that are forbidden in audit_logs.
+// heartbeatAuditSpec 刻意只由服务端持有的常量构成。绝不能加入原始请求值：
+// 心跳请求包含精确坐标和设备标识符，这些内容禁止写入 audit_logs。
 type heartbeatAuditSpec struct {
 	Action             string
 	ErrorCode          string
@@ -333,7 +332,7 @@ func heartbeatAuthorizationReason(claims *auth.Claims) string {
 	return "location_permission_missing"
 }
 
-// heartbeatSequence 返回heartbeat 序列。
+// heartbeatSequence 返回心跳序列号。
 func heartbeatSequence(runtimeDeviceHash *string, runtimeSequence uint64, currentDeviceHash string, cachedSameDevice bool, cachedSequence uint64) uint64 {
 	latest := uint64(0)
 	if runtimeDeviceHash != nil && *runtimeDeviceHash == currentDeviceHash {
@@ -345,7 +344,7 @@ func heartbeatSequence(runtimeDeviceHash *string, runtimeSequence uint64, curren
 	return latest
 }
 
-// allowFixedWindow 返回allow Fixed Window。
+// allowFixedWindow 执行固定窗口限流。
 func (s *Service) allowFixedWindow(ctx context.Context, key string, window time.Duration, limit int64) (bool, error) {
 	if s.redis == nil {
 		return true, nil
@@ -374,7 +373,7 @@ func rateLimited(detail string, retryAfter time.Duration) *problem.Details {
 	return err
 }
 
-// syncWorkStatusCache 处理sync Work 状态缓存相关逻辑。
+// syncWorkStatusCache 同步工作状态缓存。
 func (s *Service) syncWorkStatusCache(ctx context.Context, riderID uint64, status string) {
 	if s.redis == nil {
 		return
@@ -391,7 +390,7 @@ func (s *Service) syncWorkStatusCache(ctx context.Context, riderID uint64, statu
 	_ = s.redis.Expire(ctx, presenceKey, 2*time.Minute).Err()
 }
 
-// syncHeartbeatCache 处理sync Heartbeat 缓存相关逻辑。
+// syncHeartbeatCache 同步心跳缓存。
 func (s *Service) syncHeartbeatCache(ctx context.Context, riderID uint64, status string, req HeartbeatReq, capturedAt time.Time, ttl time.Duration) {
 	if s.redis == nil {
 		return
@@ -423,7 +422,7 @@ func (s *Service) riderCities(ctx context.Context, riderID uint64) []string {
 	return cities
 }
 
-// riderActor 返回骑手 Actor。
+// riderActor 返回骑手审计主体。
 func riderActor(claims *auth.Claims, permission string) (uint64, error) {
 	if claims == nil || claims.AccountType != "rider" {
 		return 0, problem.Forbidden("PERM_FORBIDDEN", "rider account required")
@@ -445,5 +444,5 @@ func riderActor(claims *auth.Claims, permission string) (uint64, error) {
 	return id, nil
 }
 
-// errorsIsNotFound 判断errors Is 不 Found。
+// errorsIsNotFound 判断错误是否表示记录不存在。
 func errorsIsNotFound(err error) bool { return errors.Is(err, gorm.ErrRecordNotFound) }

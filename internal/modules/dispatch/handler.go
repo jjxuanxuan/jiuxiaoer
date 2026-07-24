@@ -18,7 +18,7 @@ type Handler struct{ service *Service }
 // NewHandler 创建并初始化Handler。
 func NewHandler(service *Service) *Handler { return &Handler{service: service} }
 
-// RegisterRiderRoutes 注册骑手 Routes。
+// RegisterRiderRoutes 注册骑手路由。
 func RegisterRiderRoutes(router *gin.RouterGroup, handler *Handler) {
 	router.PUT("/riders/me/work-status", handler.UpdateWorkStatus)
 	router.POST("/riders/me/heartbeat", handler.Heartbeat)
@@ -27,7 +27,7 @@ func RegisterRiderRoutes(router *gin.RouterGroup, handler *Handler) {
 	router.POST("/offers/:id/reject", handler.RejectOffer)
 }
 
-// RegisterAdminRoutes 注册管理端 Routes。
+// RegisterAdminRoutes 注册管理端路由。
 func RegisterAdminRoutes(router *gin.RouterGroup, handler *Handler) {
 	router.GET("/policies", handler.ListPolicies)
 	router.POST("/policies", handler.CreatePolicy)

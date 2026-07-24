@@ -308,7 +308,7 @@ func TestL3AfterSaleAcceptance(t *testing.T) {
 	})
 
 	t.Run("ACC-L3-021-concurrent-last-refundable-amount", func(t *testing.T) {
-		// Covered by a dedicated committed fixture because concurrent transactions cannot share an outer rollback transaction.
+		// 由专用的已提交夹具覆盖，因为并发事务无法共享外层回滚事务。
 		testConcurrentApproval(t, db, cfg, ids)
 	})
 }
@@ -366,7 +366,7 @@ func insertAcceptanceOrder(t *testing.T, db *gorm.DB, ids *snowflake.Generator, 
 	return fx
 }
 
-// basicCreateReq 返回basic Create Req。
+// basicCreateReq 返回基础创建请求。
 func basicCreateReq(t *testing.T, cfg config.Config, ids *snowflake.Generator, fx acceptanceFixture, kind, resolution string) CreateReq {
 	t.Helper()
 	req := CreateReq{OrderID: idString(fx.orderID), Type: kind, RequestedResolution: resolution, Items: []CreateItemReq{{OrderItemID: idString(fx.itemID), Quantity: 1, RequestedAmount: 500}}, Description: "acceptance test request"}
@@ -417,7 +417,7 @@ func errorCode(err error) string {
 	return problem.FromError(err).ErrorCode
 }
 
-// mustID 返回must ID。
+// mustID 解析 ID，失败时终止测试。
 func mustID(t *testing.T, raw string) uint64 {
 	t.Helper()
 	id, err := strconv.ParseUint(raw, 10, 64)
@@ -427,7 +427,7 @@ func mustID(t *testing.T, raw string) uint64 {
 	return id
 }
 
-// mustExec 处理must Exec相关逻辑。
+// mustExec 执行 SQL，失败时终止测试。
 func mustExec(t *testing.T, db *gorm.DB, query string, args ...any) {
 	t.Helper()
 	if err := db.Exec(query, args...).Error; err != nil {
@@ -435,7 +435,7 @@ func mustExec(t *testing.T, db *gorm.DB, query string, args ...any) {
 	}
 }
 
-// testConcurrentApproval 处理test Concurrent 审批相关逻辑。
+// testConcurrentApproval 验证并发审批。
 func testConcurrentApproval(t *testing.T, db *gorm.DB, cfg config.Config, ids *snowflake.Generator) {
 	fx := insertAcceptanceOrder(t, db, ids, "completed", 2, 500, time.Now().Add(-time.Hour))
 	if err := db.Table("payments").Where("id=?", fx.paymentID).Update("amount", 500).Error; err != nil {

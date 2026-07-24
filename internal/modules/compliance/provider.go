@@ -33,9 +33,8 @@ type fakeSession struct {
 	result ProviderResult
 }
 
-// FakeProvider models a provider-hosted session for local and integration
-// environments. Callback content seeds its query result only in this fake;
-// production adapters must query their provider API independently.
+// FakeProvider 为本地和集成环境模拟服务商托管会话。
+// 只有此模拟实现会用回调内容填充查询结果；生产适配器必须独立查询服务商 API。
 type FakeProvider struct {
 	secret   string
 	mu       sync.RWMutex
@@ -140,8 +139,8 @@ func (p *FakeProvider) Query(_ context.Context, providerRequestID string) (Provi
 }
 
 // SignFakeCallback 为Fake 回调生成签名。
-// SignFakeCallback is intentionally limited to the local fake provider and is
-// used by integration clients to emulate a provider callback.
+// SignFakeCallback 刻意仅限本地模拟服务商使用，
+// 供集成客户端模拟服务商回调。
 func SignFakeCallback(secret, timestamp string, body []byte) string {
 	return hex.EncodeToString(callbackMAC(secret, timestamp, body))
 }
@@ -155,7 +154,7 @@ func callbackMAC(secret, timestamp string, body []byte) []byte {
 	return mac.Sum(nil)
 }
 
-// absDuration 返回abs 耗时。
+// absDuration 返回耗时的绝对值。
 func absDuration(value time.Duration) time.Duration {
 	if value < 0 {
 		return -value

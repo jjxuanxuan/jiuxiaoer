@@ -12,9 +12,9 @@ func printProviderRequired(cfg config.Config) bool {
 	return cfg.CP1.PrintEnabled || cfg.MQ.ConsumerPrintEnabled
 }
 
-// buildConfiguredPrintProvider is the single API/worker construction path.
-// The resulting instance is stored in Dependencies and reused by both the
-// HTTP print service and every print worker owned by the Server.
+// buildConfiguredPrintProvider 是 API 和工作进程唯一的构造路径。
+// 生成的实例存入 Dependencies，由 HTTP 打印服务和 Server 管理的
+// 所有打印工作进程复用。
 func buildConfiguredPrintProvider(ctx context.Context, cfg config.Config) (printjob.Provider, error) {
 	if !printProviderRequired(cfg) {
 		return nil, nil
@@ -56,10 +56,9 @@ func (s *Server) newPrintWorker(ctx context.Context) (*printjob.Worker, error) {
 	return printjob.NewWorker(s.cfg.CP1, s.deps.DB, s.deps.IDGen, s.deps.PrintProvider, s.cfg.App.InstanceID, s.log), nil
 }
 
-// routerPrintProvider keeps direct test/router construction deterministic.
-// Production uses NewServer and therefore always supplies the already-built
-// shared instance. An enabled but unresolved provider is a programmer/startup
-// error, never a silent UnavailableProvider fallback.
+// routerPrintProvider 保证直接构造测试路由时结果确定。生产环境使用 NewServer，
+// 因而始终提供已构建的共享实例。已启用但无法解析的服务商属于编程或启动错误，
+// 绝不能悄然降级为 UnavailableProvider。
 func routerPrintProvider(deps Dependencies) printjob.Provider {
 	if deps.PrintProvider != nil {
 		return deps.PrintProvider

@@ -7,7 +7,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/pkg/problem"
 )
 
-// TestAssetTypeUnitMatrix 验证资产 Type Unit Matrix的预期行为。
+// TestAssetTypeUnitMatrix 验证资产类型与单位矩阵。
 func TestAssetTypeUnitMatrix(t *testing.T) {
 	tests := []struct{ assetType, unit string }{{TypeGrowth, UnitPoint}, {TypeWineCoin, UnitPoint}, {TypeBalance, UnitCNY}}
 	for _, test := range tests {
@@ -21,7 +21,7 @@ func TestAssetTypeUnitMatrix(t *testing.T) {
 	}
 }
 
-// TestSourceRegistryRejectsUnregisteredAndInvalidCompensation 验证Source 注册表 Rejects Unregistered And 无效 Compensation的预期行为。
+// TestSourceRegistryRejectsUnregisteredAndInvalidCompensation 验证来源注册表拒绝未注册来源和无效补偿。
 func TestSourceRegistryRejectsUnregisteredAndInvalidCompensation(t *testing.T) {
 	s := NewService(config.Load(), nil, nil)
 	base := Command{CustomerID: 1, AssetType: TypeBalance, Unit: UnitCNY, Amount: 1, SourceType: "unknown", SourceID: "source-1", Action: "credit", IdempotencyKey: "source-key-1"}
@@ -35,7 +35,7 @@ func TestSourceRegistryRejectsUnregisteredAndInvalidCompensation(t *testing.T) {
 	}
 }
 
-// TestAmountValidationRejectsZeroAndUnitMismatch 验证金额校验 Rejects Zero And Unit Mismatch的预期行为。
+// TestAmountValidationRejectsZeroAndUnitMismatch 验证金额校验拒绝零值和单位不匹配。
 func TestAmountValidationRejectsZeroAndUnitMismatch(t *testing.T) {
 	s := NewService(config.Load(), nil, nil)
 	cmd := Command{CustomerID: 1, AssetType: TypeBalance, Unit: UnitPoint, Amount: 1, SourceType: "reconciliation_test", SourceID: "source-1", Action: "credit", IdempotencyKey: "source-key-1"}

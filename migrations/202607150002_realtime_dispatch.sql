@@ -1,6 +1,6 @@
 -- +goose Up
--- Durable rider realtime delivery log. RabbitMQ remains the source event bus;
--- Redis only wakes API instances and is never the replay source of truth.
+-- 持久的骑手实时投递日志。RabbitMQ 仍是源事件总线；
+-- Redis 只负责唤醒 API 实例，绝不是重放的事实来源。
 
 CREATE TABLE IF NOT EXISTS realtime_deliveries (
   id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
@@ -57,6 +57,6 @@ CREATE TABLE IF NOT EXISTS realtime_acknowledgements (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 -- +goose Down
--- Non-destructive rollback: disabling the feature flags reverts traffic. The
--- durable delivery and acknowledgement audit data is intentionally retained.
+-- 非破坏性回滚：关闭功能开关即可回退流量。
+-- 持久的投递和确认审计数据会被刻意保留。
 SELECT 1;

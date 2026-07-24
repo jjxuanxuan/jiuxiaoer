@@ -12,7 +12,7 @@ import (
 
 type MQHandler struct{ service *Service }
 
-// NewMQHandler 创建并初始化消息队列 Handler。
+// NewMQHandler 创建并初始化消息队列处理器。
 func NewMQHandler(service *Service) *MQHandler { return &MQHandler{service: service} }
 
 // Handle 处理消费者结果请求。

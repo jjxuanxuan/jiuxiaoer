@@ -489,7 +489,7 @@ func (f *acceptanceFixture) customerAvailable(t *testing.T, assetType string) in
 	return amount
 }
 
-// refundedAmountTotal 返回refunded 金额 Total。
+// refundedAmountTotal 返回退款总额。
 func (f *acceptanceFixture) refundedAmountTotal(t *testing.T) int64 {
 	t.Helper()
 	var total int64

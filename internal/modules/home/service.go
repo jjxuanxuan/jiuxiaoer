@@ -353,7 +353,7 @@ func (s *Service) validatePublish(ctx context.Context, tx *gorm.DB, row Slot) er
 	return nil
 }
 
-// events 返回events。
+// events 返回首页事件列表。
 func (s *Service) events(ctx context.Context, tx *gorm.DB, adminID uint64, action string, id uint64, before, after any) error {
 	if err := s.repo.CreateAudit(ctx, tx, AuditLog{ID: s.idGen.Next(), ActorType: "admin", ActorID: adminID, Action: action, ResourceType: "home_slot", ResourceID: id, BeforeData: jsonData(before), AfterData: jsonData(after), Result: "success"}); err != nil {
 		return err
@@ -494,7 +494,7 @@ func parseID(raw string) (uint64, error) {
 	return id, nil
 }
 
-// optional 返回optional。
+// optional 返回可选字符串指针。
 func optional(v string) *string {
 	if v == "" {
 		return nil
@@ -525,7 +525,7 @@ func cached(ctx context.Context, store *idempotency.Store, tx *gorm.DB, actorTyp
 	return nil
 }
 
-// payloadIDs 返回载荷 I Ds。
+// payloadIDs 返回载荷中的 ID 列表。
 func payloadIDs(v any) ([]uint64, error) {
 	if v == nil {
 		return nil, nil

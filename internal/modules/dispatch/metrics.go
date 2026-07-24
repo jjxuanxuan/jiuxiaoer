@@ -10,10 +10,9 @@ import (
 )
 
 // RegisterMetrics 注册指标。
-// RegisterMetrics exposes low-cardinality dispatch health and invariant
-// gauges. Query failures intentionally produce zero/partial samples because a
-// metrics scrape must never make the API unavailable; dependency readiness is
-// reported separately by the health module.
+// RegisterMetrics 公开低基数的派单健康与不变量指标。查询失败时刻意生成
+// 零值或部分样本，因为指标抓取绝不能导致 API 不可用；
+// 依赖就绪状态由健康模块另行报告。
 func RegisterMetrics(db *gorm.DB, registry *metrics.Registry) {
 	if db == nil || registry == nil {
 		return
@@ -120,7 +119,7 @@ func duplicateActiveAssignments(db *gorm.DB) float64 {
 	return float64(count)
 }
 
-// paidOrdersWithoutDelivery 返回paid 订单 Without 配送。
+// paidOrdersWithoutDelivery 返回缺少配送记录的已支付订单数量。
 func paidOrdersWithoutDelivery(db *gorm.DB) float64 {
 	var count int64
 	err := db.Table("orders o").Joins("LEFT JOIN delivery_orders d ON d.order_id=o.id AND d.deleted_at IS NULL").

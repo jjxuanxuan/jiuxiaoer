@@ -10,7 +10,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/config"
 )
 
-// TestIdentityClientExchangesCodeAndResolvesPhone 验证身份客户端 Exchanges 代码 And Resolves 手机号的预期行为。
+// TestIdentityClientExchangesCodeAndResolvesPhone 验证身份客户端交换登录码并解析手机号。
 func TestIdentityClientExchangesCodeAndResolvesPhone(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -52,7 +52,7 @@ func TestIdentityClientExchangesCodeAndResolvesPhone(t *testing.T) {
 	}
 }
 
-// TestMockIdentityProviderRejectsNonTestCode 验证Mock 身份提供器 Rejects Non Test 代码的预期行为。
+// TestMockIdentityProviderRejectsNonTestCode 验证模拟身份服务商拒绝非测试登录码。
 func TestMockIdentityProviderRejectsNonTestCode(t *testing.T) {
 	cfg := config.Load().WeChat
 	cfg.AuthMockEnabled = true

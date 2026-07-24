@@ -40,7 +40,7 @@ func NewService(cfg config.Config, db *gorm.DB, ids *snowflake.Generator) *Servi
 	return &Service{cfg: cfg, db: db, ids: ids, idem: idempotency.NewStore(db), now: time.Now}
 }
 
-// UnitFor 返回Unit For。
+// UnitFor 返回资产类型对应的单位。
 func UnitFor(assetType string) (string, error) {
 	switch assetType {
 	case TypeGrowth, TypeWineCoin:
@@ -64,7 +64,7 @@ func (s *Service) Debit(ctx context.Context, cmd Command) (TransactionDTO, error
 	return s.postTransfer(ctx, cmd, -1, nil)
 }
 
-// postTransfer 返回post 转账。
+// postTransfer 执行转账后的处理。
 func (s *Service) postTransfer(ctx context.Context, cmd Command, direction int64, reversalOf *uint64) (TransactionDTO, error) {
 	if !s.cfg.Asset.WriteEnabled {
 		return TransactionDTO{}, problem.New(503, "ASSET_WRITE_DISABLED", "Service Unavailable", "asset writes are disabled")
@@ -335,7 +335,7 @@ func (s *Service) validateCommand(cmd Command, direction int64) error {
 	return nil
 }
 
-// ensureAccounts 确保Accounts存在且处于可用状态。
+// ensureAccounts 确保相关账户存在且可用。
 func (s *Service) ensureAccounts(ctx context.Context, tx *gorm.DB, customerID uint64, assetType, unit string) (Account, Account, error) {
 	var customer, control Account
 	findExisting := func() error {
@@ -356,8 +356,8 @@ func (s *Service) ensureAccounts(ctx context.Context, tx *gorm.DB, customerID ui
 			return err
 		}
 		var stored Account
-		// INSERT IGNORE may wait for a concurrent creator. A locking current read is
-		// required under MySQL REPEATABLE READ so the winner is visible afterwards.
+		// INSERT IGNORE 可能等待并发创建者。在 MySQL REPEATABLE READ 下
+		// 必须执行加锁当前读，才能在之后看见竞争获胜方。
 		if err := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).Where("owner_type=? AND owner_id=? AND asset_type=? AND unit=?", ownerType, ownerID, assetType, unit).Take(&stored).Error; err != nil {
 			return err
 		}
@@ -507,7 +507,7 @@ func (s *Service) outbox(ctx context.Context, event string, aggregateID uint64, 
 	return &Outbox{ID: s.ids.Next(), EventID: uuid.NewString(), EventType: event, AggregateType: "asset", AggregateID: aggregateID, Payload: jsonData(payload), Status: "pending", RequestID: requestctx.RequestIDPtr(ctx)}
 }
 
-// dtoFromTransaction 返回DTO From 交易。
+// dtoFromTransaction 根据交易记录构造 DTO。
 func dtoFromTransaction(row Transaction, customerID uint64, availableDelta, frozenDelta, after int64, metadata map[string]any) TransactionDTO {
 	return TransactionDTO{ID: idString(row.ID), TransactionNo: row.TransactionNo, CustomerID: idString(customerID), AssetType: row.AssetType, Unit: row.Unit, Action: row.Action, SourceType: row.SourceType, SourceID: row.SourceID, Amount: row.Amount, AvailableDelta: availableDelta, FrozenDelta: frozenDelta, BalanceAfter: after, Metadata: metadata, OccurredAt: row.OccurredAt.UTC().Format(time.RFC3339Nano), PostedAt: row.PostedAt.UTC().Format(time.RFC3339Nano)}
 }
@@ -552,7 +552,7 @@ func defaultString(v, fallback string) string {
 	return v
 }
 
-// min64 返回min 64。
+// min64 返回两个 64 位整数中的较小值。
 func min64(a, b int64) int64 {
 	if a < b {
 		return a
@@ -560,7 +560,7 @@ func min64(a, b int64) int64 {
 	return b
 }
 
-// wouldOverflow 判断would Overflow。
+// wouldOverflow 判断加法是否会溢出。
 func wouldOverflow(a, b int64) bool {
 	return (b > 0 && a > math.MaxInt64-b) || (b < 0 && a < math.MinInt64-b)
 }
@@ -594,7 +594,7 @@ func customerIDFromClaims(claims *auth.Claims) (uint64, error) {
 	return id, nil
 }
 
-// adminIDWithPermission 返回管理端ID With 权限。
+// adminIDWithPermission 返回具备指定权限的管理员 ID。
 func adminIDWithPermission(claims *auth.Claims, permission string) (uint64, error) {
 	if claims == nil || claims.AccountType != "admin" {
 		return 0, problem.Forbidden("PERM_FORBIDDEN", "admin account required")

@@ -17,7 +17,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/pkg/snowflake"
 )
 
-// TestValidateTemplateFieldAllowlist 验证Validate Template Field Allowlist的预期行为。
+// TestValidateTemplateFieldAllowlist 验证模板字段白名单。
 func TestValidateTemplateFieldAllowlist(t *testing.T) {
 	valid := TemplateReq{AllowedFields: []string{"order_no", "amount"}, TitleTemplate: "订单 {{ order_no }}", BodyTemplate: "金额 {{amount}}"}
 	if err := validateTemplate(valid); err != nil {

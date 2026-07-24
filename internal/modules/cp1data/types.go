@@ -31,7 +31,7 @@ var checkDescriptions = map[string]string{
 	"DQ-010": "一期精确权限及默认商家角色授权符合矩阵",
 }
 
-// DefaultCheckIDs returns the release-gate order used by the PRD.
+// DefaultCheckIDs 返回 PRD 使用的发布门禁顺序。
 func DefaultCheckIDs() []string {
 	result := make([]string, 0, len(checkDescriptions))
 	for id := range checkDescriptions {
@@ -234,8 +234,8 @@ func (a *VerificationAudit) containsDelivery(deliveryID uint64) bool {
 	return false
 }
 
-// LoadCheckpoint reads an operator-controlled checkpoint. It rejects partial
-// or cross-job files instead of silently starting from the wrong cursor.
+// LoadCheckpoint 读取操作人员控制的检查点。它会拒绝不完整或跨任务文件，
+// 而不是悄然从错误游标开始。
 func LoadCheckpoint(path string) (Checkpoint, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {

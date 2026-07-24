@@ -97,8 +97,8 @@ func WithPublisherBatchSize(size int) PublisherOption {
 }
 
 // NewPublisher 创建并初始化发布器。
-// NewPublisher publishes committed outbox facts outside the business
-// transaction. RabbitMQ outages therefore never roll back core business data.
+// NewPublisher 在业务事务之外发布已提交的发件箱事实，因此 RabbitMQ
+// 故障绝不会回滚核心业务数据。
 func NewPublisher(db *gorm.DB, rabbit *rabbitmq.Manager, metricRegistry *metrics.Registry, workerID string, log *slog.Logger, options ...PublisherOption) *Publisher {
 	publisher := &Publisher{
 		db: db, rabbit: rabbit, metrics: metricRegistry, registry: MustDefaultEventRegistry(),
@@ -253,7 +253,7 @@ func (p *Publisher) publishOne(ctx context.Context, channel *amqp.Channel, confi
 }
 
 // eventBody 返回事件请求体。
-// eventBody remains the small contract seam used by unit tests and tools.
+// eventBody 保持为供单元测试和工具使用的小型契约接缝。
 func eventBody(event OutboxEvent) ([]byte, error) {
 	definition, ok := MustDefaultEventRegistry().Lookup(event.EventType)
 	if !ok {
@@ -406,7 +406,7 @@ func leaseOwner(event OutboxEvent, fallback string) string {
 	return fallback
 }
 
-// partitionKey 返回partition 密钥。
+// partitionKey 返回分区键。
 func partitionKey(event OutboxEvent) string {
 	if event.PartitionKey != "" {
 		return event.PartitionKey
@@ -414,7 +414,7 @@ func partitionKey(event OutboxEvent) string {
 	return fmt.Sprintf("%s:%d", event.AggregateType, event.AggregateID)
 }
 
-// stableErrorCode 返回stable 错误代码。
+// stableErrorCode 返回稳定错误码。
 func stableErrorCode(err error) string {
 	if err == nil {
 		return "MQ_CONTRACT_INVALID"
@@ -426,7 +426,7 @@ func stableErrorCode(err error) string {
 	return "MQ_CONTRACT_INVALID"
 }
 
-// maxUint 返回max Uint。
+// maxUint 返回两个无符号整数中的较大值。
 func maxUint(value, fallback uint) uint {
 	if value == 0 {
 		return fallback

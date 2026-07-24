@@ -31,7 +31,7 @@ func (s *Service) Summaries(ctx context.Context, claims *auth.Claims) ([]AssetSu
 	return s.summariesForCustomer(ctx, customerID)
 }
 
-// summariesForCustomer 返回摘要列表 For 用户。
+// summariesForCustomer 返回客户的资产摘要列表。
 func (s *Service) summariesForCustomer(ctx context.Context, customerID uint64) ([]AssetSummaryDTO, error) {
 	types := []string{TypeGrowth, TypeWineCoin, TypeBalance}
 	out := make([]AssetSummaryDTO, 0, len(types))
@@ -531,7 +531,7 @@ func reconciliationDTO(row ReconciliationJob) ReconciliationDTO {
 	return dto
 }
 
-// valueOrEmpty 返回值 Or 空值。
+// valueOrEmpty 返回值或空字符串。
 func valueOrEmpty(v *string) string {
 	if v == nil {
 		return ""

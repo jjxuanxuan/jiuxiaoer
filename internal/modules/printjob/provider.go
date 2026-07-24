@@ -14,8 +14,8 @@ type ProviderError struct {
 // Error 返回当前错误的文本描述。
 func (e *ProviderError) Error() string { return e.Code }
 
-// FakeProvider is deterministic and side-effect free. It is used for local,
-// integration and fault-injection tests until an approved device adapter is configured.
+// FakeProvider 结果确定且无副作用。在配置获批准的设备适配器前，
+// 用于本地、集成和故障注入测试。
 type FakeProvider struct {
 	Failure      *ProviderError
 	QueryFailure *ProviderError

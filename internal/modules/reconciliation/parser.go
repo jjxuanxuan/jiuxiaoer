@@ -17,8 +17,8 @@ const maxBillLineBytes = 4 << 20
 
 var errBillFormat = errors.New("invalid WeChat bill format")
 
-// parseBill parses the CSV incrementally. It never loads the full bill into
-// memory; fn is called for each validated detail row.
+// parseBill 增量解析 CSV，绝不会把完整账单载入内存；
+// 每校验一行明细都会调用 fn。
 func parseBill(r io.Reader, billType string, fn func(parsedEntry) error) (uint64, error) {
 	reader := bufio.NewReaderSize(r, 64<<10)
 	headerLine, err := readBillLine(reader)
@@ -170,8 +170,8 @@ func parseRecord(billType string, indexes map[string]int, record []string, lineN
 			}
 			entry.Amount = &amount
 		default:
-			// WeChat may add new transaction states. Keeping the raw observation is
-			// safer than treating an unknown state as a money fact.
+			// 微信可能增加新的交易状态。保留原始观测值比把未知状态
+			// 当作资金事实更安全。
 			entry.Kind = "unknown"
 		}
 	case BillTypeFundflowBase:

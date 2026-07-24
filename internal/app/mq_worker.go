@@ -30,9 +30,9 @@ var mqWorkerRoles = map[string]bool{
 }
 
 // RunMQWorker 运行消息队列工作器处理流程。
-// RunMQWorker runs the RabbitMQ backbone without opening the API listener.
-// Deployments use a distinct Snowflake node ID per process; local development
-// may continue to use Server.Run and in-process workers.
+// RunMQWorker 在不打开 API 监听器的情况下运行 RabbitMQ 骨干。
+// 部署时每个进程使用不同的雪花节点 ID；本地开发可继续使用
+// Server.Run 和进程内工作任务。
 func (s *Server) RunMQWorker(ctx context.Context, role string) error {
 	if !mqWorkerRoles[role] {
 		return fmt.Errorf("unknown MQ worker role %q", role)
@@ -190,7 +190,7 @@ func (s *Server) RunMQWorker(ctx context.Context, role string) error {
 		}
 	}
 
-	// Node lease alone is infrastructure, not a useful worker role.
+	// 单独的节点租约只是基础设施，并不是有实际用途的工作角色。
 	minimum := 1
 	if s.deps.NodeLease != nil {
 		minimum = 2

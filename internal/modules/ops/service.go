@@ -374,9 +374,9 @@ func (s *Service) Assignments(ctx context.Context, c *auth.Claims, idRaw string)
 	return out, nil
 }
 
-// activeAdminHasPermission is the transactional authority for high-risk admin
-// writes. FOR UPDATE keeps account, administrator, role, mapping, and permission
-// state stable until the protected business transaction commits.
+// activeAdminHasPermission 是高风险管理写入的事务权威检查。
+// FOR UPDATE 会保持账户、管理员、角色、映射和权限状态稳定，
+// 直到受保护的业务事务提交。
 func activeAdminHasPermission(ctx context.Context, tx *gorm.DB, id uint64, permissionCode string) (bool, error) {
 	var row struct {
 		ID uint64
@@ -440,7 +440,7 @@ func uintString(v *uint64) string {
 	return idString(*v)
 }
 
-// str 返回str。
+// str 返回字符串指针。
 func str(v *string) string {
 	if v == nil {
 		return ""
@@ -448,7 +448,7 @@ func str(v *string) string {
 	return *v
 }
 
-// ts 返回ts。
+// ts 返回格式化时间字符串。
 func ts(v *time.Time) string {
 	if v == nil {
 		return ""

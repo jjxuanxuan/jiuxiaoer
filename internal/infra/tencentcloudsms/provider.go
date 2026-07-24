@@ -21,9 +21,8 @@ type client interface {
 	SendSmsWithContext(context.Context, *sms.SendSmsRequest) (*sms.SendSmsResponse, error)
 }
 
-// Provider sends login codes with Tencent Cloud SMS API 3.0 (2021-01-11).
-// The configured template must contain two variables in this order: code and
-// validity in minutes.
+// Provider 使用腾讯云短信 API 3.0（2021-01-11）发送登录验证码。
+// 配置的模板必须按顺序包含验证码和有效分钟数两个变量。
 type Provider struct {
 	client     client
 	sdkAppID   string
@@ -31,9 +30,8 @@ type Provider struct {
 	templateID string
 }
 
-// DeliveryError represents a request accepted by the API but rejected by the
-// SMS product. Only the stable provider code is retained; phone numbers and
-// credentials are never included in the error.
+// DeliveryError 表示请求已被 API 接收，但被短信产品拒绝。
+// 错误中只保留稳定的服务商代码，绝不包含手机号和凭据。
 type DeliveryError struct {
 	Code string
 }

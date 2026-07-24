@@ -94,8 +94,8 @@ func (b *Backfiller) Run(ctx context.Context) (BackfillReport, error) {
 
 func normalizedRange(value IDRange) IDRange {
 	if value.Max == 0 {
-		// Generated IDs stay in the signed-63-bit Snowflake domain. This is
-		// portable across MySQL drivers and the SQLite verification fixtures.
+		// 生成的 ID 保持在 63 位有符号雪花 ID 范围内，
+		// 可兼容不同 MySQL 驱动和 SQLite 验证夹具。
 		value.Max = maxBackfillID
 	}
 	return value
@@ -118,8 +118,8 @@ func (b *Backfiller) saveCheckpoint(fingerprint string, report BackfillReport) e
 
 func (b *Backfiller) addManual(report *BackfillReport, finding Finding) {
 	report.Progress.Skipped++
-	// Unlike DQ samples, this is the operator's repair queue. Never truncate it:
-	// every unmappable setting/task/credential must remain actionable.
+	// 与数据质量样本不同，这是操作人员的修复队列，绝不能截断：
+	// 每个无法映射的设置、任务或凭据都必须保持可处理。
 	report.Progress.Manual = append(report.Progress.Manual, finding)
 }
 
@@ -485,9 +485,8 @@ func (b *Backfiller) runVerificationHistory(ctx context.Context, report *Backfil
 	}
 }
 
-// Orphan attempts cannot be rewritten safely: without their parent verification
-// there is no authoritative credential/stage fact to map. Keep every orphan in
-// the operator repair queue and independent audit instead of inventing facts.
+// 孤立尝试无法安全改写：缺少其父验证记录时，没有可映射的权威凭据或阶段事实。
+// 应将每条孤立记录保留在操作修复队列和独立审计中，而不是虚构事实。
 func (b *Backfiller) recordOrphanVerificationAttempts(ctx context.Context, report *BackfillReport, fingerprint string, cutover time.Time) error {
 	known := make(map[string]struct{}, len(report.Progress.Manual))
 	for _, finding := range report.Progress.Manual {

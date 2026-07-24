@@ -28,8 +28,8 @@ var activeStatuses = []string{
 	StatusDisputed, StatusException,
 }
 
-// Return is the reverse-logistics fact. Financial state remains in after-sales
-// and refunds; inventory disposition remains in receipt items and stock records.
+// Return 是逆向物流事实。资金状态仍保存在售后和退款中；
+// 库存处置仍保存在收货明细和库存记录中。
 type Return struct {
 	ID                    uint64
 	ReturnNo              string
@@ -304,8 +304,8 @@ func isTerminalStatus(value string) bool {
 	return value == StatusClosed || value == StatusCancelled
 }
 
-// validTransition deliberately has no catch-all transition. New states must be
-// added here and in the database constraint together.
+// validTransition 刻意不提供兜底状态变更。
+// 新状态必须同时在此处和数据库约束中添加。
 func validTransition(from, to string) bool {
 	switch from {
 	case StatusRequested:

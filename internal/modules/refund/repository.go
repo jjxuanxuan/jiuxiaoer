@@ -100,16 +100,15 @@ func (r *Repository) Items(ctx context.Context, tx *gorm.DB, refundID uint64) ([
 	return v, e
 }
 
-// ReplacementByOriginal returns the replacement already created for a CLOSED
-// refund. The unique database index remains the final concurrency guard.
+// ReplacementByOriginal 返回已为 CLOSED 退款创建的替代退款。
+// 数据库唯一索引仍是最终并发保护。
 func (r *Repository) ReplacementByOriginal(ctx context.Context, tx *gorm.DB, refundID uint64) (Row, error) {
 	var row Row
 	err := tx.WithContext(ctx).Where("replaces_refund_id=? AND deleted_at IS NULL", refundID).Take(&row).Error
 	return row, err
 }
 
-// CreateReplacement atomically creates the replacement refund and copies its
-// immutable item allocation.
+// CreateReplacement 原子创建替代退款并复制其不可变商品分配。
 func (r *Repository) CreateReplacement(ctx context.Context, tx *gorm.DB, row *Row, items []RefundItem) error {
 	if err := tx.WithContext(ctx).Create(row).Error; err != nil {
 		return err
@@ -164,9 +163,8 @@ func (r *Repository) List(ctx context.Context, status string, offset, size int) 
 	return rows, e
 }
 
-// RepairCandidates returns the legacy non-terminal rows covered by the
-// controlled stored-refund repair runbook. Scanning is read-only; each row must
-// still be previewed and explicitly applied through the repair action.
+// RepairCandidates 返回受控存量退款修复手册覆盖的旧版非终态记录。
+// 扫描为只读；每条记录仍须预览并通过修复操作显式应用。
 func (r *Repository) RepairCandidates(ctx context.Context, afterID uint64, size int) ([]Row, error) {
 	var rows []Row
 	err := r.db.WithContext(ctx).

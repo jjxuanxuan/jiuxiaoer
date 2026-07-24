@@ -343,10 +343,10 @@ func (s *AdminService) Verify(ctx context.Context, claims *auth.Claims) (map[str
 
 type AdminHandler struct{ service *AdminService }
 
-// NewAdminHandler 创建并初始化管理端 Handler。
+// NewAdminHandler 创建并初始化管理端处理器。
 func NewAdminHandler(service *AdminService) *AdminHandler { return &AdminHandler{service: service} }
 
-// RegisterAdminRoutes 注册管理端 Routes。
+// RegisterAdminRoutes 注册管理端路由。
 func RegisterAdminRoutes(group *gin.RouterGroup, handler *AdminHandler) {
 	group.GET("/health", handler.Health)
 	group.GET("/dead-letters", handler.ListDeadLetters)
@@ -466,12 +466,12 @@ func hasPermission(values []string, target string) bool {
 	return false
 }
 
-// deadLetterDTO 返回死信 Letter DTO。
+// deadLetterDTO 返回死信 DTO。
 func deadLetterDTO(row DeadLetter) DeadLetterDTO {
 	return DeadLetterDTO{ID: fmt.Sprint(row.ID), DeadNo: row.DeadNo, ConsumerName: row.ConsumerName, EventID: row.EventID, EventType: row.EventType, EventVersion: row.EventVersion, AggregateType: stringValue(row.AggregateType), AggregateID: stringValue(row.AggregateID), ErrorCode: row.ErrorCode, ErrorSafe: stringValue(row.ErrorSafe), PayloadHash: row.PayloadHash, RetryCount: row.RetryCount, Status: row.Status, Version: row.Version, FirstFailedAt: row.FirstFailedAt.UTC().Format(time.RFC3339Nano), DeadAt: row.DeadAt.UTC().Format(time.RFC3339Nano), CreatedAt: row.CreatedAt.UTC().Format(time.RFC3339Nano)}
 }
 
-// replayDTO 返回replay DTO。
+// replayDTO 返回重放 DTO。
 func replayDTO(row DeadLetterReplay) ReplayDTO {
 	return ReplayDTO{ID: fmt.Sprint(row.ID), DeadLetterID: fmt.Sprint(row.DeadLetterID), ReplayEventID: row.ReplayEventID, Status: row.Status, CreatedAt: row.CreatedAt.UTC().Format(time.RFC3339Nano)}
 }

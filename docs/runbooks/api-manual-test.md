@@ -11,13 +11,17 @@ cp .env.example .env.local
 make deps-up
 make migrate-up
 make seed
+bash ./deploy/mysql/provision-local-runtime-user.sh
 make run
 ```
+
+`make deps-up` 在后台启动 MySQL、Redis 和 RabbitMQ，容器可能需要数秒才健康；如果紧接着执行迁移时连接失败，等待容器健康后重试。`provision-local-runtime-user.sh` 必须在迁移之后执行，它创建 `.env.local` 中 `JXE_MYSQL_DSN` 使用的低权限运行账号 `jxe_app`。迁移和 seed 使用高权限的 `JXE_MYSQL_MIGRATION_DSN`，API 使用 `JXE_MYSQL_DSN`。
 
 默认地址为 `http://localhost:8080`，下文以此作为 `$BASE`。种子数据中的 ID 和账号如下：
 
 | 用途 | 值 |
 | --- | --- |
+| 用户 | `13800000001` ，短信验证码 `123456` |
 | 管理员 | `admin` / `admin123` |
 | 商户 | `merchant_demo` / `merchant123` |
 | 骑手 | 手机号 `13800000003`，短信验证码 `123456` |
@@ -56,6 +60,16 @@ export ADMIN_TOKEN='...'
 export MERCHANT_TOKEN='...'
 export RIDER_TOKEN='...'
 ```
+
+`$CUSTOMER_TOKEN` 等写法仅用于终端中的 curl 示例，不是后端自动创建的配置项。在 Swagger UI 中按下面操作：
+
+1. 调用登录接口，复制响应中的纯 `data.access_token`，不要复制 JSON 引号。
+2. 点击页面右上角 **Authorize**。
+3. 在 `bearerAuth` 中只粘贴 Token 本身，不要手动添加 `Bearer ` 前缀。
+4. 点击 **Authorize** 并关闭弹窗。Swagger 会自动发送 `Authorization: Bearer <token>`。
+5. 切换顾客、管理员、商户或骑手身份时，用新角色的 Token 重新授权。
+
+`applicationBearer` 只用于骑手申请人的受限登录态，普通顾客、管理员、商户和正式骑手接口使用 `bearerAuth`。
 
 ### 成功、分页与错误响应
 
@@ -110,19 +124,106 @@ export IDEMPOTENCY_KEY="manual-$(date +%s)-001"
 
 ## 3. 获取各角色 Token
 
-### 顾客（短信 mock，默认开启）
+### 顾客（首次微信登录并绑定手机号）
+
+顾客首次必须完成“微信登录 → 绑定微信授权手机号”，之后才能使用短信登录。本地 Mock 流程要求：
+
+```dotenv
+JXE_WECHAT_AUTH_ENABLED=true
+JXE_WECHAT_AUTH_MOCK_ENABLED=true
+JXE_SMS_ENABLED=true
+JXE_SMS_MOCK_ENABLED=true
+```
+
+修改 `.env.local` 后必须重启 `make run`，已经运行的进程不会自动重新加载配置。
+
+#### 第一步：微信 Mock 登录
+
+`JXE_WECHAT_AUTH_MOCK_ENABLED=true` 时，登录 `code` 必须以 `test-code-` 开头：
+
+```bash
+curl -X POST "$BASE/api/v1/auth/customer/wechat-login" \
+  -H 'Content-Type: application/json' \
+  -d '{"code":"test-code-manual-customer","device_id":"manual-device"}'
+```
+
+Swagger 中打开 `POST /api/v1/auth/customer/wechat-login`，点击 **Try it out**，填写相同 JSON 后执行。首次响应的 `data.phone_bound` 为 `false` 是正常结果，它只表示微信身份和顾客账号已经创建，尚未具备短信登录资格。
+
+复制响应的 `data.access_token`。curl 用户保存为 `$CUSTOMER_TOKEN`；Swagger 用户按照“通用约定 → 鉴权”的步骤写入 `bearerAuth`。
+
+#### 第二步：绑定微信授权手机号
+
+Mock `phone_code` 不是短信验证码，格式必须是：
+
+```text
+test-phone-<11位中国大陆手机号>
+```
+
+例如：
+
+```bash
+curl -X POST "$BASE/api/v1/auth/customer/phone-bind" \
+  -H "Authorization: Bearer $CUSTOMER_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: manual-phone-bind-001' \
+  -d '{"phone_code":"test-phone-13800000010"}'
+```
+
+Swagger 中调用 `POST /api/v1/auth/customer/phone-bind`：
+
+- 确认右上角 `bearerAuth` 已授权。
+- `Idempotency-Key` 填写 8～128 位唯一值，例如 `manual-phone-bind-001`。
+- 请求体填写 `{"phone_code":"test-phone-13800000010"}`，不要填写 `123456`、真实手机号本身或微信登录用的 `test-code-*`。
+
+成功响应包含 `data.customer_id` 和 `data.phone`。如果返回 `WECHAT_PHONE_CODE_INVALID`，说明 Token 已经通过，但 `phone_code` 未被当前微信 Provider 接受；优先检查 Mock 开关、前缀、手机号长度，以及修改配置后是否重启 API。
+
+#### 第三步：发送短信验证码
+
+`123456` 不是始终有效的万能码。必须先调用 `send-code`，服务才会把它写入 Redis：
 
 ```bash
 curl -X POST "$BASE/api/v1/auth/customer/send-code" \
   -H 'Content-Type: application/json' \
   -d '{"phone":"13800000010"}'
+```
 
+Swagger 中调用 `POST /api/v1/auth/customer/send-code`，手机号必须与第二步成功绑定的手机号完全一致。成功响应后：
+
+- Mock 验证码固定为 `123456`。
+- 有效期为 5 分钟。
+- 同一手机号 60 秒内不能重复发送。
+- 每个手机号每天最多发送 10 次。
+- 顾客和骑手使用不同的 Redis 验证码命名空间，不能互相使用。
+
+#### 第四步：短信登录
+
+发送成功后再调用：
+
+```bash
 curl -X POST "$BASE/api/v1/auth/customer/sms-login" \
   -H 'Content-Type: application/json' \
   -d '{"phone":"13800000010","code":"123456"}'
 ```
 
-从第二个响应复制 `data.access_token` 到 `$CUSTOMER_TOKEN`。`JXE_SMS_ENABLED=true` 且短信提供器可用时注册这两个接口。本地 `JXE_SMS_MOCK_ENABLED=true` 时验证码固定为 `123456`；真实环境由后端生成随机六位验证码，并通过腾讯云发送。
+Swagger 中调用 `POST /api/v1/auth/customer/sms-login`，填写同一个手机号和 `123456`。成功后可将新的 `data.access_token` 重新写入 `bearerAuth`。
+
+验证码校验成功时会立即从 Redis 删除，因此只能使用一次。当前实现先消费验证码，再检查顾客是否已经完成微信登录和手机号绑定；如果返回 `403 AUTH_WECHAT_LOGIN_REQUIRED`，这枚正确验证码也已经失效。完成绑定后必须重新调用 `send-code`，再使用新的 `123456` 登录。
+
+`send-code` 只发送验证码，不注册顾客账号。真实环境关闭 Mock 后，后端生成随机六位验证码并通过腾讯云发送。
+
+#### 顾客登录常见错误
+
+| 错误码 | 含义 | 处理 |
+| --- | --- | --- |
+| `WECHAT_CODE_INVALID` | 微信 Mock 登录 code 无效 | 使用 `test-code-` 开头的 code，确认微信认证 Mock 已开启 |
+| `WECHAT_PHONE_CODE_INVALID` | 微信手机号授权 code 无效 | 使用 `test-phone-` 加 11 位手机号，确认 Mock 开关并重启 API |
+| `AUTH_INVALID_CODE` | Redis 中没有匹配的短信验证码 | 重新调用同一作用域的 `send-code`，在 5 分钟内使用一次 |
+| `AUTH_WECHAT_LOGIN_REQUIRED` | 手机号未绑定到当前小程序微信身份 | 先完成微信登录和 phone-bind，然后重新发送验证码 |
+| `PHONE_ALREADY_BOUND` | 手机号已属于其他顾客 | 更换手机号，或使用原顾客身份登录 |
+| `AUTH_SMS_TOO_FREQUENT` | 60 秒内重复发送 | 等待冷却时间结束 |
+| `AUTH_SMS_DAILY_LIMIT` | 当天发送超过 10 次 | 更换测试手机号或等待限额过期 |
+| `AUTH_LOGIN_RATE_LIMITED` | 15 分钟内错误登录次数达到限制 | 停止重复尝试，等待限制过期后重新发送验证码 |
+| `SYSTEM_DEPENDENCY_UNAVAILABLE` | Redis 或短信 Provider 不可用 | 检查 `make deps-up`、Redis 健康和短信配置 |
 
 ### 管理员、商户和骑手
 
@@ -140,7 +241,7 @@ curl -X POST "$BASE/api/v1/auth/rider/sms-login" -H 'Content-Type: application/j
   -d '{"phone":"13800000003","code":"123456"}'
 ```
 
-骑手正式登录只接受手机号和短信验证码，旧的 `/auth/rider/login` 账号密码入口不存在。顾客和骑手共用腾讯云短信提供器，但验证码使用独立 Redis 命名空间；验证码有效期 5 分钟、校验成功后立即失效。
+骑手正式登录只接受手机号和短信验证码，旧的 `/auth/rider/login` 账号密码入口不存在。骑手也必须先调用 `/auth/rider/send-code`，才能使用 Mock 验证码 `123456`。顾客和骑手共用短信 Provider，但验证码使用独立 Redis 命名空间；验证码有效期 5 分钟、校验成功后立即失效。
 
 ### 生产腾讯云短信配置
 
@@ -170,18 +271,6 @@ curl -X POST "$BASE/api/v1/auth/refresh" -H 'Content-Type: application/json' \
 
 curl -X POST "$BASE/api/v1/auth/logout" \
   -H "Authorization: Bearer $CUSTOMER_TOKEN"
-```
-
-微信登录与手机号绑定仅在 `JXE_WECHAT_AUTH_ENABLED=true` 时注册：
-
-```http
-POST /api/v1/auth/customer/wechat-login
-{"code":"<微信 code>","device_id":"optional-device-id"}
-
-POST /api/v1/auth/customer/phone-bind
-Authorization: Bearer <customer token>
-Idempotency-Key: <key>
-{"phone_code":"<微信手机号授权 code>"}
 ```
 
 ## 4. 接口清单
@@ -250,7 +339,7 @@ curl -X POST "$BASE/api/v1/addresses" \
 | POST | `/api/v1/orders` | 顾客，写 | `shop_id`、`address_id`、`items` 必填 |
 | GET | `/api/v1/orders/{id}` | 顾客 | 本人订单详情 |
 | POST | `/api/v1/orders/{id}/cancel` | 顾客或有 `order:cancel` 的管理员，写 | `{"reason":"不需要了"}`；仅待支付订单可取消 |
-| POST | `/api/v1/orders/{id}/payments` | 顾客，写 | 微信支付单：`{"provider":"wechat","client_type":"miniapp","return_context":{}}` |
+| POST | `/api/v1/orders/{id}/payments` | 顾客，写 | 微信支付单：`{"provider":"wechat","client_type":"miniapp","return_context":{}}`；要求有效小程序身份且已绑定手机号 |
 | GET | `/api/v1/orders/{id}/payment` | 顾客 | 查询持久化支付状态 |
 | POST | `/api/v1/orders/{id}/pay/mock` | 顾客，写 | `{"channel":"mock"}`；仅 `JXE_PAYMENT_MOCK_ENABLED=true` 时注册 |
 | POST | `/api/v1/payments/{provider}/callbacks` | 支付供应商 | 无 JWT；仅微信支付开启时注册，需供应商签名头 |
@@ -277,7 +366,7 @@ curl -X POST "$BASE/api/v1/orders/$ORDER_ID/pay/mock" \
   -d '{"channel":"mock"}'
 ```
 
-真实微信支付接口需有效的小程序身份及支付配置；回调不是可随机构造的 JSON 接口，必须使用微信支付签名后的请求。回调成功响应为 `{"code":"SUCCESS","message":"成功"}`。
+真实微信支付接口需有效的当前小程序身份、已绑定手机号及支付配置。已有微信身份但未绑定手机号时，创建支付返回 `409 PHONE_BINDING_REQUIRED`，不创建支付记录，也不调用微信支付。回调不是可随机构造的 JSON 接口，必须使用微信支付签名后的请求。回调成功响应为 `{"code":"SUCCESS","message":"成功"}`。
 
 ### 顾客：实名认证与成年校验
 
@@ -302,8 +391,7 @@ curl -X POST "$BASE/api/v1/identity-verifications" \
 接口返回 `202`、`data.verification_id`、`data.session_url` 和
 `data.session_expires_at`。客户端跳转到 `session_url` 完成证件/人脸流程，
 然后按 `verification_id` 轮询；客户端不得向本系统提交姓名、证件号、证件图
-或人脸图。真实回调只能由服务商发起，本地签名回调的确定性验证由
-`TestCP1ClosureAcceptanceIntegration` 完成。
+或人脸图。真实回调只能由服务商发起，前端不应直接模拟生产回调。
 
 受限商品订单的判定为：`verified + adult + 未撤销 + 未超过可选 valid_until`
 才允许；处理中返回 `IDENTITY_VERIFICATION_PENDING`，未实名/未知/过期/撤销
@@ -385,7 +473,7 @@ curl -X POST "$BASE/api/v1/admin/home-slots" \
 ## 5. 推荐端到端验收顺序
 
 1. 执行健康检查，确认 `/readyz` 为 `ok`。
-2. 顾客短信登录，获取 `$CUSTOMER_TOKEN`；管理员和商户用账号密码登录，骑手用手机号短信登录。
+2. 顾客首次通过当前微信小程序登录并绑定手机号，获取 `$CUSTOMER_TOKEN`；后续可选择微信或短信登录。管理员和商户用账号密码登录，骑手用手机号短信登录。
 3. 查询 `/shops?city_code=440300&lat=22.54&lng=113.93`、`/products?shop_id=4201`，确认种子门店商品存在。
 4. 创建地址，记录 `$ADDRESS_ID`；创建订单，记录 `$ORDER_ID`。
 5. 使用 `/orders/{id}/pay/mock` 完成支付，读取 `/orders/{id}/payment` 确认 `status=succeeded`，读取订单确认 `status=paid`。
@@ -404,6 +492,12 @@ curl -X POST "$BASE/api/v1/admin/home-slots" \
 | 缺少/复用错误的幂等 key | 幂等校验错误或 `409 IDEMPOTENCY_CONFLICT` |
 | 数量小于 1 或大于 99 | `400 VALIDATION_FAILED` 或订单参数错误 |
 | 地址版本过期 | `409` 版本冲突 |
+| Swagger 的 `bearerAuth` 中粘贴了 `Bearer <token>` | 可能形成重复前缀并返回 `401 AUTH_UNAUTHORIZED`；只粘贴纯 Token |
+| Mock `phone_code` 填写为 `123456` 或裸手机号 | `401 WECHAT_PHONE_CODE_INVALID` |
+| 未调用 `send-code` 就直接使用 `123456` | `401 AUTH_INVALID_CODE` |
+| 短信验证码已使用一次或超过 5 分钟 | `401 AUTH_INVALID_CODE` |
+| C 端未完成当前小程序微信登录和手机号绑定就调用短信登录 | `403 AUTH_WECHAT_LOGIN_REQUIRED`，且不创建账号 |
+| 已微信登录但未绑定手机号就发起真实微信支付 | `409 PHONE_BINDING_REQUIRED`，不创建支付记录且不调用支付提供器 |
 | 已支付订单取消 | `409 ORDER_INVALID_STATUS` |
 | 已完成状态再次履约 | `409` 状态迁移冲突 |
 | 库存不足 | `409 STOCK_NOT_ENOUGH` 或库存相关冲突 |

@@ -126,9 +126,8 @@ func (s *Service) Submit(ctx context.Context, ip, method, path, key string, inpu
 		if !started {
 			return cachedResponse(ctx, s.idem, tx, publicActorType, actorID, path, key, &out)
 		}
-		// Claim the idempotency key before consuming the one-time SMS code. This
-		// lets an exact retry return the original response without requiring a
-		// second code, while every new idempotency key still consumes a fresh OTP.
+		// 在消耗短信一次性验证码前认领幂等键。这样精确重试无需第二个验证码
+		// 即可返回原始响应，而每个新幂等键仍会消耗新的验证码。
 		if err := s.sms.VerifyRiderSMSCode(ctx, req.Phone, req.Code); err != nil {
 			return err
 		}
@@ -315,7 +314,7 @@ func (s *Service) checkRate(ctx context.Context, scope, subject string, limit in
 	return nil
 }
 
-// ensureLoginFailureAllowed 确保Login Failure 允许状态存在且处于可用状态。
+// ensureLoginFailureAllowed 确保当前登录失败次数仍在允许范围内。
 func (s *Service) ensureLoginFailureAllowed(ctx context.Context, phone string) error {
 	if s.redis == nil {
 		return problem.New(503, "DEPENDENCY_UNAVAILABLE", "Service Unavailable", "redis is unavailable")
@@ -337,7 +336,7 @@ func (s *Service) ensureLoginFailureAllowed(ctx context.Context, phone string) e
 	return nil
 }
 
-// recordLoginFailure 返回记录 Login Failure。
+// recordLoginFailure 记录登录失败。
 func (s *Service) recordLoginFailure(ctx context.Context, phone string) error {
 	if s.redis == nil {
 		return problem.New(503, "DEPENDENCY_UNAVAILABLE", "Service Unavailable", "redis is unavailable")
@@ -348,7 +347,7 @@ func (s *Service) recordLoginFailure(ctx context.Context, phone string) error {
 	return nil
 }
 
-// clearLoginFailures 清空Login Failures。
+// clearLoginFailures 清空登录失败记录。
 func (s *Service) clearLoginFailures(ctx context.Context, phone string) error {
 	if s.redis == nil {
 		return problem.New(503, "DEPENDENCY_UNAVAILABLE", "Service Unavailable", "redis is unavailable")
@@ -359,7 +358,7 @@ func (s *Service) clearLoginFailures(ctx context.Context, phone string) error {
 	return nil
 }
 
-// loginFailureKey 返回login Failure 密钥。
+// loginFailureKey 返回登录失败计数键。
 func (s *Service) loginFailureKey(phone string) string {
 	return "rate:rider_application:login_failure:" + s.hmacString(strings.TrimSpace(phone))
 }
@@ -417,7 +416,7 @@ func (s *Service) loadRecord(ctx context.Context, db *gorm.DB, applicationID uin
 	return record, nil
 }
 
-// loadLockedRecord 加载Locked 记录。
+// loadLockedRecord 加载并锁定申请记录。
 func (s *Service) loadLockedRecord(ctx context.Context, tx *gorm.DB, applicationID uint64) (applicationRecord, error) {
 	var application Application
 	if err := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).First(&application, applicationID).Error; err != nil {
@@ -456,7 +455,7 @@ func (s *Service) mapSubmitError(ctx context.Context, err error, phone string) e
 	return err
 }
 
-// publicActorID 返回公开数据 Actor ID。
+// publicActorID 返回公开请求的主体 ID。
 func (s *Service) publicActorID(phone string) uint64 {
 	sum := hmac.New(sha256.New, []byte(s.cfg.HMACSecret))
 	_, _ = sum.Write([]byte("public-actor:" + phone))
@@ -521,7 +520,7 @@ func cachedResponse(ctx context.Context, store *idempotency.Store, tx *gorm.DB, 
 	return nil
 }
 
-// dtoFrom 返回DTO From。
+// dtoFrom 根据数据记录构造 DTO。
 func dtoFrom(record applicationRecord, fullPhone bool) ApplicationDTO {
 	var scope ServiceScope
 	_ = json.Unmarshal(record.ServiceScope, &scope)
@@ -555,7 +554,7 @@ func maskPhone(phone string) string {
 	return phone[:3] + "****" + phone[7:]
 }
 
-// pointerString 返回pointer 字符串。
+// pointerString 返回字符串指针。
 func pointerString(value *string) string {
 	if value == nil {
 		return ""
@@ -588,7 +587,7 @@ func hasPermission(claims *auth.Claims, permission string) bool {
 	return false
 }
 
-// applicantIDs 返回申请人 I Ds。
+// applicantIDs 返回申请人 ID 列表。
 func applicantIDs(claims *auth.Claims, permission string) (uint64, uint64, error) {
 	if claims == nil || claims.TokenType != "application_access" || !hasPermission(claims, permission) {
 		return 0, 0, problem.Forbidden("PERM_FORBIDDEN", "application permission denied")
@@ -633,10 +632,9 @@ func isDuplicate(err error) bool {
 }
 
 // sensitiveSession 返回敏感信息会话。
-// sensitiveSession prevents an injected/custom GORM logger from interpolating
-// applicant credentials or phone numbers into a failed SQL statement. The
-// shared MySQL logger is parameterized too; this is defense in depth for tests
-// and alternate constructors.
+// sensitiveSession 防止注入或自定义 GORM 日志器把申请人凭据或手机号
+// 插值到失败的 SQL 语句中。共享 MySQL 日志器同样使用参数化记录；
+// 这是针对测试和替代构造器的纵深防御。
 func sensitiveSession(db *gorm.DB) *gorm.DB {
 	return db.Session(&gorm.Session{Logger: db.Logger.LogMode(gormlogger.Silent)})
 }

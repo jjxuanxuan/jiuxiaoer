@@ -17,7 +17,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/pkg/paygateway"
 )
 
-// TestFakeProviderRequiresValidCallbackSignature 验证Fake 提供器 Requires 有效回调签名的预期行为。
+// TestFakeProviderRequiresValidCallbackSignature 验证模拟服务商要求有效的回调签名。
 func TestFakeProviderRequiresValidCallbackSignature(t *testing.T) {
 	cfg := config.Load().WeChat
 	cfg.PayMockEnabled = true

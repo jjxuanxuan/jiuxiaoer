@@ -1,8 +1,7 @@
 package store
 
-// StoreOrderActionReq binds every merchant fulfilment transition to the
-// version the client last observed. A pointer makes version zero a valid,
-// explicitly supplied value while still rejecting a missing field.
+// StoreOrderActionReq 将每次商户履约状态变更绑定到客户端最后观察到的版本。
+// 使用指针既允许显式提供零版本，也能拒绝字段缺失。
 type StoreOrderActionReq struct {
 	ExpectedVersion *uint `json:"expected_version" binding:"required"`
 }

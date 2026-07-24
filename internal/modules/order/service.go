@@ -231,10 +231,8 @@ func (s *Service) Create(ctx context.Context, claims *auth.Claims, method string
 				}
 			}
 		}
-		// Customer LBS is an enhancement layer. In observe mode it may fail or
-		// return a stale/different shop, but it must never bypass the authoritative
-		// service-area gate. Resolve again whenever it did not yield a currently
-		// trusted shop.
+		// 客户侧 LBS 是增强层。在 observe 模式下，它可能失败或返回过期、
+		// 不同的门店，但绝不能绕过权威服务区门禁。未得到当前可信门店时需重新解析。
 		if resolved == nil && s.cfg.Service.EnforcementMode != "off" {
 			if s.serviceArea == nil {
 				if s.cfg.Service.EnforcementMode == "enforce" {
@@ -283,7 +281,7 @@ func (s *Service) Create(ctx context.Context, claims *auth.Claims, method string
 			shopProductIDs = append(shopProductIDs, shopProductID)
 		}
 		sort.Slice(shopProductIDs, func(i int, j int) bool { return shopProductIDs[i] < shopProductIDs[j] })
-		// Run the alcohol compliance gate before the first inventory write.
+		// 在首次写入库存前执行酒类合规门禁。
 		complianceSnapshot, err := compliance.CheckOrder(ctx, tx, s.cfg.CP1, customerID, shopProductIDs)
 		if err != nil {
 			return err
@@ -516,9 +514,8 @@ func (s *Service) Detail(ctx context.Context, claims *auth.Claims, orderIDRaw st
 	return orderDetailDTO(row, shop, items, payment, paymentErr == nil), nil
 }
 
-// Cancel is the customer endpoint contract: only the owner can cancel a
-// pending-payment order. Administrative cancellation has a separate entry so
-// an admin token can never inherit customer-route semantics accidentally.
+// Cancel 是客户接口契约：只有订单所有者可以取消待支付订单。
+// 管理取消使用独立入口，避免管理员令牌意外继承客户路由语义。
 func (s *Service) Cancel(ctx context.Context, claims *auth.Claims, method string, path string, key string, orderIDRaw string, req OrderCancelReq) (OrderDTO, error) {
 	actor, err := customerCancelActorFromClaims(claims)
 	if err != nil {
@@ -527,9 +524,8 @@ func (s *Service) Cancel(ctx context.Context, claims *auth.Claims, method string
 	return s.cancel(ctx, claims, actor, method, path, key, orderIDRaw, req)
 }
 
-// CancelAdmin is used only by the operations route. Paid orders enter the
-// existing refund workflow; this capability is never exposed through the
-// customer cancellation endpoint.
+// CancelAdmin 仅供运营路由使用。已支付订单进入现有退款流程，
+// 此能力绝不会通过客户取消接口公开。
 func (s *Service) CancelAdmin(ctx context.Context, claims *auth.Claims, method string, path string, key string, orderIDRaw string, req OrderCancelReq) (OrderDTO, error) {
 	actor, err := adminCancelActorFromClaims(claims)
 	if err != nil {
@@ -606,9 +602,8 @@ func (s *Service) cancel(ctx context.Context, claims *auth.Claims, actor cancelA
 }
 
 // cancelPaidOrder 取消Paid 订单。
-// cancelPaidOrder never marks money refunded. It moves the order into the
-// existing refund workflow boundary and emits a durable request for the refund
-// orchestrator, while cancelling any open delivery assignment.
+// cancelPaidOrder 绝不会直接将款项标记为已退款。它把订单移入现有退款流程边界，
+// 向退款编排器发出持久请求，同时取消所有未结束的配送分配。
 func (s *Service) cancelPaidOrder(ctx context.Context, tx *gorm.DB, row Order, actorID uint64, req OrderCancelReq) (OrderDTO, error) {
 	now := time.Now()
 	reasonCode := req.ReasonCode
@@ -734,9 +729,8 @@ func (s *Service) cancelPendingOrder(ctx context.Context, tx *gorm.DB, row Order
 	}); err != nil {
 		return OrderDTO{}, err
 	}
-	// A pending-payment order normally has no delivery yet. This defensive
-	// order-boundary invalidation closes the race for legacy or repaired data
-	// where a delivery credential was created early.
+	// 待支付订单通常尚无配送。此订单边界防御性失效处理可消除旧数据或修复数据中
+	// 配送凭据提前创建所产生的竞争。
 	if err := deliveryverification.InvalidateByOrder(ctx, tx, s.idGen, row.ID, "order_cancelled"); err != nil {
 		return OrderDTO{}, err
 	}
@@ -977,6 +971,13 @@ func (s *Service) CreatePayment(ctx context.Context, claims *auth.Claims, method
 		}
 		if err != nil {
 			return err
+		}
+		phoneBound, err := s.repo.CustomerPhoneBound(ctx, tx, customerID)
+		if err != nil {
+			return err
+		}
+		if !phoneBound {
+			return problem.Conflict("PHONE_BINDING_REQUIRED", "phone binding is required for payment")
 		}
 
 		payment, err = s.repo.LockPaymentByOrderProvider(ctx, tx, orderID, req.Provider)
@@ -1326,9 +1327,8 @@ func (s *Service) createAudit(ctx context.Context, tx *gorm.DB, actorType string
 	})
 }
 
-// AuditFailure records a rejected customer order/payment action in an
-// independent transaction boundary. Request bodies, verification values and
-// provider payloads are intentionally excluded.
+// AuditFailure 在独立事务边界中记录被拒绝的客户订单或支付操作。
+// 请求体、验证值和服务商载荷会被刻意排除。
 func (s *Service) AuditFailure(ctx context.Context, claims *auth.Claims, action, orderIDRaw string, cause error) error {
 	actorType := "unknown"
 	actorID := uint64(0)

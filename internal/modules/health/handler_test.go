@@ -11,7 +11,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/config"
 )
 
-// TestLiveAndReadySeparateProcessFromDependencies 验证Live And 就绪状态 Separate Process From Dependencies的预期行为。
+// TestLiveAndReadySeparateProcessFromDependencies 验证存活检查和就绪检查区分进程与依赖状态。
 func TestLiveAndReadySeparateProcessFromDependencies(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := config.Load()
@@ -35,7 +35,7 @@ func TestLiveAndReadySeparateProcessFromDependencies(t *testing.T) {
 	}
 }
 
-// TestOptionalDependenciesDoNotBlockReadiness 验证Optional Dependencies Do 不 Block Readiness的预期行为。
+// TestOptionalDependenciesDoNotBlockReadiness 验证可选依赖不会阻塞就绪状态。
 func TestOptionalDependenciesDoNotBlockReadiness(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := config.Load()
@@ -60,7 +60,7 @@ func TestOptionalDependenciesDoNotBlockReadiness(t *testing.T) {
 	}
 }
 
-// TestReadinessMetricsIdentifyRequiredDependencyFailure 验证Readiness 指标 Identify Required Dependency Failure的预期行为。
+// TestReadinessMetricsIdentifyRequiredDependencyFailure 验证就绪指标能识别必需依赖故障。
 func TestReadinessMetricsIdentifyRequiredDependencyFailure(t *testing.T) {
 	cfg := config.Load()
 	cfg.Feature.MQPublisherEnabled = false

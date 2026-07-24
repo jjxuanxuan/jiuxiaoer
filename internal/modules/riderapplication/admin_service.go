@@ -375,7 +375,7 @@ func normalizeApplicationOrder(raw string) (string, error) {
 	return order, nil
 }
 
-// sqlApplicationOrder 返回sql 申请订单。
+// sqlApplicationOrder 返回申请列表的 SQL 排序表达式。
 func sqlApplicationOrder(order string) string {
 	parts := strings.Split(order, ",")
 	for index, part := range parts {
@@ -453,7 +453,7 @@ func (s *Service) decodePageToken(raw string) (pageCursor, error) {
 	return cursor, nil
 }
 
-// hmacEqual 判断HMAC Equal。
+// hmacEqual 判断两个 HMAC 是否相等。
 func hmacEqual(left, right string) bool {
 	if len(left) != len(right) {
 		return false

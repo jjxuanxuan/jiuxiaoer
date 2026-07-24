@@ -26,7 +26,7 @@ func RegisterRoutes(g *gin.RouterGroup, h *Handler) {
 	g.GET("/provisioning-operations/:id", h.GetOperation)
 }
 
-// pc 返回pc。
+// pc 返回开通控制器。
 func pc(c *gin.Context) (*auth.Claims, bool) {
 	v, ok := auth.ClaimsFromContext(c)
 	if !ok {
@@ -35,7 +35,7 @@ func pc(c *gin.Context) (*auth.Claims, bool) {
 	return v, ok
 }
 
-// bad 判断bad。
+// bad 输出错误响应。
 func bad(c *gin.Context, e error) bool {
 	if e != nil {
 		response.Error(c, problem.InvalidArgument("VALIDATION_FAILED", e.Error()))
@@ -180,7 +180,7 @@ func (h *Handler) GetOperation(c *gin.Context) {
 	done(c, x, e)
 }
 
-// done 处理done相关逻辑。
+// done 输出成功响应。
 func done(c *gin.Context, x any, e error) {
 	if e != nil {
 		response.Error(c, e)

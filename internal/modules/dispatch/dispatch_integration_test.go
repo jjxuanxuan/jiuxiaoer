@@ -17,7 +17,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/pkg/snowflake"
 )
 
-// TestConcurrentGrabCreatesOneActiveAssignmentIntegration 验证Concurrent Grab Creates One 启用状态分配集成的预期行为。
+// TestConcurrentGrabCreatesOneActiveAssignmentIntegration 验证并发抢单只创建一个有效分配。
 func TestConcurrentGrabCreatesOneActiveAssignmentIntegration(t *testing.T) {
 	if os.Getenv("JXE_RUN_INTEGRATION") != "1" {
 		t.Skip("set JXE_RUN_INTEGRATION=1 to run dispatch integration tests")

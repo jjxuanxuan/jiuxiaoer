@@ -182,9 +182,8 @@ func (h *Handler) ListShopProducts(c *gin.Context) {
 	response.Page(c, items, nextPageToken)
 }
 
-// storePaginationScope binds a cursor to the exact merchant principal and its
-// current shop authorization snapshot. Sorting makes an equivalent JWT shop
-// set produce the same fingerprint regardless of claim order.
+// storePaginationScope 将游标绑定到准确的商户主体及其当前门店授权快照。
+// 经过排序后，等价的 JWT 门店集合不受声明顺序影响，会生成相同指纹。
 func storePaginationScope(claims *auth.Claims) []string {
 	if claims == nil {
 		return []string{"merchant_id", "", "merchant_user_id", "", "authorized_shop_ids", ""}

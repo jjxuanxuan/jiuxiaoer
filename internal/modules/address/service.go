@@ -355,7 +355,7 @@ func cachedAddress(ctx context.Context, store *idempotency.Store, tx *gorm.DB, a
 	return nil
 }
 
-// actorAndAddress 返回actor And 地址。
+// actorAndAddress 返回审计主体和地址记录。
 func (s *Service) actorAndAddress(claims *auth.Claims, id string) (uint64, uint64, error) {
 	customerID, err := customerIDFromClaims(claims)
 	if err != nil {
@@ -394,7 +394,7 @@ func validateAddress(cityCode, districtCode, phone string, latitude, longitude *
 	return nil
 }
 
-// customerAddressFromCreate 返回用户地址 From Create。
+// customerAddressFromCreate 根据创建请求构造客户地址。
 func customerAddressFromCreate(id, customerID uint64, req AddressUpsertReq, isDefault bool, verified *customerlocation.VerifiedAddress) CustomerAddress {
 	status := "missing"
 	provider := (*string)(nil)

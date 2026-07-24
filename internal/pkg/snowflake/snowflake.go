@@ -36,8 +36,8 @@ func (g *Generator) Next() uint64 {
 	if nowMS == g.lastMS {
 		g.sequence++
 		if g.sequence > 0xfff {
-			// Advance logical time instead of spinning or reusing a sequence when
-			// the wall clock is behind or more than 4096 IDs are requested in 1ms.
+			// 当系统时钟落后或 1 毫秒内请求超过 4096 个 ID 时，
+			// 推进逻辑时间，而不是自旋或复用序列号。
 			nowMS = g.lastMS + 1
 			g.sequence = 0
 		}

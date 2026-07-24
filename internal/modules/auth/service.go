@@ -116,8 +116,8 @@ func NewService(cfg config.Config, db *gorm.DB, redisClient *goredis.Client, idG
 	return service
 }
 
-// WithSMSProvider injects the production SMS adapter. A nil provider leaves
-// the local mock (when enabled) or the disabled state unchanged.
+// WithSMSProvider 注入生产短信适配器。服务商为 nil 时，
+// 保持已启用的本地模拟实现或关闭状态不变。
 func (s *Service) WithSMSProvider(provider SMSProvider) *Service {
 	if provider != nil {
 		s.sms = provider
@@ -175,7 +175,7 @@ func (s *Service) newSMSCode() (string, error) {
 	return fmt.Sprintf("%06d", value.Int64()), nil
 }
 
-// CustomerSMSLogin 首次登录时创建 C 端账号，并返回完整 token 对。
+// CustomerSMSLogin 仅允许已完成微信首登和手机号绑定的 C 端账号登录。
 func (s *Service) CustomerSMSLogin(ctx context.Context, req SmsLoginReq) (*TokenResp, error) {
 	if !phonePattern.MatchString(req.Phone) {
 		return nil, problem.InvalidArgument("AUTH_INVALID_PHONE", "invalid phone")
@@ -191,7 +191,10 @@ func (s *Service) CustomerSMSLogin(ctx context.Context, req SmsLoginReq) (*Token
 		return nil, problem.Internal("mysql is not configured")
 	}
 
-	account, customer, err := s.repo.FindOrCreateCustomerByPhone(ctx, req.Phone, s.idGen.Next)
+	account, customer, err := s.repo.FindCustomerForSMSLogin(ctx, req.Phone, s.cfg.WeChat.MiniAppID)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, problem.Forbidden("AUTH_WECHAT_LOGIN_REQUIRED", "complete wechat login and phone binding before sms login")
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -207,7 +210,7 @@ func (s *Service) CustomerSMSLogin(ctx context.Context, req SmsLoginReq) (*Token
 		Permissions:       customerPermissions(),
 		Profile: map[string]any{
 			"customer_id": idString(customer.ID),
-			"phone":       req.Phone,
+			"phone":       customer.Phone,
 		},
 	}
 	resp, err := s.issueResponse(ctx, identity)
@@ -270,7 +273,7 @@ func (s *Service) VerifyRiderSMSCode(ctx context.Context, phone, code string) er
 	return s.verifySMSCode(ctx, "rider", phone, code)
 }
 
-// WeChatLogin 返回We Chat Login。
+// WeChatLogin 执行微信登录。
 func (s *Service) WeChatLogin(ctx context.Context, req WeChatLoginReq) (*WeChatLoginResp, error) {
 	if s.wechat == nil || !s.cfg.WeChat.AuthEnabled {
 		return nil, problem.New(503, "PROVIDER_UNAVAILABLE", "Service Unavailable", "wechat login is unavailable")
@@ -483,9 +486,9 @@ func (s *Service) VerifyAccess(ctx context.Context, rawToken string) (*Claims, e
 	return claims, nil
 }
 
-// validateAccountTokenSnapshot closes the permission/scope revocation window.
-// credential_version is authoritative for newly issued tokens; the timestamp
-// remains a defence-in-depth boundary for legacy sessions and explicit resets.
+// validateAccountTokenSnapshot 关闭权限/范围撤销窗口。
+// credential_version 对于新发行的 token 具有权威性；时间戳
+// 仍然是遗留会话和显式重置的纵深防御边界。
 func validateAccountTokenSnapshot(account Account, claims *Claims) error {
 	if claims == nil || claims.CredentialVersion == 0 || claims.CredentialVersion != account.CredentialVersion {
 		return problem.Unauthorized("AUTH_SESSION_REVOKED", "session revoked")
@@ -666,7 +669,7 @@ func customerPermissions() []string {
 	return []string{"customer:login", "product:list", "cart:view", "cart:update", "order:create", "order:list", "order:view", "order:cancel", "payment:create", "payment:view", "delivery_verification:view_customer"}
 }
 
-// issueResponse 返回issue 响应。
+// issueResponse 签发并返回认证响应。
 func (s *Service) issueResponse(ctx context.Context, identity Identity) (*TokenResp, error) {
 	pair, err := s.tokens.Issue(identity)
 	if err != nil {
@@ -742,7 +745,7 @@ redis.call('DEL', KEYS[1])
 return 1
 `)
 
-// rotateSession 返回rotate 会话。
+// rotateSession 轮换认证会话。
 func (s *Service) rotateSession(ctx context.Context, identity Identity, pair TokenPair, oldClaims *Claims) error {
 	if s.redis == nil {
 		return dependencyUnavailable("redis is required for session rotation")
@@ -776,7 +779,7 @@ func tokenResponse(identity Identity, pair TokenPair) *TokenResp {
 	}
 }
 
-// dependencyUnavailable 返回dependency Unavailable。
+// dependencyUnavailable 返回依赖不可用错误。
 func dependencyUnavailable(detail string) error {
 	return problem.New(503, "SYSTEM_DEPENDENCY_UNAVAILABLE", "Service Unavailable", detail)
 }
@@ -810,7 +813,7 @@ func smsLoginKey(scope, phone string) string {
 	return "sms:login:" + scope + ":" + phone
 }
 
-// ensureLoginAllowed 确保Login 允许状态存在且处于可用状态。
+// ensureLoginAllowed 确保当前登录失败次数仍在允许范围内。
 func (s *Service) ensureLoginAllowed(ctx context.Context, accountType string, subject string) error {
 	if s.redis == nil {
 		return nil
@@ -828,7 +831,7 @@ func (s *Service) ensureLoginAllowed(ctx context.Context, accountType string, su
 	return nil
 }
 
-// recordLoginFailure 处理记录 Login Failure相关逻辑。
+// recordLoginFailure 记录登录失败。
 func (s *Service) recordLoginFailure(ctx context.Context, accountType string, subject string) {
 	if s.redis == nil {
 		return
@@ -851,7 +854,7 @@ func (s *Service) resetLoginFailures(ctx context.Context, accountType string, su
 	_ = s.redis.Del(ctx, loginFailureKey(accountType, subject)).Err()
 }
 
-// loginFailureKey 返回login Failure 密钥。
+// loginFailureKey 返回登录失败计数键。
 func loginFailureKey(accountType string, subject string) string {
 	return loginFailureCounterBase + rateKeyPart(accountType) + ":" + rateKeyPart(subject)
 }
@@ -914,7 +917,7 @@ func (s *Service) createAudit(ctx context.Context, identity Identity, action str
 	})
 }
 
-// identityFromClaims 返回身份 From 认证声明。
+// identityFromClaims 从认证声明中提取身份。
 func identityFromClaims(claims *Claims) Identity {
 	if claims == nil {
 		return Identity{AccountType: "unknown"}
@@ -931,7 +934,7 @@ func identityFromClaims(claims *Claims) Identity {
 	}
 }
 
-// actorIDForIdentity 返回actor ID For 身份。
+// actorIDForIdentity 返回身份对应的主体 ID。
 func actorIDForIdentity(identity Identity) uint64 {
 	switch identity.AccountType {
 	case "customer":
@@ -963,7 +966,7 @@ func jsonData(value any) datatypes.JSON {
 	return datatypes.JSON(payload)
 }
 
-// parseUintOrZero 解析Uint Or Zero。
+// parseUintOrZero 解析无符号整数，失败时返回零。
 func parseUintOrZero(raw string) uint64 {
 	id, _ := strconv.ParseUint(raw, 10, 64)
 	return id

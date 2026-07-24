@@ -1,9 +1,9 @@
 -- +goose Up
--- Hybrid dispatch is an additive migration. Payment success creates the
--- delivery/job facts; store preparation only opens the pickup gate.
+-- 混合派单是增量迁移。支付成功会创建配送和任务事实；
+-- 门店备货仅用于打开取货门禁。
 
--- Abort before the first DDL statement with an actionable message rather than
--- leaving a partially applied migration when legacy data contains duplicates.
+-- 旧数据存在重复项时，在第一条 DDL 语句前终止并给出可操作消息，
+-- 避免留下部分应用的迁移。
 DROP PROCEDURE IF EXISTS assert_one_active_delivery_assignment;
 -- +goose StatementBegin
 CREATE PROCEDURE assert_one_active_delivery_assignment()
@@ -205,9 +205,8 @@ CREATE TABLE IF NOT EXISTS rider_service_shops (
   CONSTRAINT chk_rider_service_shop_status CHECK (status IN ('active','inactive'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
--- Compatibility backfill: dispatch stops reading riders.service_scope on the
--- hot path, so every valid legacy shop relation must exist in the normalized
--- table before the application is enabled.
+-- 兼容性回填：派单热路径不再读取 riders.service_scope，
+-- 因此启用应用前，每个有效的旧版门店关系都必须存在于规范化表中。
 INSERT INTO rider_service_shops (id,rider_id,shop_id,status,source,created_by,updated_by)
 SELECT
   CAST(CONV(SUBSTRING(SHA2(CONCAT(r.id,':',legacy_scope.shop_id_raw),256),1,15),16,10) AS UNSIGNED),
@@ -227,8 +226,8 @@ WHERE r.deleted_at IS NULL
   AND legacy_scope.shop_id_raw REGEXP '^[1-9][0-9]{0,19}$'
 ON DUPLICATE KEY UPDATE status='active',source='migration',updated_by=VALUES(updated_by);
 
--- MySQL has no ADD COLUMN IF NOT EXISTS syntax. These helpers make the
--- additive migration safely repeatable after a non-destructive goose down.
+-- MySQL 不支持 ADD COLUMN IF NOT EXISTS 语法。
+-- 这些辅助过程使增量迁移在非破坏性 goose 回滚后可以安全重复执行。
 DROP PROCEDURE IF EXISTS hybrid_dispatch_add_column;
 -- +goose StatementBegin
 CREATE PROCEDURE hybrid_dispatch_add_column(
@@ -290,8 +289,8 @@ SET dispatch_status = CASE
       ELSE 'pending'
     END,
     pickup_ready_status = CASE
-      -- Before this migration delivery_orders was only created by store
-      -- prepare, therefore every legacy non-cancelled row is pickup-ready.
+      -- 此迁移前，delivery_orders 只会在门店备货时创建，
+      -- 因此每条未取消的旧版记录都已具备取货条件。
       WHEN status IN ('pending_assign','accepted','delivering','completed') THEN 'ready'
       WHEN status = 'cancelled' THEN 'cancelled'
       ELSE 'waiting_store'
@@ -303,8 +302,8 @@ SET dispatch_status = CASE
     END
 WHERE dispatch_policy_version IS NULL;
 
--- Legacy unassigned rows cannot be silently exposed as public grab jobs. They
--- enter the auditable manual queue and can then be retried after policy review.
+-- 旧版未分配记录不能悄然公开为抢单任务。它们会进入可审计的人工队列，
+-- 并可在策略审核后重试。
 INSERT INTO dispatch_jobs (
   id,job_no,delivery_order_id,order_id,shop_id,dispatch_seq,policy_id,policy_version,
   policy_snapshot,mode,status,next_action_at,status_reason_code,status_reason_safe,version
@@ -356,6 +355,6 @@ DROP PROCEDURE hybrid_dispatch_add_index;
 DROP PROCEDURE hybrid_dispatch_add_column;
 
 -- +goose Down
--- Intentionally non-destructive. Operational rollback disables dispatch and
--- retains assignment uniqueness and history.
+-- 此回滚刻意保持非破坏性。运维回滚会关闭派单，
+-- 同时保留分配唯一性和历史记录。
 SELECT 1;

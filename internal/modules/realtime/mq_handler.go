@@ -21,7 +21,7 @@ type MQHandler struct {
 
 var _ mq.ReliableAfterCommitConsumerHandler = (*MQHandler)(nil)
 
-// NewMQHandler 创建并初始化消息队列 Handler。
+// NewMQHandler 创建并初始化消息队列处理器。
 func NewMQHandler(service *Service) *MQHandler { return &MQHandler{service: service} }
 
 type realtimeTarget struct {
@@ -57,9 +57,9 @@ func (h *MQHandler) Handle(ctx context.Context, tx *gorm.DB, envelope mq.EventEn
 			}
 			return mq.ConsumerResult{}, mq.TemporaryConsumerError("REALTIME_RECIPIENT_LOOKUP_FAILED", "realtime recipient lookup failed", err)
 		}
-		// mq_consumer_receipts is the durable event_id de-duplication point.
-		// Merchant WS events themselves are intentionally transient because the
-		// scoped store order list is the reconnect source of truth.
+		// mq_consumer_receipts 是持久的 event_id 去重点。
+		// 商户 WebSocket 事件本身刻意保持临时性，
+		// 因为限定范围的门店订单列表才是重连后的事实来源。
 		return mq.ConsumerResult{RefType: "merchant_paid_order", RefID: orderID}, nil
 	}
 	targets, err := h.targets(ctx, tx, envelope, payload)
@@ -159,14 +159,14 @@ func (h *MQHandler) AfterCommit(ctx context.Context, envelope mq.EventEnvelope, 
 	return h.service.PublishWakeups(ctx, live)
 }
 
-// RequiresSuccessfulAfterCommit makes the MQ receipt itself the retryable
-// handoff for transient merchant Redis fanout. Rider events already have a
-// durable realtime_deliveries relay and therefore keep the existing behavior.
+// RequiresSuccessfulAfterCommit 让 MQ 回执本身成为商户 Redis 临时扇出的
+// 可重试交接点。骑手事件已有持久 realtime_deliveries 中继，
+// 因此保持现有行为。
 func (h *MQHandler) RequiresSuccessfulAfterCommit(envelope mq.EventEnvelope, result mq.ConsumerResult) bool {
 	return h != nil && h.service != nil && h.service.cfg.Realtime.Enabled && envelope.EventType == "order.paid" && result.RefType == "merchant_paid_order"
 }
 
-// targets 返回targets。
+// targets 返回投递目标。
 func (h *MQHandler) targets(ctx context.Context, tx *gorm.DB, envelope mq.EventEnvelope, payload map[string]any) ([]realtimeTarget, error) {
 	now := time.Now().UTC()
 	deliveryID := optionalIDFromPayload(payload, "delivery_order_id")
@@ -279,14 +279,14 @@ func (h *MQHandler) targets(ctx context.Context, tx *gorm.DB, envelope mq.EventE
 	}
 }
 
-// eligibleCandidateRiders 返回eligible Candidate Riders。
+// eligibleCandidateRiders 返回符合条件的候选骑手。
 func eligibleCandidateRiders(ctx context.Context, tx *gorm.DB, jobID uint64) ([]uint64, error) {
 	var riders []uint64
 	err := tx.WithContext(ctx).Table("dispatch_candidates").Where("job_id=? AND eligible=1", jobID).Order("rank_no").Pluck("rider_id", &riders).Error
 	return riders, err
 }
 
-// offerRiders 返回offer Riders。
+// offerRiders 返回派单目标骑手。
 func offerRiders(ctx context.Context, tx *gorm.DB, jobID uint64) ([]uint64, error) {
 	var riders []uint64
 	err := tx.WithContext(ctx).Table("dispatch_offers").Where("job_id=?", jobID).Order("id").Pluck("rider_id", &riders).Error
@@ -321,7 +321,7 @@ func closeJobTargets(ctx context.Context, tx *gorm.DB, jobID uint64, payload map
 	return targets, nil
 }
 
-// cancelledOrderTargets 返回cancelled 订单 Targets。
+// cancelledOrderTargets 返回已取消订单的通知目标。
 func cancelledOrderTargets(ctx context.Context, tx *gorm.DB, orderID uint64, payload map[string]any, now time.Time) ([]realtimeTarget, error) {
 	type deliveryRow struct {
 		ID                   uint64
@@ -352,7 +352,7 @@ func cancelledOrderTargets(ctx context.Context, tx *gorm.DB, orderID uint64, pay
 	return targets, nil
 }
 
-// currentJobID 返回current 任务ID。
+// currentJobID 返回当前任务 ID。
 func currentJobID(ctx context.Context, tx *gorm.DB, deliveryID uint64) (uint64, error) {
 	type row struct{ CurrentDispatchJobID *uint64 }
 	var current row
@@ -363,7 +363,7 @@ func currentJobID(ctx context.Context, tx *gorm.DB, deliveryID uint64) (uint64, 
 	return *current.CurrentDispatchJobID, nil
 }
 
-// targetsForRiders 返回targets For Riders。
+// targetsForRiders 返回骑手投递目标。
 func targetsForRiders(riders []uint64, eventType, aggregateType string, aggregateID uint64, payload map[string]any, sound string, expiresAt time.Time) []realtimeTarget {
 	targets := make([]realtimeTarget, 0, len(riders))
 	for _, riderID := range riders {

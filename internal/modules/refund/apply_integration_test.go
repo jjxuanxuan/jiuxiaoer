@@ -14,7 +14,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/pkg/snowflake"
 )
 
-// TestApplyProviderStateIsAtomicAndIdempotent 验证Apply 提供器状态 Is Atomic And Idempotent的预期行为。
+// TestApplyProviderStateIsAtomicAndIdempotent 验证应用服务商状态具有原子性和幂等性。
 func TestApplyProviderStateIsAtomicAndIdempotent(t *testing.T) {
 	if os.Getenv("JXE_RUN_INTEGRATION") != "1" {
 		t.Skip("set JXE_RUN_INTEGRATION=1 to run refund ledger integration test")

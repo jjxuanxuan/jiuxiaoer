@@ -207,9 +207,9 @@ func (h *Handler) AuthRequired() gin.HandlerFunc {
 	}
 }
 
-//当不记名令牌存在时，OptionalAuth 会附加经过验证的客户声明
-//存在，同时仍然允许匿名位置上下文请求。
-//一个坏令牌永远不会默默地降级为匿名。
+// 当不记名令牌存在时，OptionalAuth 会附加经过验证的客户声明
+// 存在，同时仍然允许匿名位置上下文请求。
+// 一个坏令牌永远不会默默地降级为匿名。
 func (h *Handler) OptionalAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		header := strings.TrimSpace(c.GetHeader("Authorization"))
@@ -257,7 +257,7 @@ func (h *Handler) LogoutAuth() gin.HandlerFunc {
 	}
 }
 
-// ClaimsFromContext 返回认证声明 From 上下文。
+// ClaimsFromContext 从上下文返回认证声明。
 func ClaimsFromContext(c *gin.Context) (*Claims, bool) {
 	value, ok := c.Get("auth_claims")
 	if !ok {
@@ -267,7 +267,7 @@ func ClaimsFromContext(c *gin.Context) (*Claims, bool) {
 	return claims, ok
 }
 
-// bearerToken 返回bearer 令牌。
+// bearerToken 返回 Bearer 令牌。
 func bearerToken(header string) (string, bool) {
 	const prefix = "Bearer "
 	if !strings.HasPrefix(header, prefix) {

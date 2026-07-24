@@ -32,7 +32,7 @@ func RegisterRoutes(api, protected *gin.RouterGroup, handler *Handler) {
 	api.GET("/realtime/ws", handler.websocket)
 }
 
-// issueTicket 处理issue Ticket相关逻辑。
+// issueTicket 签发实时连接票据。
 func (h *Handler) issueTicket(c *gin.Context) {
 	if !h.cfg.Enabled {
 		response.Error(c, realtimeDisabled())

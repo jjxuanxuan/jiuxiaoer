@@ -13,10 +13,10 @@ type Handler struct{ service *Service }
 // NewHandler 创建并初始化Handler。
 func NewHandler(s *Service) *Handler { return &Handler{service: s} }
 
-// RegisterCustomerRoutes 注册用户 Routes。
+// RegisterCustomerRoutes 注册客户路由。
 func RegisterCustomerRoutes(g *gin.RouterGroup, h *Handler) { g.GET("/profile", h.Profile) }
 
-// RegisterAdminRoutes 注册管理端 Routes。
+// RegisterAdminRoutes 注册管理端路由。
 func RegisterAdminRoutes(g *gin.RouterGroup, h *Handler) {
 	g.GET("/members", h.ListMembers)
 	g.GET("/members/:customer_id", h.AdminMember)
@@ -120,7 +120,7 @@ func (h *Handler) ListRules(c *gin.Context) {
 	response.Page(c, v, next)
 }
 
-// CreateRule 创建Rule。
+// CreateRule 创建会员规则。
 func (h *Handler) CreateRule(c *gin.Context) {
 	cl, ok := memberClaims(c)
 	if !ok {

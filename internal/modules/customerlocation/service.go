@@ -73,8 +73,8 @@ func NewService(cfg config.CustomerLBSConfig, db *gorm.DB, redisClient *goredis.
 
 func (s *Service) HashSession(raw string) string { return s.digest(raw) }
 
-// BuildActor applies the same customer/anonymous binding contract to every
-// endpoint that consumes X-Location-Context.
+// BuildActor 对所有使用 X-Location-Context 的接口应用相同的
+// 客户或匿名主体绑定契约。
 func (s *Service) BuildActor(customerID, rawSession string) (Actor, error) {
 	if strings.TrimSpace(customerID) != "" {
 		if value, err := strconv.ParseUint(customerID, 10, 64); err != nil || value == 0 {
