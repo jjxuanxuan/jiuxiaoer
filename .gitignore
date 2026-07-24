@@ -2,7 +2,7 @@
 .env
 .env.*
 !.env.example
-.gstack
+
 
 # IDE
 .idea/
@@ -41,3 +41,5 @@ uploads/
 # Go workspace
 go.work
 go.work.sum
+# Local gstack data
+/.gstack
