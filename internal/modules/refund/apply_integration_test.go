@@ -42,10 +42,10 @@ func TestApplyProviderStateIsAtomicAndIdempotent(t *testing.T) {
 		}
 	}
 	mustExec("INSERT INTO orders (id,order_no,customer_id,merchant_id,shop_id,status,pay_status,delivery_status,goods_amount,payable_amount,paid_amount,refunded_amount,after_sale_status) VALUES (?,?,?,?,?,'completed','succeeded','completed',1000,1000,1000,0,'processing')", orderID, orderNo, 1, 1, 1)
-	mustExec("INSERT INTO payments (id,payment_no,order_id,customer_id,channel,provider,status,amount,refunded_amount,currency) VALUES (?,?,?,1,'miniapp','wechat','succeeded',1000,0,'CNY')", paymentID, paymentNo, orderID)
+	mustExec("INSERT INTO payments (id,payment_no,biz_type,biz_id,order_id,customer_id,channel,provider,status,amount,refunded_amount,currency) VALUES (?,?,'retail_order',?,?,1,'miniapp','wechat','succeeded',1000,0,'CNY')", paymentID, paymentNo, orderID, orderID)
 	mustExec("INSERT INTO after_sales (id,after_sale_no,order_id,customer_id,merchant_id,shop_id,type,requested_resolution,approved_resolution,status,requested_amount,approved_amount,description,submitted_at) VALUES (?,?,?,1,1,1,'damaged','refund_only','refund_only','refund_processing',400,400,'integration fixture',?)", afterSaleID, afterSaleNo, orderID, now)
 	mustExec("INSERT INTO after_sale_items (id,after_sale_id,order_id,order_item_id,shop_product_id,product_id,requested_quantity,approved_quantity,requested_amount,approved_amount) VALUES (?,?,?,?,?,?,1,1,400,400)", itemID, afterSaleID, orderID, ids.Next(), ids.Next(), ids.Next())
-	mustExec("INSERT INTO refunds (id,refund_no,after_sale_id,order_id,payment_id,provider,status,amount,total_amount,currency,requested_at) VALUES (?,?,?,?,?,'wechat','pending',400,1000,'CNY',?)", refundID, refundNo, afterSaleID, orderID, paymentID, now)
+	mustExec("INSERT INTO refunds (id,refund_no,biz_type,biz_id,after_sale_id,order_id,payment_id,provider,status,amount,total_amount,currency,requested_at) VALUES (?,?,'retail_after_sale',?,?,?,?,'wechat','pending',400,1000,'CNY',?)", refundID, refundNo, afterSaleID, afterSaleID, orderID, paymentID, now)
 	mustExec("INSERT INTO refund_items (id,refund_id,after_sale_item_id,amount,quantity) VALUES (?,?,?,?,1)", ids.Next(), refundID, itemID, 400)
 	t.Cleanup(func() {
 		db.Exec("DELETE FROM outbox_events WHERE aggregate_type='refund' AND aggregate_id=?", refundID)

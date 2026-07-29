@@ -62,6 +62,48 @@ func (h *MQHandler) Handle(ctx context.Context, tx *gorm.DB, envelope mq.EventEn
 		// 因为限定范围的门店订单列表才是重连后的事实来源。
 		return mq.ConsumerResult{RefType: "merchant_paid_order", RefID: orderID}, nil
 	}
+	if envelope.EventType == "wine_ticket.redemption_created" {
+		orderID, err := idFromPayload(payload, "order_id")
+		if err != nil {
+			return mq.ConsumerResult{}, mq.TerminalConsumerError(
+				"REALTIME_ORDER_ID_INVALID",
+				"wine-ticket redemption order id is invalid",
+				err,
+			)
+		}
+		deliveryID, err := idFromPayload(payload, "delivery_order_id")
+		if err != nil {
+			return mq.ConsumerResult{}, mq.TerminalConsumerError(
+				"REALTIME_DELIVERY_ID_INVALID",
+				"wine-ticket redemption delivery id is invalid",
+				err,
+			)
+		}
+		if _, _, err := merchantWineTicketRedemptionRecipients(
+			ctx,
+			tx,
+			orderID,
+			deliveryID,
+		); err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) ||
+				errors.Is(err, errMerchantWineTicketRedemptionInvalid) {
+				return mq.ConsumerResult{}, mq.TerminalConsumerError(
+					"REALTIME_WINE_TICKET_REDEMPTION_INVALID",
+					"wine-ticket redemption fact is unavailable",
+					err,
+				)
+			}
+			return mq.ConsumerResult{}, mq.TemporaryConsumerError(
+				"REALTIME_RECIPIENT_LOOKUP_FAILED",
+				"realtime recipient lookup failed",
+				err,
+			)
+		}
+		return mq.ConsumerResult{
+			RefType: "merchant_wine_ticket_redemption",
+			RefID:   orderID,
+		}, nil
+	}
 	targets, err := h.targets(ctx, tx, envelope, payload)
 	if err != nil {
 		var consumerError *mq.ConsumerError
@@ -143,6 +185,31 @@ func (h *MQHandler) AfterCommit(ctx context.Context, envelope mq.EventEnvelope, 
 		}
 		return h.service.PublishMerchantPaidOrder(ctx, event, accountIDs)
 	}
+	if envelope.EventType == "wine_ticket.redemption_created" {
+		var payload map[string]any
+		if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+			return err
+		}
+		orderID, err := idFromPayload(payload, "order_id")
+		if err != nil {
+			return err
+		}
+		deliveryID, err := idFromPayload(payload, "delivery_order_id")
+		if err != nil {
+			return err
+		}
+		event, accountIDs, err := h.service.MerchantWineTicketRedemptionEvent(
+			ctx,
+			envelope.EventID,
+			orderID,
+			deliveryID,
+			envelope.OccurredAt,
+		)
+		if err != nil {
+			return err
+		}
+		return h.service.PublishMerchantPaidOrder(ctx, event, accountIDs)
+	}
 	var rows []Delivery
 	if err := h.service.db.WithContext(ctx).Where("source_event_id=?", envelope.EventID).Order("id").Find(&rows).Error; err != nil {
 		return err
@@ -163,7 +230,13 @@ func (h *MQHandler) AfterCommit(ctx context.Context, envelope mq.EventEnvelope, 
 // 可重试交接点。骑手事件已有持久 realtime_deliveries 中继，
 // 因此保持现有行为。
 func (h *MQHandler) RequiresSuccessfulAfterCommit(envelope mq.EventEnvelope, result mq.ConsumerResult) bool {
-	return h != nil && h.service != nil && h.service.cfg.Realtime.Enabled && envelope.EventType == "order.paid" && result.RefType == "merchant_paid_order"
+	if h == nil || h.service == nil || !h.service.cfg.Realtime.Enabled {
+		return false
+	}
+	return (envelope.EventType == "order.paid" &&
+		result.RefType == "merchant_paid_order") ||
+		(envelope.EventType == "wine_ticket.redemption_created" &&
+			result.RefType == "merchant_wine_ticket_redemption")
 }
 
 // targets 返回投递目标。

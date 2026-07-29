@@ -42,6 +42,9 @@ return count
 `)
 
 var errMerchantPaidOrderInvalid = errors.New("order is not a paid merchant order")
+var errMerchantWineTicketRedemptionInvalid = errors.New("order is not a wine-ticket redemption")
+
+const merchantWineTicketRedemptionClientEvent = "store.wine_ticket.redemption.created"
 
 type Service struct {
 	cfg     config.Config
@@ -408,6 +411,30 @@ func (s *Service) MerchantPaidOrderEvent(ctx context.Context, eventID string, or
 	}, accounts, nil
 }
 
+func (s *Service) MerchantWineTicketRedemptionEvent(
+	ctx context.Context,
+	eventID string,
+	orderID uint64,
+	deliveryID uint64,
+	occurredAt time.Time,
+) (StoreOrderPaidEvent, []uint64, error) {
+	shopID, accounts, err := merchantWineTicketRedemptionRecipients(
+		ctx,
+		s.db,
+		orderID,
+		deliveryID,
+	)
+	if err != nil {
+		return StoreOrderPaidEvent{}, nil, err
+	}
+	return StoreOrderPaidEvent{
+		EventID: eventID, EventType: merchantWineTicketRedemptionClientEvent,
+		OrderID:  strconv.FormatUint(orderID, 10),
+		ShopID:   strconv.FormatUint(shopID, 10),
+		SoundKey: "new_wine_ticket_redemption", OccurredAt: occurredAt.UTC(),
+	}, accounts, nil
+}
+
 func merchantPaidOrderRecipients(ctx context.Context, db *gorm.DB, orderID uint64) (uint64, []uint64, error) {
 	if db == nil || orderID == 0 {
 		return 0, nil, fmt.Errorf("realtime database is unavailable")
@@ -425,13 +452,98 @@ func merchantPaidOrderRecipients(ctx context.Context, db *gorm.DB, orderID uint6
 	if order.ShopID == 0 || order.MerchantID == 0 || order.PayStatus != "succeeded" {
 		return 0, nil, errMerchantPaidOrderInvalid
 	}
+	accountIDs, err := merchantShopRecipients(
+		ctx,
+		db,
+		order.MerchantID,
+		order.ShopID,
+	)
+	return order.ShopID, accountIDs, err
+}
+
+func merchantWineTicketRedemptionRecipients(
+	ctx context.Context,
+	db *gorm.DB,
+	orderID uint64,
+	deliveryID uint64,
+) (uint64, []uint64, error) {
+	if db == nil || orderID == 0 || deliveryID == 0 {
+		return 0, nil, fmt.Errorf("realtime database is unavailable")
+	}
+	type redemptionOrder struct {
+		ShopID         uint64
+		MerchantID     uint64
+		OrderType      string
+		SettlementMode string
+		PayStatus      string
+		PayableAmount  int64
+		PaidAmount     int64
+		RedemptionID   uint64
+		DeliveryID     uint64
+	}
+	var row redemptionOrder
+	err := db.WithContext(ctx).Table("orders customer_order").
+		Select(`
+			customer_order.shop_id,
+			customer_order.merchant_id,
+			customer_order.order_type,
+			customer_order.settlement_mode,
+			customer_order.pay_status,
+			customer_order.payable_amount,
+			customer_order.paid_amount,
+			redemption.id AS redemption_id,
+			delivery.id AS delivery_id
+		`).
+		Joins(`
+			JOIN wine_ticket_redemptions redemption
+			  ON redemption.order_id = customer_order.id
+		`).
+		Joins(`
+			JOIN delivery_orders delivery
+			  ON delivery.order_id = customer_order.id
+			 AND delivery.deleted_at IS NULL
+		`).
+		Where(
+			"customer_order.id = ? AND customer_order.deleted_at IS NULL",
+			orderID,
+		).
+		Take(&row).Error
+	if err != nil {
+		return 0, nil, err
+	}
+	if row.ShopID == 0 ||
+		row.MerchantID == 0 ||
+		row.RedemptionID == 0 ||
+		row.DeliveryID != deliveryID ||
+		row.OrderType != "wine_ticket_redemption" ||
+		row.SettlementMode != "wine_ticket" ||
+		row.PayStatus != "not_required" ||
+		row.PayableAmount != 0 ||
+		row.PaidAmount != 0 {
+		return 0, nil, errMerchantWineTicketRedemptionInvalid
+	}
+	accountIDs, err := merchantShopRecipients(
+		ctx,
+		db,
+		row.MerchantID,
+		row.ShopID,
+	)
+	return row.ShopID, accountIDs, err
+}
+
+func merchantShopRecipients(
+	ctx context.Context,
+	db *gorm.DB,
+	merchantID uint64,
+	shopID uint64,
+) ([]uint64, error) {
 	var accountIDs []uint64
 	err := db.WithContext(ctx).Table("merchant_users mu").Distinct("mu.account_id").
 		Joins("JOIN accounts a ON a.id=mu.account_id AND a.account_type=? AND a.status='active' AND a.deleted_at IS NULL", recipientMerchant).
 		Joins("JOIN merchant_user_shops mus ON mus.merchant_user_id=mu.id AND mus.merchant_id=mu.merchant_id AND mus.deleted_at IS NULL").
-		Where("mu.merchant_id=? AND mu.status='active' AND mu.deleted_at IS NULL AND mus.shop_id=? AND mus.merchant_id=?", order.MerchantID, order.ShopID, order.MerchantID).
+		Where("mu.merchant_id=? AND mu.status='active' AND mu.deleted_at IS NULL AND mus.shop_id=? AND mus.merchant_id=?", merchantID, shopID, merchantID).
 		Order("mu.account_id").Pluck("mu.account_id", &accountIDs).Error
-	return order.ShopID, accountIDs, err
+	return accountIDs, err
 }
 
 // PublishMerchantPaidOrder 只扇出路由元数据和固定的安全事件。

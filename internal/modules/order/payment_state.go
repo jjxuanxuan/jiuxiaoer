@@ -67,8 +67,9 @@ func (s *Service) ConfirmPaymentIdempotent(ctx context.Context, claims *auth.Cla
 	}
 
 	started := false
+	claimID := s.idGen.Next()
 	err = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		claimed, startErr := s.idStore.Start(ctx, tx, s.idGen.Next(), claims.AccountType, customerID, method, path, key, requestHash)
+		claimed, startErr := s.idStore.Start(ctx, tx, claimID, claims.AccountType, customerID, method, path, key, requestHash)
 		if startErr != nil {
 			return startErr
 		}
@@ -94,13 +95,13 @@ func (s *Service) ConfirmPaymentIdempotent(ctx context.Context, claims *auth.Cla
 
 	result, err = s.confirmCustomerPayment(ctx, customerID, payment)
 	if err != nil {
-		s.releasePaymentConfirmClaim(ctx, claims.AccountType, customerID, path, key)
+		s.releasePaymentConfirmClaim(ctx, claimID, claims.AccountType, customerID, path, key)
 		return PaymentDTO{}, err
 	}
 	if err := s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		return s.idStore.Succeed(ctx, tx, claims.AccountType, customerID, path, key, result)
+		return s.idStore.SucceedOwned(ctx, tx, claimID, claims.AccountType, customerID, path, key, result)
 	}); err != nil {
-		s.releasePaymentConfirmClaim(ctx, claims.AccountType, customerID, path, key)
+		s.releasePaymentConfirmClaim(ctx, claimID, claims.AccountType, customerID, path, key)
 		return PaymentDTO{}, err
 	}
 	return result, nil
@@ -134,7 +135,16 @@ func (s *Service) confirmCustomerPayment(ctx context.Context, customerID uint64,
 	if payment.Provider != s.payment.Code() {
 		return PaymentDTO{}, problem.Conflict("PAYMENT_PROVIDER_MISMATCH", "payment provider does not match configured provider")
 	}
-	if payment.Status == "succeeded" || (payment.Status != "creating" && payment.Status != "pending") {
+	bizType, _ := paymentBusiness(payment)
+	reconcilableExternalException :=
+		payment.Status == "exception" &&
+			bizType != RetailOrderPaymentBusiness &&
+			payment.ProviderStatus != nil &&
+			strings.EqualFold(strings.TrimSpace(*payment.ProviderStatus), "SUCCESS")
+	if payment.Status == "succeeded" ||
+		(payment.Status != "creating" &&
+			payment.Status != "pending" &&
+			!reconcilableExternalException) {
 		return paymentDTO(payment), nil
 	}
 
@@ -143,7 +153,9 @@ func (s *Service) confirmCustomerPayment(ctx context.Context, customerID uint64,
 	cancel()
 	if queryErr != nil {
 		s.logPaymentProviderFailure(payment.PaymentNo, queryErr, "client_retry")
-		s.metrics.IncPayment(payment.Provider, "confirm_query_failed")
+		if s.metrics != nil {
+			s.metrics.IncPayment(payment.Provider, "confirm_query_failed")
+		}
 		detail := problem.New(http.StatusServiceUnavailable, "PAYMENT_CONFIRM_RETRYABLE", "Service Unavailable", "payment confirmation is temporarily unavailable; retry is safe")
 		detail.Data = map[string]any{"retryable": paygateway.Retryable(queryErr), "provider_code": paygateway.Code(queryErr, "PROVIDER_UNAVAILABLE"), "provider_request_id": paygateway.RequestID(queryErr)}
 		return PaymentDTO{}, detail
@@ -151,19 +163,23 @@ func (s *Service) confirmCustomerPayment(ctx context.Context, customerID uint64,
 	s.log.Info("payment provider call completed", slog.String("operation", "payment.query"), slog.String("payment_no", payment.PaymentNo), slog.String("provider_status", state.Status), slog.String("provider_request_id", state.RequestID))
 	result, err := s.ApplyProviderPaymentState(ctx, payment.PaymentNo, payment.Provider, state, "customer", customerID, "confirm:"+payment.PaymentNo)
 	if err != nil {
-		s.metrics.IncPayment(payment.Provider, "confirm_apply_failed")
+		if s.metrics != nil {
+			s.metrics.IncPayment(payment.Provider, "confirm_apply_failed")
+		}
 		return PaymentDTO{}, err
 	}
-	s.metrics.IncPayment(payment.Provider, "confirm_succeeded")
+	if s.metrics != nil {
+		s.metrics.IncPayment(payment.Provider, "confirm_succeeded")
+	}
 	return result, nil
 }
 
-func (s *Service) releasePaymentConfirmClaim(ctx context.Context, actorType string, actorID uint64, path, key string) {
+func (s *Service) releasePaymentConfirmClaim(ctx context.Context, claimID uint64, actorType string, actorID uint64, path, key string) {
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 	defer cancel()
 	if err := s.repo.DB().WithContext(cleanupCtx).Transaction(func(tx *gorm.DB) error {
-		return s.idStore.Fail(cleanupCtx, tx, actorType, actorID, path, key)
-	}); err != nil {
+		return s.idStore.FailOwned(cleanupCtx, tx, claimID, actorType, actorID, path, key)
+	}); err != nil && !idempotency.IsClaimLost(err) {
 		s.log.Warn("failed to release payment confirmation idempotency claim", slog.String("path", path), slog.String("error", err.Error()))
 	}
 }
@@ -180,20 +196,53 @@ func (s *Service) logPaymentProviderFailure(paymentNo string, err error, decisio
 func (s *Service) ApplyProviderPaymentState(ctx context.Context, paymentNo, provider string, state ProviderPaymentState, actorType string, actorID uint64, key string) (PaymentDTO, error) {
 	var result PaymentDTO
 	var reject error
+	var externalHandler PaymentSettlementHandler
 	err := s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		lookup, err := s.repo.GetPaymentByNo(ctx, tx, paymentNo, provider)
 		if err != nil {
 			return err
 		}
-		orderRow, err := s.repo.LockOrder(ctx, tx, lookup.OrderID)
+		bizType, bizID := paymentBusiness(lookup)
+		if bizType == RetailOrderPaymentBusiness {
+			if lookup.OrderID == nil || bizID == 0 {
+				return problem.Internal("retail payment order registry is incomplete")
+			}
+			orderRow, err := s.repo.LockOrder(ctx, tx, *lookup.OrderID)
+			if err != nil {
+				return err
+			}
+			payment, err := s.repo.LockPaymentByNo(ctx, tx, paymentNo, provider)
+			if err != nil {
+				return err
+			}
+			if !samePaymentBusiness(lookup, payment) {
+				return problem.Internal("payment business registry changed during settlement")
+			}
+			updated, stateReject, err := s.applyProviderPaymentStateTx(ctx, tx, orderRow, payment, state, actorType, actorID, key)
+			if err != nil {
+				return err
+			}
+			reject = stateReject
+			result = paymentDTO(updated)
+			return nil
+		}
+
+		handler, err := s.externalSettlementHandler(lookup)
 		if err != nil {
+			return err
+		}
+		externalHandler = handler
+		if err := handler.LockBusiness(ctx, tx, bizID); err != nil {
 			return err
 		}
 		payment, err := s.repo.LockPaymentByNo(ctx, tx, paymentNo, provider)
 		if err != nil {
 			return err
 		}
-		updated, stateReject, err := s.applyProviderPaymentStateTx(ctx, tx, orderRow, payment, state, actorType, actorID, key)
+		if !samePaymentBusiness(lookup, payment) {
+			return problem.Internal("payment business registry changed during settlement")
+		}
+		updated, stateReject, err := s.applyExternalPaymentStateTx(ctx, tx, handler, payment, state)
 		if err != nil {
 			return err
 		}
@@ -202,9 +251,117 @@ func (s *Service) ApplyProviderPaymentState(ctx context.Context, paymentNo, prov
 		return nil
 	})
 	if err != nil {
+		if externalHandler != nil &&
+			strings.EqualFold(strings.TrimSpace(state.Status), "SUCCESS") {
+			persistErr := s.persistExternalPaymentSettlementFailure(
+				ctx,
+				paymentNo,
+				provider,
+				state,
+				settlementFailureCode(err),
+			)
+			if persistErr != nil {
+				return PaymentDTO{}, errors.Join(err, persistErr)
+			}
+		}
 		return PaymentDTO{}, err
 	}
 	return result, reject
+}
+
+// persistExternalPaymentSettlementFailure 记录已验证为 SUCCESS、
+// 但业务结算事务回滚的场景。支付机构资金事实和业务异常会在新的短事务中提交，
+// 随后由共享对账任务安全回放原结算。
+func (s *Service) persistExternalPaymentSettlementFailure(
+	ctx context.Context,
+	paymentNo string,
+	provider string,
+	state ProviderPaymentState,
+	reason string,
+) error {
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	return s.repo.DB().WithContext(persistCtx).Transaction(func(tx *gorm.DB) error {
+		lookup, err := s.repo.GetPaymentByNo(
+			persistCtx,
+			tx,
+			paymentNo,
+			provider,
+		)
+		if err != nil {
+			return err
+		}
+		handler, err := s.externalSettlementHandler(lookup)
+		if err != nil {
+			return err
+		}
+		_, bizID := paymentBusiness(lookup)
+		if err := handler.LockBusiness(persistCtx, tx, bizID); err != nil {
+			return err
+		}
+		payment, err := s.repo.LockPaymentByNo(
+			persistCtx,
+			tx,
+			paymentNo,
+			provider,
+		)
+		if err != nil {
+			return err
+		}
+		if !samePaymentBusiness(lookup, payment) {
+			return problem.Internal(
+				"payment business registry changed while recording settlement failure",
+			)
+		}
+		if payment.Status == "succeeded" {
+			return nil
+		}
+		bizType, bizID := paymentBusiness(payment)
+		fact := PaymentSettlementFact{
+			PaymentID:         payment.ID,
+			PaymentNo:         payment.PaymentNo,
+			BizType:           bizType,
+			BizID:             bizID,
+			CustomerID:        payment.CustomerID,
+			Amount:            payment.Amount,
+			Currency:          payment.Currency,
+			Provider:          payment.Provider,
+			ProviderTradeNo:   optionalString(state.ProviderTradeNo),
+			ProviderStatus:    "SUCCESS",
+			PaidAt:            state.PaidAt,
+			ProviderRequestID: state.RequestID,
+			ReconcileAttempts: payment.ReconcileAttempts,
+		}
+		if err := handler.ApplyException(
+			persistCtx,
+			tx,
+			fact,
+			reason,
+		); err != nil {
+			return err
+		}
+		next := time.Now().Add(15 * time.Second)
+		return s.repo.UpdatePayment(persistCtx, tx, payment.ID, map[string]any{
+			"status":            "exception",
+			"provider_status":   "SUCCESS",
+			"provider_trade_no": optionalString(state.ProviderTradeNo),
+			"paid_at":           state.PaidAt,
+			"failure_code":      reason,
+			"next_reconcile_at": next,
+			"version":           gorm.Expr("version + 1"),
+		})
+	})
+}
+
+func settlementFailureCode(err error) string {
+	detail := problem.FromError(err)
+	if detail != nil {
+		code := strings.TrimSpace(detail.ErrorCode)
+		if code != "" {
+			return code
+		}
+	}
+	return "BUSINESS_SETTLEMENT_FAILED"
 }
 
 // applyProviderPaymentStateTx 在进入唯一的支付成功记账事务前，
@@ -353,13 +510,20 @@ func (s *Service) MarkPaymentReconcileError(ctx context.Context, payment Payment
 		if err != nil {
 			return err
 		}
-		if locked.Status != "creating" && locked.Status != "pending" {
+		if locked.Status != "creating" &&
+			locked.Status != "pending" &&
+			locked.Status != "exception" {
 			return nil
 		}
 		if locked.ReconcileAttempts < payment.ReconcileAttempts {
 			locked.ReconcileAttempts = payment.ReconcileAttempts
 		}
-		next := nextPaymentReconcileAt(locked, time.Now())
+		now := time.Now()
+		next := nextPaymentReconcileAt(locked, now)
+		bizType, _ := paymentBusiness(locked)
+		if bizType != RetailOrderPaymentBusiness && locked.ExpiresAt != nil && !locked.ExpiresAt.After(now) {
+			next = now.Add(15 * time.Second)
+		}
 		return s.repo.UpdatePayment(ctx, tx, locked.ID, map[string]any{"next_reconcile_at": next, "failure_code": paygateway.Code(cause, "PROVIDER_UNAVAILABLE"), "version": gorm.Expr("version + 1")})
 	})
 }

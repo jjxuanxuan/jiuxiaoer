@@ -33,6 +33,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/modules/reconciliation"
 	"jiuxiaoer-admin/backend-go/internal/modules/refund"
 	"jiuxiaoer-admin/backend-go/internal/modules/routeplanning"
+	"jiuxiaoer-admin/backend-go/internal/modules/wineticket"
 	"jiuxiaoer-admin/backend-go/internal/pkg/metrics"
 	"jiuxiaoer-admin/backend-go/internal/pkg/snowflake"
 )
@@ -179,7 +180,11 @@ func NewServer(ctx context.Context, cfg config.Config, log *slog.Logger) (*Serve
 
 	var refundProvider refund.Provider
 	if provider, ok := paymentProvider.(refund.Provider); ok {
-		refundProvider = provider
+		refundProvider = applicationRefundProvider(
+			cfg.WineTicket.Enabled,
+			paymentProvider,
+			provider,
+		)
 	}
 	var billProvider reconciliation.Provider
 	if provider, ok := paymentProvider.(reconciliation.Provider); ok {
@@ -221,12 +226,25 @@ func NewServer(ctx context.Context, cfg config.Config, log *slog.Logger) (*Serve
 	}, nil
 }
 
+func applicationRefundProvider(
+	wineTicketEnabled bool,
+	payments wineticket.RefundOriginalPaymentQuerier,
+	refunds refund.Provider,
+) refund.Provider {
+	if refunds == nil || !wineTicketEnabled {
+		return refunds
+	}
+	return wineticket.NewVerifiedWineTicketRefundProvider(payments, refunds)
+}
+
 // Run 在同一个父 context 下启动 HTTP 和可选的 outbox publisher。
 // 取消 context 会触发 HTTP 优雅关闭，并释放所有基础设施连接。
 func (s *Server) Run(ctx context.Context) error {
 	if err := s.ensurePrintProvider(ctx); err != nil {
 		return err
 	}
+	apiWineTicketMaintenance := apiOwnsWineTicketMaintenance(s.cfg)
+	apiSharedMaintenance := apiOwnsSharedMaintenance(s.cfg)
 	var printWorker *printjob.Worker
 	if s.deps.DB != nil && s.cfg.CP1.PrintEnabled {
 		var err error
@@ -263,9 +281,23 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	var dispatchService *dispatch.Service
 	var deliveryReturnService *deliveryreturn.Service
+	var wineTicketModule *wineticket.Module
 	if s.deps.DB != nil {
+		wineTicketModule = wineticket.NewModule(
+			s.deps.DB,
+			s.deps.IDGen,
+			wineticket.ModuleOptions{
+				GiftTokenPepper:  s.cfg.WineTicket.GiftTokenPepper,
+				QuoteTokenSecret: s.cfg.WineTicket.QuoteTokenSecret,
+				WeChatAppID:      s.cfg.WeChat.MiniAppID,
+				InstanceID:       s.cfg.App.InstanceID,
+			},
+		)
 		afterSaleService := aftersale.NewService(s.cfg, s.deps.DB, s.deps.IDGen)
 		deliveryReturnService = deliveryreturn.NewService(s.cfg, s.deps.DB, s.deps.Redis, s.deps.IDGen).WithAfterSale(afterSaleService)
+		deliveryReturnService.WithReturnSettlementHandler(
+			wineTicketModule.ReturnSettlement(afterSaleService),
+		)
 		if s.cfg.DeliveryReturn.Enabled && s.cfg.DeliveryReturn.SLAWorkerEnabled {
 			worker := deliveryreturn.NewSLAWorker(deliveryReturnService, s.log)
 			spawn(func() { worker.Run(runCtx) })
@@ -279,6 +311,17 @@ func (s *Server) Run(ctx context.Context) error {
 	var notificationProvider notification.Provider = &notification.UnavailableProvider{}
 	if s.cfg.CP1.NotificationProvider == "fake" {
 		notificationProvider = &notification.FakeProvider{}
+	}
+	var wineTicketReminderProvider notification.Provider = &notification.UnavailableProvider{}
+	if apiWineTicketMaintenance {
+		provider, err := wechat.NewSubscriptionMessageProvider(
+			s.cfg.WeChat,
+			s.cfg.WineTicket,
+		)
+		if err != nil {
+			return err
+		}
+		wineTicketReminderProvider = provider
 	}
 	var notificationWorker *notification.Worker
 	if s.deps.DB != nil {
@@ -340,12 +383,58 @@ func (s *Server) Run(ctx context.Context) error {
 			spawn(func() { sink.Run(runCtx) })
 		}
 	}
-	if s.cfg.Order.ExpiryWorkerEnabled && s.deps.DB != nil {
+	if apiSharedMaintenance && s.cfg.Order.ExpiryWorkerEnabled && s.deps.DB != nil {
 		worker := order.NewExpiryWorker(s.cfg, s.deps.DB, s.deps.IDGen, s.deps.Metrics, s.log, s.deps.PaymentProvider)
+		if wineTicketModule != nil {
+			worker.
+				WithPaymentSettlementHandler(
+					wineTicketModule.PurchasePaymentSettlement(),
+				).
+				WithPaymentSettlementHandler(
+					wineTicketModule.RenewalPaymentSettlement(),
+				)
+		}
 		spawn(func() { worker.Run(runCtx) })
 	}
-	if s.cfg.AfterSale.WorkerEnabled && s.cfg.AfterSale.RefundExecutionEnabled && s.deps.DB != nil && s.deps.RefundProvider != nil {
-		service := refund.NewService(s.cfg, s.deps.DB, s.deps.IDGen, s.deps.RefundProvider)
+	if apiWineTicketMaintenance && wineTicketModule != nil {
+		worker := wineTicketModule.NewGiftExpiryWorker(s.log)
+		spawn(func() { worker.Run(runCtx) })
+	}
+	if apiWineTicketMaintenance && s.deps.DB != nil {
+		worker := wineTicketModule.NewExpiryMaintenanceWorker(
+			wineTicketReminderProvider,
+			s.cfg.App.InstanceID+":wine-ticket-expiry",
+			s.log,
+		).
+			WithRemindersEnabled(s.cfg.WineTicket.ReminderEnabled).
+			WithWeChatEnabled(s.cfg.WineTicket.WeChatReminderEnabled).
+			WithSendLease(4*s.cfg.WeChat.HTTPTimeout + time.Minute)
+		spawn(func() { worker.Run(runCtx) })
+	}
+	if apiWineTicketMaintenance &&
+		s.cfg.WineTicket.ReconciliationEnabled &&
+		s.deps.DB != nil {
+		worker := wineTicketModule.NewIntegrityWorker(s.log).
+			ConfigureSchedule(
+				s.cfg.App.InstanceID,
+				s.cfg.WineTicket.ReconciliationDailyStart,
+				s.cfg.WineTicket.ReconciliationLeaseDuration,
+			).
+			ConfigureBounds(
+				s.cfg.WineTicket.ReconciliationBatchSize,
+				s.cfg.WineTicket.ReconciliationBatchInterval,
+				s.cfg.WineTicket.ReconciliationSweepInterval,
+			)
+		spawn(func() { worker.Run(runCtx) })
+	}
+	if apiSharedMaintenance && s.cfg.AfterSale.WorkerEnabled && s.cfg.AfterSale.RefundExecutionEnabled && s.deps.DB != nil && s.deps.RefundProvider != nil {
+		service := refund.NewService(s.cfg, s.deps.DB, s.deps.IDGen, s.deps.RefundProvider).
+			WithRefundSettlementHandler(
+				wineTicketModule.PurchaseRefundSettlement(),
+			).
+			WithRefundSettlementHandler(
+				wineTicketModule.RenewalRefundSettlement(),
+			)
 		if deliveryReturnService != nil {
 			service.WithDeliveryReturnClosure(deliveryReturnService)
 		}

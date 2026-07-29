@@ -2,6 +2,7 @@ package pagination
 
 import (
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -44,11 +45,20 @@ func TestPageTokenRejectsTamperingAndDifferentActorScope(t *testing.T) {
 	}
 	token := NextPageTokenWithCursor(query, "2026-07-22T12:00:00Z", "99")
 
+	parts := strings.SplitN(token, ".", 2)
+	if len(parts) != 2 || len(parts[1]) == 0 {
+		t.Fatalf("unexpected signed page token format: %q", token)
+	}
+	signature := []byte(parts[1])
 	replacement := byte('A')
-	if token[len(token)-1] == replacement {
+	if signature[0] == replacement {
 		replacement = 'B'
 	}
-	tampered := token[:len(token)-1] + string(replacement)
+	// 修改编码后签名的第一个六位组。
+	// 修改最后一个 Base64 字符可能只影响未使用的填充位，
+	// 并解码为相同字节，从而使该安全回归测试不确定。
+	signature[0] = replacement
+	tampered := parts[0] + "." + string(signature)
 	if _, err := FromGin(testContext("/items?page_size=2&filter=status:paid&page_token="+tampered), "customer", "100"); err == nil {
 		t.Fatal("tampered token must be rejected")
 	} else {

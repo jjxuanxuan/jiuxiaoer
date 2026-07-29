@@ -129,6 +129,11 @@ func assertPhaseOneBusinessContracts(t *testing.T, content []byte) {
 		{http.MethodGet, "/store/orders/{id}/verification", "delivery_verification:view_shop", "merchant_and_authorized_shop_ready_order", "#/components/schemas/PickupVerificationEnvelope"},
 		{http.MethodGet, "/orders/{id}/verification", "delivery_verification:view_customer", "customer_self_delivering_order", "#/components/schemas/DeliveryVerificationEnvelope"},
 		{http.MethodPost, "/admin/deliveries/{id}/verification/unlock", "delivery_verification:unlock", "admin_delivery", "#/components/schemas/VerificationUnlockEnvelope"},
+		{http.MethodPost, "/admin/deliveries/{id}/force-complete", "delivery:force_complete", "global", ""},
+		{http.MethodPost, "/admin/asset-adjustments", "asset_adjustment:create", "global", ""},
+		{http.MethodPost, "/admin/wine-tickets/packages/{package_no}/publish", "wine_ticket_package:publish", "global", "#/components/schemas/WineTicketAdminPackageEnvelope"},
+		{http.MethodPost, "/admin/wine-tickets/packages/{package_no}/unpublish", "wine_ticket_package:unpublish", "global", "#/components/schemas/WineTicketAdminPackageEnvelope"},
+		{http.MethodPost, "/admin/wine-tickets/exceptions/{exception_no}/resolution", "wine_ticket_exception:resolve", "global", "#/components/schemas/WineTicketExceptionEnvelope"},
 	}
 	for _, contract := range contracts {
 		op := openAPIOperation(t, document, contract.path, contract.method)
@@ -142,6 +147,17 @@ func assertPhaseOneBusinessContracts(t *testing.T, content []byte) {
 			if got := operationResponseSchemaRef(t, op); got != contract.responseRef {
 				t.Errorf("%s %s response schema=%q, want %q", contract.method, contract.path, got, contract.responseRef)
 			}
+		}
+	}
+	paths := nestedMap(t, document, "paths")
+	for _, retiredPath := range []string{
+		"/admin/deliveries/{id}/force-complete-requests",
+		"/admin/asset-adjustments/{id}/approve",
+		"/admin/asset-adjustments/{id}/reject",
+		"/admin/wine-tickets/exceptions/{exception_no}/resolution/review",
+	} {
+		if _, ok := paths[retiredPath]; ok {
+			t.Errorf("retired dual-review path remains documented: %s", retiredPath)
 		}
 	}
 	customerOrders := openAPIOperation(t, document, "/orders", http.MethodGet)

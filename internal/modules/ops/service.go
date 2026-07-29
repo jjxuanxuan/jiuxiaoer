@@ -5,10 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+
 	"jiuxiaoer-admin/backend-go/internal/config"
 	"jiuxiaoer-admin/backend-go/internal/modules/auth"
 	"jiuxiaoer-admin/backend-go/internal/modules/deliveryverification"
@@ -18,8 +23,6 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/pkg/problem"
 	"jiuxiaoer-admin/backend-go/internal/pkg/requestctx"
 	"jiuxiaoer-admin/backend-go/internal/pkg/snowflake"
-	"strconv"
-	"time"
 )
 
 type Service struct {
@@ -180,69 +183,9 @@ func (s *Service) assign(ctx context.Context, c *auth.Claims, method, path, key,
 	return out, e
 }
 
-// RequestForceComplete 返回请求强制操作 Complete。
-func (s *Service) RequestForceComplete(ctx context.Context, c *auth.Claims, method, path, key, idRaw string, req ForceCompleteRequestReq) (ApprovalDTO, error) {
-	maker, e := adminID(c, "delivery:force_complete_request")
-	if e != nil {
-		return ApprovalDTO{}, e
-	}
-	if !s.cfg.CP1.ForceActionEnabled {
-		return ApprovalDTO{}, problem.Forbidden("FORCE_ACTION_DISABLED", "force actions are disabled")
-	}
-	checker, e := parseID(req.CheckerAdminID)
-	if e != nil || checker == maker {
-		return ApprovalDTO{}, problem.Forbidden("MAKER_CHECKER_REQUIRED", "a distinct checker is required")
-	}
-	id, e := parseID(idRaw)
-	if e != nil {
-		return ApprovalDTO{}, problem.InvalidArgument("VALIDATION_FAILED", "invalid delivery id")
-	}
-	var out ApprovalDTO
-	e = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if ok, authErr := activeAdminHasPermission(ctx, tx, maker, "delivery:force_complete_request"); authErr != nil {
-			return authErr
-		} else if !ok {
-			return problem.Forbidden("PERM_FORBIDDEN", "maker is no longer active or authorized")
-		}
-		if ok, authErr := activeAdminHasPermission(ctx, tx, checker, "delivery:force_complete_approve"); authErr != nil {
-			return authErr
-		} else if !ok {
-			return problem.Forbidden("CHECKER_PERMISSION_REQUIRED", "checker is no longer active or authorized")
-		}
-		started, e := s.idem.Start(ctx, tx, s.ids.Next(), "admin", maker, method, path, key, idempotency.ResourceRequestHash("delivery.force_complete.request", id, req))
-		if e != nil {
-			return e
-		}
-		if !started {
-			return cached(ctx, s.idem, tx, "admin", maker, path, key, &out)
-		}
-		var row Delivery
-		if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&row, id).Error; e != nil {
-			return problem.NotFound("DELIVERY_NOT_FOUND", "delivery not found")
-		}
-		if row.AssignmentVersion != req.ExpectedVersion {
-			return problem.Conflict("VERSION_CONFLICT", "delivery version changed")
-		}
-		if row.Status != "delivering" {
-			return problem.Conflict("DELIVERY_INVALID_STATUS", "only delivering orders can be force completed")
-		}
-		now := time.Now()
-		approval := Approval{ID: s.ids.Next(), Action: "delivery.force_complete", ResourceType: "delivery_order", ResourceID: id, MakerAdminID: maker, CheckerAdminID: checker, ReasonCode: req.ReasonCode, Reason: req.Reason, ExpectedVersion: req.ExpectedVersion, Status: "pending", ExpiresAt: now.Add(30 * time.Minute), RequestID: requestctx.RequestIDPtr(ctx)}
-		if e := tx.Create(&approval).Error; e != nil {
-			return e
-		}
-		out = approvalDTO(approval)
-		if e := audit(ctx, tx, s.ids.Next(), maker, "delivery.force_complete.request", id, map[string]any{"approval_id": idString(approval.ID), "checker_admin_id": idString(checker), "reason_code": req.ReasonCode, "delivery_status": row.Status}); e != nil {
-			return e
-		}
-		return s.idem.Succeed(ctx, tx, "admin", maker, path, key, out)
-	})
-	return out, e
-}
-
 // ForceComplete 强制执行Complete。
 func (s *Service) ForceComplete(ctx context.Context, c *auth.Claims, method, path, key, idRaw string, req ForceCompleteReq) (DeliveryDTO, error) {
-	checker, e := adminID(c, "delivery:force_complete_approve")
+	actor, e := adminID(c, "delivery:force_complete")
 	if e != nil {
 		return DeliveryDTO{}, e
 	}
@@ -253,43 +196,26 @@ func (s *Service) ForceComplete(ctx context.Context, c *auth.Claims, method, pat
 	if e != nil {
 		return DeliveryDTO{}, problem.InvalidArgument("VALIDATION_FAILED", "invalid delivery id")
 	}
-	approvalID, e := parseID(req.ApprovalID)
-	if e != nil {
-		return DeliveryDTO{}, problem.InvalidArgument("VALIDATION_FAILED", "invalid approval id")
-	}
 	var out DeliveryDTO
 	e = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if ok, authErr := activeAdminHasPermission(ctx, tx, checker, "delivery:force_complete_approve"); authErr != nil {
+		if ok, authErr := activeAdminHasPermission(ctx, tx, actor, "delivery:force_complete"); authErr != nil {
 			return authErr
 		} else if !ok {
-			return problem.Forbidden("PERM_FORBIDDEN", "checker is no longer active or authorized")
+			return problem.Forbidden("PERM_FORBIDDEN", "administrator is no longer active or authorized")
 		}
-		started, e := s.idem.Start(ctx, tx, s.ids.Next(), "admin", checker, method, path, key, idempotency.ResourceRequestHash("delivery.force_complete", id, req))
+		started, e := s.idem.Start(ctx, tx, s.ids.Next(), "admin", actor, method, path, key, idempotency.ResourceRequestHash("delivery.force_complete", id, req))
 		if e != nil {
 			return e
 		}
 		if !started {
-			return cached(ctx, s.idem, tx, "admin", checker, path, key, &out)
-		}
-		var approval Approval
-		if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=? AND action='delivery.force_complete' AND resource_type='delivery_order' AND resource_id=?", approvalID, id).First(&approval).Error; e != nil {
-			return problem.NotFound("OVERRIDE_APPROVAL_NOT_FOUND", "force-complete approval not found")
-		}
-		if approval.Status != "pending" {
-			return problem.Conflict("OVERRIDE_APPROVAL_USED", "force-complete approval is no longer pending")
-		}
-		if approval.CheckerAdminID != checker || approval.MakerAdminID == checker {
-			return problem.Forbidden("CHECKER_MISMATCH", "approval must be executed by its distinct checker")
-		}
-		if !approval.ExpiresAt.After(time.Now()) {
-			return problem.Conflict("OVERRIDE_APPROVAL_EXPIRED", "force-complete approval expired")
-		}
-		if approval.ExpectedVersion != req.ExpectedVersion {
-			return problem.Conflict("VERSION_CONFLICT", "approval version does not match request")
+			return cached(ctx, s.idem, tx, "admin", actor, path, key, &out)
 		}
 		var row Delivery
 		if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&row, id).Error; e != nil {
-			return problem.NotFound("DELIVERY_NOT_FOUND", "delivery not found")
+			if errors.Is(e, gorm.ErrRecordNotFound) {
+				return problem.NotFound("DELIVERY_NOT_FOUND", "delivery not found")
+			}
+			return e
 		}
 		if row.AssignmentVersion != req.ExpectedVersion {
 			return problem.Conflict("VERSION_CONFLICT", "delivery version changed")
@@ -322,34 +248,67 @@ func (s *Service) ForceComplete(ctx context.Context, c *auth.Claims, method, pat
 				return problem.Conflict("INVALID_RETURN_STATE", "delivery order has an active return and cannot be force completed")
 			}
 		}
-		if e := tx.Model(&deliveryverification.Verification{}).Where("delivery_order_id=? AND stage='delivery' AND status<>'verified'", id).Updates(map[string]any{"status": "overridden", "verified_at": now, "verified_by_type": "admin", "verified_by_id": checker, "override_reason_code": approval.ReasonCode, "override_reason": approval.Reason}).Error; e != nil {
+		if e := tx.Model(&deliveryverification.Verification{}).
+			Where(
+				"delivery_order_id=? AND stage='delivery' AND status IN ?",
+				id,
+				[]string{"active", "locked"},
+			).
+			Updates(map[string]any{
+				"status":               "overridden",
+				"verified_at":          now,
+				"verified_by_type":     "admin",
+				"verified_by_id":       actor,
+				"override_reason_code": req.ReasonCode,
+				"override_reason":      req.Reason,
+				"locked_until":         nil,
+				"version":              gorm.Expr("version+1"),
+			}).Error; e != nil {
 			return e
 		}
 		if e := deliveryverification.Invalidate(ctx, tx, s.ids, id, "delivery_force_completed"); e != nil {
 			return e
 		}
-		approvalUpdate := tx.Model(&Approval{}).
-			Where("id=? AND status='pending'", approval.ID).
-			Updates(map[string]any{"status": "approved", "approved_at": now})
-		if approvalUpdate.Error != nil {
-			return approvalUpdate.Error
-		}
-		if approvalUpdate.RowsAffected != 1 {
-			return problem.Conflict("OVERRIDE_APPROVAL_USED", "force-complete approval is no longer pending")
-		}
-		if e := event(ctx, tx, s.ids.Next(), "delivery.force_completed", "delivery_order", id, map[string]any{"delivery_order_id": idString(id), "order_id": idString(row.OrderID), "approval_id": idString(approval.ID)}); e != nil {
+		if e := event(ctx, tx, s.ids.Next(), "delivery.force_completed", "delivery_order", id, map[string]any{"delivery_order_id": idString(id), "order_id": idString(row.OrderID), "reason_code": req.ReasonCode}); e != nil {
 			return e
 		}
 		if e := event(ctx, tx, s.ids.Next(), "order.completed", "order", row.OrderID, map[string]any{"order_id": idString(row.OrderID), "admin_override": true}); e != nil {
 			return e
 		}
-		if e := audit(ctx, tx, s.ids.Next(), checker, "delivery.force_complete.approve", id, map[string]any{"approval_id": idString(approval.ID), "maker_admin_id": idString(approval.MakerAdminID), "checker_admin_id": idString(checker), "reason_code": approval.ReasonCode, "before": map[string]any{"delivery": row.Status, "order": orderRow.Status}, "after": "completed"}); e != nil {
+		requestID := requestctx.RequestID(ctx)
+		if e := auditTransition(
+			ctx,
+			tx,
+			s.ids.Next(),
+			actor,
+			"delivery.force_complete",
+			id,
+			map[string]any{
+				"status":        row.Status,
+				"version":       row.AssignmentVersion,
+				"order_status":  orderRow.Status,
+				"order_version": orderRow.Version,
+			},
+			map[string]any{
+				"actor_admin_id":       idString(actor),
+				"permission":           "delivery:force_complete",
+				"reason_code":          req.ReasonCode,
+				"status":               "completed",
+				"version":              row.AssignmentVersion,
+				"order_status":         "completed",
+				"order_version":        orderRow.Version + 1,
+				"request_id":           requestID,
+				"correlation_id":       requestID,
+				"idempotency_key_hash": idempotency.KeyHash(key),
+				"service_instance":     auditServiceInstance(s.cfg.App.InstanceID),
+			},
+		); e != nil {
 			return e
 		}
 		row.Status = "completed"
 		row.CompletedAt = &now
 		out = deliveryDTO(row)
-		return s.idem.Succeed(ctx, tx, "admin", checker, path, key, out)
+		return s.idem.Succeed(ctx, tx, "admin", actor, path, key, out)
 	})
 	return out, e
 }
@@ -466,11 +425,6 @@ func assignmentDTO(r Assignment) AssignmentDTO {
 	return AssignmentDTO{ID: idString(r.ID), DeliveryOrderID: idString(r.DeliveryOrderID), FromRiderID: uintString(r.FromRiderID), ToRiderID: idString(r.ToRiderID), AssignmentType: r.AssignmentType, Status: r.Status, ReasonCode: str(r.ReasonCode), Reason: str(r.Reason), ActorID: idString(r.ActorID), VersionBefore: r.VersionBefore, VersionAfter: r.VersionAfter, CreatedAt: r.CreatedAt.Format(time.RFC3339)}
 }
 
-// approvalDTO 返回审批DTO。
-func approvalDTO(r Approval) ApprovalDTO {
-	return ApprovalDTO{ID: idString(r.ID), DeliveryOrderID: idString(r.ResourceID), MakerAdminID: idString(r.MakerAdminID), CheckerAdminID: idString(r.CheckerAdminID), ReasonCode: r.ReasonCode, Reason: r.Reason, ExpectedVersion: r.ExpectedVersion, Status: r.Status, ExpiresAt: r.ExpiresAt.Format(time.RFC3339), ApprovedAt: ts(r.ApprovedAt)}
-}
-
 // cached 返回缓存。
 func cached(ctx context.Context, s *idempotency.Store, tx *gorm.DB, t string, id uint64, path, key string, target any) error {
 	ok, e := s.CachedResponse(ctx, tx, t, id, path, key, target)
@@ -493,4 +447,56 @@ func event(ctx context.Context, tx *gorm.DB, id uint64, eventType, aggregate str
 func audit(ctx context.Context, tx *gorm.DB, id, actor uint64, action string, resource uint64, after any) error {
 	raw, _ := json.Marshal(after)
 	return tx.Table("audit_logs").Create(map[string]any{"id": id, "actor_type": "admin", "actor_id": actor, "action": action, "resource_type": "delivery_order", "resource_id": resource, "after_data": datatypes.JSON(raw), "result": "success", "request_id": requestctx.RequestIDPtr(ctx)}).Error
+}
+
+// auditTransition 写入高风险状态迁移的完整前后事实。失败事务不会伪造
+// 审计成功记录；调用方仍通过请求日志与 HTTP 指标观测回滚错误。
+func auditTransition(
+	ctx context.Context,
+	tx *gorm.DB,
+	id, actor uint64,
+	action string,
+	resource uint64,
+	before, after map[string]any,
+) error {
+	beforeRaw, _ := json.Marshal(before)
+	afterRaw, _ := json.Marshal(after)
+	beforeStatus, _ := before["status"].(string)
+	afterStatus, _ := after["status"].(string)
+	version := uint64(0)
+	switch value := after["version"].(type) {
+	case uint:
+		version = uint64(value)
+	case uint64:
+		version = value
+	}
+	values := map[string]any{
+		"id":            id,
+		"event_id":      uuid.NewString(),
+		"actor_type":    "admin",
+		"actor_id":      actor,
+		"action":        action,
+		"resource_type": "delivery_order",
+		"resource_id":   resource,
+		"before_data":   datatypes.JSON(beforeRaw),
+		"after_data":    datatypes.JSON(afterRaw),
+		"result":        "success",
+		"before_status": beforeStatus,
+		"after_status":  afterStatus,
+		"version":       version,
+		"request_id":    requestctx.RequestIDPtr(ctx),
+		"ip_hash":       requestctx.IPHashPtr(ctx),
+		"user_agent":    requestctx.UserAgentPtr(ctx),
+	}
+	if accountID := requestctx.AccountID(ctx); accountID != 0 {
+		values["account_id"] = accountID
+	}
+	return tx.Table("audit_logs").Create(values).Error
+}
+
+func auditServiceInstance(value string) string {
+	if value = strings.TrimSpace(value); value != "" {
+		return value
+	}
+	return "unknown"
 }

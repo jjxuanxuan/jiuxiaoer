@@ -4,6 +4,9 @@ type DeliveryOrderDTO struct {
 	ViewType            string                       `json:"view_type"`
 	ID                  string                       `json:"id"`
 	OrderID             string                       `json:"order_id"`
+	OrderType           string                       `json:"order_type"`
+	SettlementMode      string                       `json:"settlement_mode"`
+	SettlementLabel     string                       `json:"settlement_label"`
 	ShopID              string                       `json:"shop_id"`
 	RiderID             string                       `json:"rider_id,omitempty"`
 	Status              string                       `json:"status"`
@@ -25,6 +28,9 @@ type DeliveryOrderDTO struct {
 	ItemCount           int                          `json:"item_count,omitempty"`
 	PickupDistanceM     uint                         `json:"pickup_distance_m,omitempty"`
 	GrabExpiresAt       string                       `json:"grab_expires_at,omitempty"`
+	ScheduledStartAt    string                       `json:"scheduled_start_at,omitempty"`
+	ScheduledEndAt      string                       `json:"scheduled_end_at,omitempty"`
+	NotBeforeAt         string                       `json:"not_before_at,omitempty"`
 }
 
 // CandidateDeliverySummaryDTO 刻意比已分配配送的信息范围更窄。
@@ -33,6 +39,9 @@ type CandidateDeliverySummaryDTO struct {
 	ViewType            string `json:"view_type"`
 	ID                  string `json:"id"`
 	OrderID             string `json:"order_id"`
+	OrderType           string `json:"order_type"`
+	SettlementMode      string `json:"settlement_mode"`
+	SettlementLabel     string `json:"settlement_label"`
 	ShopID              string `json:"shop_id"`
 	ShopName            string `json:"shop_name"`
 	DestinationDistrict string `json:"destination_district"`
@@ -40,6 +49,9 @@ type CandidateDeliverySummaryDTO struct {
 	PickupDistanceM     uint   `json:"pickup_distance_m"`
 	GrabExpiresAt       string `json:"grab_expires_at"`
 	AssignmentVersion   uint   `json:"assignment_version"`
+	ScheduledStartAt    string `json:"scheduled_start_at,omitempty"`
+	ScheduledEndAt      string `json:"scheduled_end_at,omitempty"`
+	NotBeforeAt         string `json:"not_before_at,omitempty"`
 }
 
 // AssignedDeliverySummaryDTO 仅在列表查询检查骑手所有权后返回。
@@ -48,6 +60,9 @@ type AssignedDeliverySummaryDTO struct {
 	ViewType          string                       `json:"view_type"`
 	ID                string                       `json:"id"`
 	OrderID           string                       `json:"order_id"`
+	OrderType         string                       `json:"order_type"`
+	SettlementMode    string                       `json:"settlement_mode"`
+	SettlementLabel   string                       `json:"settlement_label"`
 	ShopID            string                       `json:"shop_id"`
 	RiderID           string                       `json:"rider_id"`
 	Status            string                       `json:"status"`
@@ -62,6 +77,9 @@ type AssignedDeliverySummaryDTO struct {
 	StartedAt         string                       `json:"started_at,omitempty"`
 	CompletedAt       string                       `json:"completed_at,omitempty"`
 	CreatedAt         string                       `json:"created_at"`
+	ScheduledStartAt  string                       `json:"scheduled_start_at,omitempty"`
+	ScheduledEndAt    string                       `json:"scheduled_end_at,omitempty"`
+	NotBeforeAt       string                       `json:"not_before_at,omitempty"`
 }
 
 // DeliveryDetailDTO 是已分配骑手的履约视图。只有仓储层在同一读取事务中
@@ -93,11 +111,17 @@ type DeliveryDetailDTO struct {
 	CompletedAt         string                        `json:"completed_at,omitempty"`
 	CompletedVerifiedAt string                        `json:"completed_verified_at,omitempty"`
 	CancelledAt         string                        `json:"cancelled_at,omitempty"`
+	ScheduledStartAt    string                        `json:"scheduled_start_at,omitempty"`
+	ScheduledEndAt      string                        `json:"scheduled_end_at,omitempty"`
+	NotBeforeAt         string                        `json:"not_before_at,omitempty"`
 }
 
 type DeliveryDetailOrderDTO struct {
 	ID                string `json:"id"`
 	OrderNo           string `json:"order_no"`
+	OrderType         string `json:"order_type"`
+	SettlementMode    string `json:"settlement_mode"`
+	SettlementLabel   string `json:"settlement_label"`
 	Status            string `json:"status"`
 	PayStatus         string `json:"pay_status"`
 	DeliveryStatus    string `json:"delivery_status"`

@@ -528,12 +528,18 @@ func (c *Checker) checkVerificationCutover(ctx context.Context) (CheckResult, er
 		    WHERE v.delivery_order_id=d.id AND v.stage='delivery'
 		      AND v.status='verified' AND v.mode_snapshot='enforce' AND v.verified_at IS NOT NULL
 		  )
-		  AND NOT EXISTS (
-		    SELECT 1 FROM admin_override_approvals a
-		    WHERE a.action='delivery.force_complete' AND a.resource_type='delivery_order'
-		      AND a.resource_id=d.id AND a.status='approved' AND a.approved_at IS NOT NULL
-		      AND a.maker_admin_id<>a.checker_admin_id
-		  )`
+			  AND NOT EXISTS (
+			    SELECT 1 FROM admin_override_approvals a
+			    WHERE a.action='delivery.force_complete' AND a.resource_type='delivery_order'
+			      AND a.resource_id=d.id AND a.status='approved' AND a.approved_at IS NOT NULL
+			      AND a.maker_admin_id<>a.checker_admin_id
+			  )
+			  AND NOT EXISTS (
+			    SELECT 1 FROM audit_logs l
+			    WHERE l.actor_type='admin' AND l.action='delivery.force_complete'
+			      AND l.resource_type='delivery_order' AND l.resource_id=d.id
+			      AND l.result='success'
+			  )`
 	if err := c.db.WithContext(ctx).Raw(`SELECT COUNT(*) `+invalidCompletionSQL, cutover).Scan(&result.Violations).Error; err != nil {
 		return result, err
 	}
@@ -543,7 +549,7 @@ func (c *Checker) checkVerificationCutover(ctx context.Context) (CheckResult, er
 			return result, err
 		}
 		for _, row := range invalid {
-			c.addSample(&result, Finding{ObjectType: "delivery_order", ObjectID: idText(row.ID), Code: "COMPLETED_WITHOUT_ENFORCED_PROOF", Detail: "post-cutover completion has neither enforce verification nor approved maker-checker override"})
+			c.addSample(&result, Finding{ObjectType: "delivery_order", ObjectID: idText(row.ID), Code: "COMPLETED_WITHOUT_ENFORCED_PROOF", Detail: "post-cutover completion has neither enforce verification nor a successful controlled admin force-complete audit"})
 		}
 	}
 

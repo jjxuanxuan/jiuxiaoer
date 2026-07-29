@@ -13,9 +13,10 @@ import (
 )
 
 const (
-	CheckpointVersion = 1
-	WriteConfirmation = "APPLY_CP1_DATA_BACKFILL"
-	maxBackfillID     = uint64(1<<63 - 1)
+	CheckpointVersion           = 1
+	WriteConfirmation           = "APPLY_CP1_DATA_BACKFILL"
+	WineTicketWriteConfirmation = "APPLY_WINE_TICKET_REGISTRY_BACKFILL"
+	maxBackfillID               = uint64(1<<63 - 1)
 )
 
 var checkDescriptions = map[string]string{
@@ -25,7 +26,7 @@ var checkDescriptions = map[string]string{
 	"DQ-004": "goods-discount+delivery_fee 等于 payable",
 	"DQ-005": "receipt.v1 与订单及商品快照一致",
 	"DQ-006": "同一打印事件的首次任务不重复",
-	"DQ-007": "切流后的配送完成具备 enforce 核销或合规双人 override",
+	"DQ-007": "切流后的配送完成具备 enforce 核销或受控管理员直执审计",
 	"DQ-008": "同一配送单最多一个 active assignment",
 	"DQ-009": "启用的打印设置引用已发布且兼容的模板",
 	"DQ-010": "一期精确权限及默认商家角色授权符合矩阵",
@@ -99,7 +100,8 @@ type BackfillOptions struct {
 
 func (o BackfillOptions) Validate() error {
 	switch o.Job {
-	case "print-tasks", "print-settings", "verification-history":
+	case "print-tasks", "print-settings", "verification-history",
+		"wine-ticket-payments", "wine-ticket-refunds", "wine-ticket-returns":
 	default:
 		return fmt.Errorf("unsupported backfill job %q", o.Job)
 	}
@@ -122,8 +124,12 @@ func (o BackfillOptions) Validate() error {
 		return fmt.Errorf("resume requires a checkpoint file")
 	}
 	if o.Execute {
-		if !o.AllowWrite || o.Confirmation != WriteConfirmation {
-			return fmt.Errorf("write refused: --execute requires JXE_CP1_DATA_ALLOW_WRITE=true and --confirm=%s", WriteConfirmation)
+		confirmation := WriteConfirmation
+		if strings.HasPrefix(o.Job, "wine-ticket-") {
+			confirmation = WineTicketWriteConfirmation
+		}
+		if !o.AllowWrite || o.Confirmation != confirmation {
+			return fmt.Errorf("write refused: --execute requires the explicit write gate and --confirm=%s", confirmation)
 		}
 		if strings.TrimSpace(o.CheckpointFile) == "" {
 			return fmt.Errorf("write mode requires a checkpoint file")

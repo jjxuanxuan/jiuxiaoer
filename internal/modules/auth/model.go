@@ -61,6 +61,22 @@ type AdminUser struct {
 // TableName 返回当前数据模型对应的数据库表名。
 func (AdminUser) TableName() string { return "admin_users" }
 
+// AdminUserShop 是受限平台管理员的显式对象范围。
+// 全局平台角色不会在此创建记录。
+type AdminUserShop struct {
+	ID          uint64
+	AdminUserID uint64
+	ShopID      uint64
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	DeletedAt   *time.Time
+	CreatedBy   *uint64
+	UpdatedBy   *uint64
+}
+
+// TableName 返回当前数据模型对应的数据库表名。
+func (AdminUserShop) TableName() string { return "admin_user_shops" }
+
 type MerchantUser struct {
 	ID         uint64
 	AccountID  uint64

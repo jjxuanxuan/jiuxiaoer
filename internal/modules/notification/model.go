@@ -57,9 +57,9 @@ func (Delivery) TableName() string { return "notification_deliveries" }
 
 type Message struct {
 	ID            uint64
-	CustomerID    uint64
-	SourceEventID string
-	Type          string
+	CustomerID    uint64 `gorm:"uniqueIndex:uk_message_source,priority:1"`
+	SourceEventID string `gorm:"size:128;uniqueIndex:uk_message_source,priority:2"`
+	Type          string `gorm:"size:64;uniqueIndex:uk_message_source,priority:3"`
 	Title         string
 	Summary       string
 	TargetType    *string

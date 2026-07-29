@@ -66,7 +66,14 @@ func Open(ctx context.Context, cfg config.MySQLConfig, log *slog.Logger) (*gorm.
 		log.Warn("mysql ping failed; continuing because mysql is optional", slog.Any("error", err))
 		return nil, nil
 	}
-	if err := verifySchema(pingCtx, db); err != nil {
+	if err := verifyTimeZone(pingCtx, db, cfg.RequiredTimeZone); err != nil {
+		if cfg.Required {
+			return nil, err
+		}
+		log.Warn("mysql timezone verification failed; continuing because mysql is optional", slog.Any("error", err))
+		return nil, nil
+	}
+	if err := verifySchema(pingCtx, db, cfg.RequireWineTicketSchema, cfg.RequireWineTicketMoneyContract); err != nil {
 		if cfg.Required {
 			return nil, err
 		}
@@ -145,8 +152,68 @@ var requiredSchemaColumns = []schemaColumn{
 	{table: "audit_logs", column: "ip_hash"},
 }
 
+var requiredWineTicketSchemaColumns = []schemaColumn{
+	{table: "payments", column: "biz_type"},
+	{table: "refunds", column: "biz_type"},
+	{table: "orders", column: "order_type"},
+	{table: "delivery_orders", column: "scheduled_start_at"},
+	{table: "delivery_returns", column: "settlement_type"},
+	{table: "wine_ticket_packages", column: "package_no"},
+	{table: "wine_ticket_purchase_quotas", column: "package_code"},
+	{table: "wine_ticket_purchases", column: "purchase_no"},
+	{table: "wine_ticket_lots", column: "lot_no"},
+	{table: "wine_ticket_transactions", column: "transaction_no"},
+	{table: "delivery_time_slots", column: "service_date"},
+	{table: "wine_ticket_redemptions", column: "redemption_no"},
+	{table: "wine_ticket_redemption_allocations", column: "redemption_id"},
+	{table: "wine_ticket_gifts", column: "gift_no"},
+	{table: "wine_ticket_gift_allocations", column: "gift_id"},
+	{table: "wine_ticket_gift_claim_tokens", column: "token_digest"},
+	{table: "wine_ticket_renewals", column: "renewal_no"},
+	{table: "wine_ticket_refunds", column: "wine_ticket_refund_no"},
+	{table: "wine_ticket_refund_allocations", column: "wine_ticket_refund_id"},
+	{table: "wine_ticket_reminders", column: "scheduled_at"},
+	{table: "wine_ticket_reminders", column: "locked_by"},
+	{table: "wine_ticket_reminders", column: "locked_until"},
+	{table: "notification_subscription_consents", column: "provider_receipt"},
+	{table: "wine_ticket_exceptions", column: "exception_no"},
+	{table: "wine_ticket_reconciliation_checkpoints", column: "high_watermarks"},
+	{table: "wine_ticket_reconciliation_checkpoints", column: "lease_until"},
+	{table: "admin_user_shops", column: "admin_user_id"},
+}
+
+func verifyTimeZone(ctx context.Context, db *gorm.DB, required string) error {
+	if required == "" {
+		return nil
+	}
+	type timeZoneRow struct {
+		SessionTimeZone string `gorm:"column:session_time_zone"`
+		GlobalTimeZone  string `gorm:"column:global_time_zone"`
+	}
+	var row timeZoneRow
+	if err := db.WithContext(ctx).Raw(`
+		SELECT
+			@@SESSION.time_zone AS session_time_zone,
+			@@GLOBAL.time_zone AS global_time_zone`).Scan(&row).Error; err != nil {
+		return fmt.Errorf("verify mysql timezone: %w", err)
+	}
+	return validateMySQLTimeZone(row.SessionTimeZone, row.GlobalTimeZone, required)
+}
+
+func validateMySQLTimeZone(session, global, required string) error {
+	if session != required || global != required {
+		return fmt.Errorf(
+			"mysql timezone is incompatible: session=%q global=%q, want %q",
+			session,
+			global,
+			required,
+		)
+	}
+	return nil
+}
+
 // verifySchema 核验Schema是否有效。
-func verifySchema(ctx context.Context, db *gorm.DB) error {
+func verifySchema(ctx context.Context, db *gorm.DB, requireWineTicket bool, requireWineTicketMoneyContract bool) error {
 	type schemaColumnRow struct {
 		TableName  string `gorm:"column:table_name"`
 		ColumnName string `gorm:"column:column_name"`
@@ -155,8 +222,7 @@ func verifySchema(ctx context.Context, db *gorm.DB) error {
 	err := db.WithContext(ctx).Raw(`
 			SELECT table_name, column_name
 			FROM information_schema.columns
-			WHERE table_schema = DATABASE()
-			  AND table_name IN ('products', 'product_stocks', 'orders', 'payments', 'outbox_events', 'mq_consumer_receipts', 'mq_dead_letters', 'mq_dead_letter_replays', 'customer_identities', 'payment_callbacks', 'wechat_bill_reconciliation_runs', 'wechat_bill_observations', 'wechat_bill_discrepancies', 'customer_addresses', 'shops', 'service_cities', 'service_city_adcodes', 'delivery_promise_policies', 'rider_runtime_states', 'shop_business_hours', 'home_slots', 'after_sales', 'refunds', 'asset_accounts', 'asset_transactions', 'asset_entries', 'member_profiles', 'compensation_ledger', 'delivery_orders', 'print_tasks', 'notification_deliveries', 'delivery_verifications', 'admin_override_approvals', 'provisioning_operations', 'identity_verification_requests', 'identity_verification_callbacks', 'customer_realname_verifications', 'rider_applications', 'rider_application_reviews', 'customer_search_histories', 'search_keyword_daily_stats', 'audit_logs')`).Scan(&rows).Error
+			WHERE table_schema = DATABASE()`).Scan(&rows).Error
 	if err != nil {
 		return fmt.Errorf("verify database schema: %w", err)
 	}
@@ -164,12 +230,115 @@ func verifySchema(ctx context.Context, db *gorm.DB) error {
 	for _, row := range rows {
 		found[schemaColumn{table: row.TableName, column: row.ColumnName}] = true
 	}
-	return validateRequiredSchemaColumns(found)
+	if err := validateRequiredSchemaColumnsForProfile(found, requireWineTicket); err != nil {
+		return err
+	}
+	if requireWineTicketMoneyContract {
+		return verifyWineTicketMoneyContract(ctx, db)
+	}
+	return nil
+}
+
+type moneyContractColumn struct {
+	table  string
+	column string
+}
+
+var requiredWineTicketMoneyContractColumns = map[moneyContractColumn]string{
+	{table: "payments", column: "biz_type"}:                  "NO",
+	{table: "payments", column: "biz_id"}:                    "NO",
+	{table: "payments", column: "order_id"}:                  "YES",
+	{table: "refunds", column: "biz_type"}:                   "NO",
+	{table: "refunds", column: "biz_id"}:                     "NO",
+	{table: "refunds", column: "order_id"}:                   "YES",
+	{table: "refunds", column: "after_sale_id"}:              "YES",
+	{table: "delivery_returns", column: "settlement_type"}:   "NO",
+	{table: "delivery_returns", column: "settlement_status"}: "NO",
+}
+
+var requiredWineTicketMoneyContractConstraints = []string{
+	"chk_payment_business_link",
+	"chk_refund_business_link",
+	"chk_delivery_return_settlement_type",
+	"chk_delivery_return_settlement_state",
+}
+
+func verifyWineTicketMoneyContract(ctx context.Context, db *gorm.DB) error {
+	type columnRow struct {
+		TableName  string `gorm:"column:table_name"`
+		ColumnName string `gorm:"column:column_name"`
+		IsNullable string `gorm:"column:is_nullable"`
+	}
+	var columnRows []columnRow
+	if err := db.WithContext(ctx).Raw(`
+		SELECT table_name, column_name, is_nullable
+		FROM information_schema.columns
+		WHERE table_schema = DATABASE()
+		  AND table_name IN ('payments','refunds','delivery_returns')
+	`).Scan(&columnRows).Error; err != nil {
+		return fmt.Errorf("verify wine-ticket money contract columns: %w", err)
+	}
+	foundColumns := make(map[moneyContractColumn]string, len(columnRows))
+	for _, row := range columnRows {
+		foundColumns[moneyContractColumn{table: row.TableName, column: row.ColumnName}] = row.IsNullable
+	}
+
+	type constraintRow struct {
+		ConstraintName string `gorm:"column:constraint_name"`
+	}
+	var constraintRows []constraintRow
+	if err := db.WithContext(ctx).Raw(`
+		SELECT constraint_name
+		FROM information_schema.table_constraints
+		WHERE table_schema = DATABASE()
+		  AND constraint_type = 'CHECK'
+		  AND constraint_name IN (
+		    'chk_payment_business_link',
+		    'chk_refund_business_link',
+		    'chk_delivery_return_settlement_type',
+		    'chk_delivery_return_settlement_state'
+		  )
+	`).Scan(&constraintRows).Error; err != nil {
+		return fmt.Errorf("verify wine-ticket money contract constraints: %w", err)
+	}
+	foundConstraints := make(map[string]bool, len(constraintRows))
+	for _, row := range constraintRows {
+		foundConstraints[row.ConstraintName] = true
+	}
+	return validateWineTicketMoneyContract(foundColumns, foundConstraints)
+}
+
+func validateWineTicketMoneyContract(foundColumns map[moneyContractColumn]string, foundConstraints map[string]bool) error {
+	for column, expectedNullable := range requiredWineTicketMoneyContractColumns {
+		if actual, ok := foundColumns[column]; !ok || actual != expectedNullable {
+			return fmt.Errorf(
+				"database schema is incompatible: wine-ticket money CONTRACT requires %s.%s IS_NULLABLE=%s; apply the manual schema-only CONTRACT after backfill gates pass",
+				column.table, column.column, expectedNullable,
+			)
+		}
+	}
+	for _, constraint := range requiredWineTicketMoneyContractConstraints {
+		if !foundConstraints[constraint] {
+			return fmt.Errorf(
+				"database schema is incompatible: wine-ticket money CONTRACT constraint %s is missing; apply the manual schema-only CONTRACT after backfill gates pass",
+				constraint,
+			)
+		}
+	}
+	return nil
 }
 
 // validateRequiredSchemaColumns 校验Required Schema Columns是否合法。
 func validateRequiredSchemaColumns(found map[schemaColumn]bool) error {
-	for _, required := range requiredSchemaColumns {
+	return validateRequiredSchemaColumnsForProfile(found, false)
+}
+
+func validateRequiredSchemaColumnsForProfile(found map[schemaColumn]bool, requireWineTicket bool) error {
+	requiredColumns := requiredSchemaColumns
+	if requireWineTicket {
+		requiredColumns = append(append([]schemaColumn{}, requiredSchemaColumns...), requiredWineTicketSchemaColumns...)
+	}
+	for _, required := range requiredColumns {
 		if !found[required] {
 			return fmt.Errorf(
 				"database schema is incompatible: missing %s.%s; run Goose migrations and do not share this database with the legacy Sequelize backend",

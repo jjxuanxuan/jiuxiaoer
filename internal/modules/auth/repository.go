@@ -189,23 +189,58 @@ func (r *Repository) TouchLastLogin(ctx context.Context, accountID uint64) error
 		Updates(map[string]any{"last_login_at": &now}).Error
 }
 
-// AdminProfile 返回管理端资料。
-func (r *Repository) AdminProfile(ctx context.Context, accountID uint64) (AdminUser, string, []string, error) {
+// AdminProfile 返回管理端资料。门店范围和权限都在登录/刷新时从数据库
+// 重建；scoped 管理员没有授权行时返回空范围，由业务 service fail closed。
+func (r *Repository) AdminProfile(ctx context.Context, accountID uint64) (AdminUser, string, []uint64, []string, error) {
 	var admin AdminUser
 	if err := r.db.WithContext(ctx).Where("account_id = ? AND deleted_at IS NULL", accountID).First(&admin).Error; err != nil {
-		return AdminUser{}, "", nil, err
+		return AdminUser{}, "", nil, nil, err
 	}
 
-	var roleCode string
-	if err := r.db.WithContext(ctx).Table("roles").Select("code").Where("id = ?", admin.RoleID).Scan(&roleCode).Error; err != nil {
-		return AdminUser{}, "", nil, err
+	var role struct {
+		Code  string
+		Scope string
+	}
+	if err := r.db.WithContext(ctx).
+		Table("roles").
+		Select("code, scope").
+		Where("id = ? AND status = 'active' AND deleted_at IS NULL", admin.RoleID).
+		Take(&role).Error; err != nil {
+		return AdminUser{}, "", nil, nil, err
+	}
+	if AdminRoleHasGlobalShopScope(role.Code) && role.Scope != "all" {
+		return AdminUser{}, "", nil, nil, gorm.ErrRecordNotFound
 	}
 
 	perms, err := r.PermissionCodesByRole(ctx, admin.RoleID)
 	if err != nil {
-		return AdminUser{}, "", nil, err
+		return AdminUser{}, "", nil, nil, err
 	}
-	return admin, roleCode, perms, nil
+
+	var shopIDs []uint64
+	if !AdminRoleHasGlobalShopScope(role.Code) {
+		err = r.db.WithContext(ctx).
+			Table("admin_user_shops").
+			Select("shop_id").
+			Where("admin_user_id = ? AND deleted_at IS NULL", admin.ID).
+			Order("shop_id").
+			Scan(&shopIDs).Error
+		if err != nil {
+			return AdminUser{}, "", nil, nil, err
+		}
+	}
+	return admin, role.Code, shopIDs, perms, nil
+}
+
+// AdminRoleHasGlobalShopScope 在认证边界维护精简且明确的平台全局角色白名单。
+// 自定义或受限角色不会仅因 admin_user_shops 查询结果为空就变为全局角色。
+func AdminRoleHasGlobalShopScope(roleCode string) bool {
+	switch roleCode {
+	case "super_admin", "admin_manager":
+		return true
+	default:
+		return false
+	}
 }
 
 // PermissionCodesByRole 返回角色对应的权限代码。

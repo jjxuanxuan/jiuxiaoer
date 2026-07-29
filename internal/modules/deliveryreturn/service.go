@@ -27,13 +27,14 @@ import (
 )
 
 type Service struct {
-	cfg        config.Config
-	repo       *Repository
-	afterSales *aftersale.Service
-	ids        *snowflake.Generator
-	idem       *idempotency.Store
-	limiter    *fixedwindow.Limiter
-	now        func() time.Time
+	cfg         config.Config
+	repo        *Repository
+	afterSales  *aftersale.Service
+	settlements *returnSettlementRegistry
+	ids         *snowflake.Generator
+	idem        *idempotency.Store
+	limiter     *fixedwindow.Limiter
+	now         func() time.Time
 }
 
 func NewService(cfg config.Config, db *gorm.DB, redisClient *redis.Client, ids *snowflake.Generator) *Service {
@@ -45,6 +46,7 @@ func NewService(cfg config.Config, db *gorm.DB, redisClient *redis.Client, ids *
 
 func (s *Service) WithAfterSale(service *aftersale.Service) *Service {
 	s.afterSales = service
+	s.WithReturnSettlementHandler(&retailCashReturnSettlement{afterSales: service, repo: s.repo})
 	return s
 }
 
@@ -139,6 +141,21 @@ func (s *Service) Create(ctx context.Context, claims *auth.Claims, method, route
 		if delivery.AssignmentVersion != req.ExpectedDeliveryVersion {
 			return problem.Conflict("VERSION_CONFLICT", "delivery assignment version changed")
 		}
+		order, err := s.repo.LockOrder(ctx, tx, delivery.OrderID)
+		if err != nil {
+			return problem.Conflict("INVALID_RETURN_STATE", "delivery return order is unavailable")
+		}
+		handler, err := s.settlementHandler(order)
+		if err != nil {
+			return err
+		}
+		binding, err := handler.InitialBinding(ctx, tx, order)
+		if err != nil {
+			return err
+		}
+		if err := validateReturnSettlementBinding(handler, binding); err != nil {
+			return err
+		}
 		if incidentID != nil {
 			incident, findErr := s.repo.Incident(ctx, tx, *incidentID)
 			if IsNotFound(findErr) || (findErr == nil && incident.DeliveryOrderID != delivery.ID) {
@@ -159,6 +176,9 @@ func (s *Service) Create(ctx context.Context, claims *auth.Claims, method, route
 		}
 		existing, err := s.repo.ActiveByDelivery(ctx, tx, delivery.ID, true)
 		if err == nil {
+			if err := validateReturnSettlementRoute(handler, existing); err != nil {
+				return err
+			}
 			aggregate := Aggregate{Return: existing}
 			out = s.dto(aggregate, "rider")
 			out.Deduplicated = true
@@ -175,7 +195,9 @@ func (s *Service) Create(ctx context.Context, claims *auth.Claims, method, route
 			ID: returnID, ReturnNo: "DR" + idString(returnID), DeliveryOrderID: delivery.ID,
 			ActiveDeliveryOrderID: &activeDeliveryID, OrderID: delivery.OrderID, ShopID: delivery.ShopID,
 			RiderID: riderID, IncidentID: incidentID, ReasonCode: req.ReasonCode, Status: StatusRequested,
-			InitiatorType: "rider", InitiatorID: riderID, RequestNote: optionalString(req.Note),
+			SettlementType: optionalString(binding.SettlementType), SettlementBizID: binding.SettlementBizID,
+			SettlementStatus: stringPointer("not_started"),
+			InitiatorType:    "rider", InitiatorID: riderID, RequestNote: optionalString(req.Note),
 			RequestedAt: now, Version: 1, CreatedAt: now, UpdatedAt: now,
 		}
 		if err := s.repo.CreateReturn(ctx, tx, &row); err != nil {
@@ -271,6 +293,8 @@ func (s *Service) dto(aggregate Aggregate, role string) DTO {
 		ID: idString(row.ID), ReturnNo: row.ReturnNo, OrderID: idString(row.OrderID), DeliveryOrderID: idString(row.DeliveryOrderID),
 		ShopID: idString(row.ShopID), RiderID: idString(row.RiderID), IncidentID: optionalIDString(row.IncidentID),
 		AfterSaleID: optionalIDString(row.AfterSaleID), ReasonCode: row.ReasonCode, Status: row.Status,
+		SettlementType: optionalStringValue(row.SettlementType), SettlementBizID: optionalIDString(row.SettlementBizID),
+		SettlementStatus: optionalStringValue(row.SettlementStatus), SettledAt: optionalTimeString(row.SettledAt),
 		InitiatorType: row.InitiatorType, LogisticsStatus: logisticsStatus(row.Status), RefundStatus: aggregateRefundStatus(aggregate),
 		InventoryStatus: inventoryStatus(row.Status), Version: row.Version, AllowedActions: s.allowedActions(row, role),
 		RequestedAt: timeString(row.RequestedAt), ApprovedAt: optionalTimeString(row.ApprovedAt), ArrivedAt: optionalTimeString(row.ArrivedAt),
@@ -332,6 +356,9 @@ func logisticsStatus(status string) string {
 
 func aggregateRefundStatus(aggregate Aggregate) string {
 	row := aggregate.Return
+	if row.SettlementType != nil && *row.SettlementType == SettlementWineTicketRestore {
+		return "not_required"
+	}
 	if row.AfterSaleID == nil {
 		return "not_authorized"
 	}

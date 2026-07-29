@@ -8,6 +8,7 @@ import (
 
 type Input struct {
 	RefundNo, PaymentNo, ProviderTradeNo, Reason, NotifyURL, Currency string
+	BusinessType                                                      string
 	Amount, TotalAmount                                               int64
 }
 type State struct {

@@ -138,7 +138,10 @@ func storeOrderPaidFrame(event StoreOrderPaidEvent) ServerFrame {
 	data, _ := json.Marshal(event)
 	frame := frameNow(FrameEvent)
 	frame.EventID = event.EventID
-	frame.EventType = "store.order.paid"
+	frame.EventType = event.EventType
+	if frame.EventType == "" {
+		frame.EventType = "store.order.paid"
+	}
 	frame.OccurredAt = &event.OccurredAt
 	frame.SoundKey = event.SoundKey
 	frame.Data = data

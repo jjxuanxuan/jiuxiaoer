@@ -173,6 +173,9 @@ type DeliveryOrder struct {
 	PickupReadyAt         *time.Time
 	PickupSnapshot        datatypes.JSON
 	RecipientSnapshot     datatypes.JSON
+	ScheduledStartAt      *time.Time
+	ScheduledEndAt        *time.Time
+	NotBeforeAt           *time.Time
 	AcceptedAt            *time.Time
 	PickedUpAt            *time.Time
 	StartedAt             *time.Time
@@ -211,11 +214,14 @@ func (Assignment) TableName() string { return "delivery_assignments" }
 type domainOrder struct {
 	ID              uint64
 	OrderNo         string
+	OrderType       string
+	SettlementMode  string
 	CustomerID      uint64
 	MerchantID      uint64
 	ShopID          uint64
 	Status          string
 	PayStatus       string
+	PaidAmount      int64
 	DeliveryStatus  string
 	AddressSnapshot datatypes.JSON
 	Version         uint

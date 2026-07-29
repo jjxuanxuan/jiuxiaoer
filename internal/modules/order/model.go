@@ -6,6 +6,11 @@ import (
 	"gorm.io/datatypes"
 )
 
+const (
+	retailOrderType    = "retail"
+	cashSettlementMode = "cash"
+)
+
 type CustomerAddress struct {
 	ID               uint64
 	CustomerID       uint64
@@ -85,33 +90,37 @@ type ProductStock struct {
 func (ProductStock) TableName() string { return "product_stocks" }
 
 type Order struct {
-	ID                      uint64
-	OrderNo                 string
-	CustomerID              uint64
-	MerchantID              uint64
-	ShopID                  uint64
-	Status                  string
-	PayStatus               string
-	DeliveryStatus          string
-	GoodsAmount             int64
-	DiscountAmount          int64
-	DeliveryFeeAmount       int64
-	PayableAmount           int64
-	PaidAmount              int64
-	Remark                  *string
-	AddressSnapshot         datatypes.JSON
-	DeliveryPromiseSnapshot datatypes.JSON
-	ComplianceSnapshot      datatypes.JSON
-	IdempotencyKey          *string
-	ExpiresAt               *time.Time
-	CancelSource            *string
-	CancelReasonCode        *string
-	Version                 int
-	PaidAt                  *time.Time
-	CancelledAt             *time.Time
-	CompletedAt             *time.Time
-	CreatedAt               time.Time
-	UpdatedAt               time.Time
+	ID                       uint64
+	OrderNo                  string
+	OrderType                string `gorm:"default:retail"`
+	SettlementMode           string `gorm:"default:cash"`
+	CustomerID               uint64
+	MerchantID               uint64
+	ShopID                   uint64
+	Status                   string
+	PayStatus                string
+	DeliveryStatus           string
+	GoodsAmount              int64
+	DiscountAmount           int64
+	DeliveryFeeAmount        int64
+	PayableAmount            int64
+	PaidAmount               int64
+	Remark                   *string
+	AddressSnapshot          datatypes.JSON
+	DeliveryTimeSlotID       *uint64
+	DeliveryTimeSlotSnapshot datatypes.JSON
+	DeliveryPromiseSnapshot  datatypes.JSON
+	ComplianceSnapshot       datatypes.JSON
+	IdempotencyKey           *string
+	ExpiresAt                *time.Time
+	CancelSource             *string
+	CancelReasonCode         *string
+	Version                  int
+	PaidAt                   *time.Time
+	CancelledAt              *time.Time
+	CompletedAt              *time.Time
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
 }
 
 // TableName 返回当前数据模型对应的数据库表名。
@@ -169,7 +178,9 @@ func (StockRecord) TableName() string { return "stock_records" }
 type Payment struct {
 	ID                uint64
 	PaymentNo         string
-	OrderID           uint64
+	BizType           *string
+	BizID             *uint64
+	OrderID           *uint64
 	CustomerID        uint64
 	Channel           string
 	Provider          string

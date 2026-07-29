@@ -138,8 +138,7 @@ var permissions = []permissionSeed{
 	{2045, "member_rule:activate", "member_rule", "activate", "激活会员等级规则"},
 	{2046, "asset_transaction:list", "asset_transaction", "list", "资产流水列表"},
 	{2047, "asset_transaction:view", "asset_transaction", "view", "资产流水详情"},
-	{2048, "asset_adjustment:create", "asset_adjustment", "create", "创建资产调账"},
-	{2049, "asset_adjustment:approve", "asset_adjustment", "approve", "复核资产调账"},
+	{2048, "asset_adjustment:create", "asset_adjustment", "create", "执行人工资产调账"},
 	{2050, "asset_reconcile:view", "asset_reconcile", "view", "查看资产对账"},
 	{2051, "asset_reconcile:run", "asset_reconcile", "run", "执行资产对账"},
 	{2052, "asset_reconcile:repair", "asset_reconcile", "repair", "修复资产投影"},
@@ -233,9 +232,47 @@ var permissions = []permissionSeed{
 	{2140, "delivery:view_own", "delivery", "view_own", "查看本人配送详情"},
 	{2141, "delivery:pickup", "delivery", "pickup", "核销本人配送取货"},
 	{2142, "delivery:complete", "delivery", "complete", "核销本人配送送达"},
-	{2143, "delivery:force_complete_request", "delivery", "force_complete_request", "发起强制完成配送申请"},
-	{2144, "delivery:force_complete_approve", "delivery", "force_complete_approve", "复核强制完成配送申请"},
 	{2145, "merchant_user:update_role", "merchant_user", "update_role", "调整商家用户角色"},
+	{2146, "wine_ticket_cabinet:view", "wine_ticket_cabinet", "view", "查看本人私人酒柜"},
+	{2147, "wine_ticket_exception:list", "wine_ticket_exception", "list", "查询酒票异常队列"},
+	{2148, "wine_ticket_exception:resolve", "wine_ticket_exception", "resolve", "处置酒票异常"},
+	{2150, "wine_ticket_exception:view", "wine_ticket_exception", "view", "查看酒票异常详情"},
+	{2151, "wine_ticket_gift:cancel", "wine_ticket_gift", "cancel", "取消本人待领取赠礼"},
+	{2152, "wine_ticket_gift:claim", "wine_ticket_gift", "claim", "领取酒票赠礼"},
+	{2153, "wine_ticket_gift:create", "wine_ticket_gift", "create", "创建酒票赠礼"},
+	{2154, "wine_ticket_gift:list", "wine_ticket_gift", "list", "查询本人赠礼记录"},
+	{2155, "wine_ticket_gift:share", "wine_ticket_gift", "share", "签发赠礼分享令牌"},
+	{2156, "wine_ticket_gift:view", "wine_ticket_gift", "view", "查看本人赠礼详情"},
+	{2157, "wine_ticket_lot:list", "wine_ticket_lot", "list", "查询本人酒票批次"},
+	{2158, "wine_ticket_lot:list_all", "wine_ticket_lot", "list_all", "查询全局酒票批次脱敏投影"},
+	{2159, "wine_ticket_lot:view", "wine_ticket_lot", "view", "查看本人酒票批次详情"},
+	{2160, "wine_ticket_notification_consent:create", "wine_ticket_notification_consent", "create", "记录本人订阅授权"},
+	{2161, "wine_ticket_notification_consent:view", "wine_ticket_notification_consent", "view", "查看本人订阅授权"},
+	{2162, "wine_ticket_package:create", "wine_ticket_package", "create", "创建酒票套餐草稿"},
+	{2163, "wine_ticket_package:list", "wine_ticket_package", "list", "查询酒票套餐管理列表"},
+	{2164, "wine_ticket_package:publish", "wine_ticket_package", "publish", "发布酒票套餐"},
+	{2165, "wine_ticket_package:update", "wine_ticket_package", "update", "更新酒票套餐草稿"},
+	{2166, "wine_ticket_package:view", "wine_ticket_package", "view", "查看酒票套餐完整配置"},
+	{2167, "wine_ticket_payment:confirm", "wine_ticket_payment", "confirm", "确认本人酒票支付结果"},
+	{2168, "wine_ticket_purchase:create", "wine_ticket_purchase", "create", "创建本人酒票购买"},
+	{2169, "wine_ticket_purchase:list", "wine_ticket_purchase", "list", "查询本人酒票购买"},
+	{2170, "wine_ticket_purchase:list_all", "wine_ticket_purchase", "list_all", "查询全局酒票购买脱敏投影"},
+	{2171, "wine_ticket_purchase:view", "wine_ticket_purchase", "view", "查看本人酒票购买详情"},
+	{2172, "wine_ticket_redemption:cancel", "wine_ticket_redemption", "cancel", "取消本人可取消提酒"},
+	{2173, "wine_ticket_redemption:create", "wine_ticket_redemption", "create", "创建本人提酒"},
+	{2174, "wine_ticket_redemption:list", "wine_ticket_redemption", "list", "查询本人提酒记录"},
+	{2175, "wine_ticket_redemption:view", "wine_ticket_redemption", "view", "查看本人提酒详情"},
+	{2176, "wine_ticket_refund:create", "wine_ticket_refund", "create", "申请本人未使用酒票退款"},
+	{2177, "wine_ticket_refund:quote", "wine_ticket_refund", "quote", "查看本人酒票退款报价"},
+	{2178, "wine_ticket_refund:view", "wine_ticket_refund", "view", "查看本人酒票退款进度"},
+	{2179, "wine_ticket_renewal:create", "wine_ticket_renewal", "create", "创建本人酒票续期"},
+	{2180, "wine_ticket_renewal:quote", "wine_ticket_renewal", "quote", "查看本人酒票续期报价"},
+	{2181, "wine_ticket_renewal:view", "wine_ticket_renewal", "view", "查看本人酒票续期结果"},
+	{2182, "wine_ticket_slot:create", "wine_ticket_slot", "create", "创建酒票配送时段"},
+	{2183, "wine_ticket_slot:list", "wine_ticket_slot", "list", "查询酒票配送时段"},
+	{2184, "wine_ticket_slot:update", "wine_ticket_slot", "update", "更新酒票配送时段"},
+	{2185, "wine_ticket_transaction:list", "wine_ticket_transaction", "list", "查询本人酒票权益流水"},
+	{2186, "wine_ticket_package:unpublish", "wine_ticket_package", "unpublish", "下架酒票套餐"},
 }
 
 var categories = []categorySeed{
@@ -411,6 +448,18 @@ func seedPermissions(tx *gorm.DB) error {
 			return err
 		}
 	}
+	if err := tx.Exec(`
+		UPDATE permissions
+		SET status = 'inactive', updated_at = CURRENT_TIMESTAMP(3)
+		WHERE code IN (
+			'asset_adjustment:approve',
+			'delivery:force_complete_request',
+			'delivery:force_complete_approve',
+			'wine_ticket_exception:review'
+		)
+	`).Error; err != nil {
+		return err
+	}
 	// 在同一事务内再次检查，避免并发目录写入与初始预检竞争，
 	// 导致种子数据绑定到其他记录。
 	return assertPermissionCatalog(tx)
@@ -462,13 +511,20 @@ func permissionCodeKey(code string) string {
 
 // seedRolePermissions 写入角色权限种子数据。
 func seedRolePermissions(tx *gorm.DB) error {
-	// 重新执行种子数据时保持强制完成的申请人与复核人职责分离，
-	// 以修正旧版权限目录曾将所有新权限广泛授予的情况。
+	// 双人审批权限已由单人直执权限取代。保留权限目录行用于历史审计，
+	// 但撤销所有活动角色映射，避免旧 token 刷新后继续获得废弃能力。
 	if err := tx.Exec(`
-		DELETE FROM role_permissions
-		WHERE (role_id = ? AND permission_id = ?)
-		   OR (role_id = ? AND permission_id = ?)
-	`, roleAdminManager, uint64(2143), roleOperation, uint64(2144)).Error; err != nil {
+		UPDATE role_permissions rp
+		JOIN permissions p ON p.id = rp.permission_id
+		SET rp.deleted_at = COALESCE(rp.deleted_at, CURRENT_TIMESTAMP(3)),
+			rp.updated_at = CURRENT_TIMESTAMP(3)
+		WHERE p.code IN (
+			'asset_adjustment:approve',
+			'delivery:force_complete_request',
+			'delivery:force_complete_approve',
+			'wine_ticket_exception:review'
+		)
+	`).Error; err != nil {
 		return err
 	}
 	// 商户角色采用受控的最小权限矩阵。重新创建下方精确授权前，
@@ -495,10 +551,10 @@ func rolePermissionAssignments() []rolePermissionAssignment {
 	all := permissionIDs()
 	return []rolePermissionAssignment{
 		{roleSuperAdmin, all},
-		{roleAdminManager, withoutPermissions(all, 2068, 2074, 2080, 2083, 2093, 2143)},
-		{roleOperation, []uint64{2001, 2002, 2003, 2004, 2005, 2007, 2008, 2010, 2023, 2024, 2025, 2026, 2032, 2033, 2041, 2042, 2043, 2044, 2045, 2057, 2059, 2061, 2062, 2065, 2066, 2067, 2069, 2070, 2071, 2072, 2073, 2075, 2076, 2077, 2078, 2090, 2091, 2092, 2094, 2095, 2096, 2097, 2103, 2104, 2105, 2106, 2107, 2108, 2109, 2115, 2116, 2117, 2118, 2119, 2120, 2127, 2128, 2129, 2130, 2131, 2143, 2145}},
-		{roleFinance, []uint64{2005, 2007, 2008, 2012, 2032, 2033, 2035, 2036, 2037, 2038, 2039, 2046, 2047, 2048, 2049, 2050, 2051, 2127, 2128, 2131}},
-		{roleCustomerService, []uint64{2007, 2008, 2009, 2012, 2032, 2033, 2034, 2035, 2036, 2039, 2040, 2115, 2116, 2117, 2119}},
+		{roleAdminManager, withoutPermissions(all, 2074, 2080, 2083, 2093)},
+		{roleOperation, []uint64{2001, 2002, 2003, 2004, 2005, 2007, 2008, 2010, 2023, 2024, 2025, 2026, 2032, 2033, 2041, 2042, 2043, 2044, 2045, 2057, 2059, 2061, 2062, 2065, 2066, 2067, 2068, 2069, 2070, 2071, 2072, 2073, 2075, 2076, 2077, 2078, 2090, 2091, 2092, 2094, 2095, 2096, 2097, 2103, 2104, 2105, 2106, 2107, 2108, 2109, 2115, 2116, 2117, 2118, 2119, 2120, 2127, 2128, 2129, 2130, 2131, 2145, 2147, 2148, 2150, 2158, 2162, 2163, 2164, 2165, 2166, 2170, 2182, 2183, 2184, 2186}},
+		{roleFinance, []uint64{2005, 2007, 2008, 2012, 2032, 2033, 2035, 2036, 2037, 2038, 2039, 2046, 2047, 2048, 2050, 2051, 2127, 2128, 2131, 2147, 2150, 2158, 2170}},
+		{roleCustomerService, []uint64{2007, 2008, 2009, 2012, 2032, 2033, 2034, 2035, 2036, 2039, 2040, 2115, 2116, 2117, 2119, 2158, 2170}},
 		{roleMerchantOwner, []uint64{2013, 2138, 2014, 2015, 2016, 2017, 2018, 2019, 2005, 2006, 2027, 2028, 2029, 2030, 2031, 2053, 2054, 2139, 2055, 2056, 2064, 2114, 2124, 2125, 2126}},
 		{roleMerchantOrder, []uint64{2013, 2138, 2014, 2015, 2053, 2054, 2139, 2055, 2056, 2064}},
 		{roleMerchantStock, []uint64{2005, 2006}},

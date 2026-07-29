@@ -29,25 +29,29 @@ func TestExpiryReconcilesCreatingPaymentBeforeClosingOrder(t *testing.T) {
 		t.Fatalf("open mysql: %v", err)
 	}
 	sqlDB, _ := db.DB()
-	defer sqlDB.Close()
+	t.Cleanup(func() { _ = sqlDB.Close() })
 
 	idGen := snowflake.New(995)
-	shopProductID, stockID, orderID, paymentID := idGen.Next(), idGen.Next(), idGen.Next(), idGen.Next()
+	productID, shopProductID, stockID, orderID, paymentID := idGen.Next(), idGen.Next(), idGen.Next(), idGen.Next(), idGen.Next()
 	paymentNo := "PAY-CREATING-" + strconv.FormatUint(paymentID, 10)
 	expiresAt := time.Date(1998, time.January, 1, 0, 0, 0, 0, time.UTC)
-	if err := db.Create(&order.ProductStock{ID: stockID, ShopProductID: shopProductID, ShopID: 4201, ProductID: 5002, AvailableQty: 9, ReservedQty: 1}).Error; err != nil {
+	registerRaceFixtureCleanup(t, db, orderID, paymentID, shopProductID, stockID)
+	if err := db.Create(&order.ProductStock{ID: stockID, ShopProductID: shopProductID, ShopID: 4201, ProductID: productID, AvailableQty: 9, ReservedQty: 1}).Error; err != nil {
 		t.Fatalf("create stock: %v", err)
 	}
 	if err := db.Create(&order.Order{ID: orderID, OrderNo: "ORDER-CREATING-" + strconv.FormatUint(orderID, 10), CustomerID: 1, MerchantID: 4001, ShopID: 4201, Status: "pending_payment", PayStatus: "pending", DeliveryStatus: "pending", GoodsAmount: 100, PayableAmount: 100, ExpiresAt: &expiresAt}).Error; err != nil {
 		t.Fatalf("create order: %v", err)
 	}
-	if err := db.Create(&order.OrderItem{ID: idGen.Next(), OrderID: orderID, ShopProductID: shopProductID, ProductID: 5002, ProductSnapshot: []byte(`{"name":"creating"}`), Quantity: 1, SalePriceAmount: 100, TotalAmount: 100}).Error; err != nil {
+	if err := db.Create(&order.OrderItem{ID: idGen.Next(), OrderID: orderID, ShopProductID: shopProductID, ProductID: productID, ProductSnapshot: []byte(`{"name":"creating"}`), Quantity: 1, SalePriceAmount: 100, TotalAmount: 100}).Error; err != nil {
 		t.Fatalf("create order item: %v", err)
 	}
-	if err := db.Create(&order.Payment{ID: paymentID, PaymentNo: paymentNo, OrderID: orderID, CustomerID: 1, Channel: "miniapp", Provider: "wechat", Status: "creating", Amount: 100, Currency: "CNY", ExpiresAt: &expiresAt}).Error; err != nil {
+	payment := retailOrderPaymentFixture(t, orderID, order.Payment{
+		ID: paymentID, PaymentNo: paymentNo, CustomerID: 1, Channel: "miniapp",
+		Provider: "wechat", Status: "creating", Amount: 100, Currency: "CNY", ExpiresAt: &expiresAt,
+	})
+	if err := db.Create(&payment).Error; err != nil {
 		t.Fatalf("create payment: %v", err)
 	}
-	defer cleanupRaceFixture(db, orderID, paymentID, shopProductID, stockID)
 	var insertedPayment order.Payment
 	if err := db.First(&insertedPayment, paymentID).Error; err != nil || insertedPayment.Status != "creating" || insertedPayment.Provider != "wechat" {
 		t.Fatalf("invalid payment fixture: %+v err=%v", insertedPayment, err)
@@ -94,29 +98,34 @@ func TestWorkerReconcilesStaleCreatingPaymentBeforeExpiry(t *testing.T) {
 		t.Fatalf("open mysql: %v", err)
 	}
 	sqlDB, _ := db.DB()
-	defer sqlDB.Close()
+	t.Cleanup(func() { _ = sqlDB.Close() })
 	idGen := snowflake.New(993)
-	shopProductID, stockID, orderID, paymentID := idGen.Next(), idGen.Next(), idGen.Next(), idGen.Next()
+	productID, shopProductID, stockID, orderID, paymentID := idGen.Next(), idGen.Next(), idGen.Next(), idGen.Next(), idGen.Next()
 	paymentNo := "PAY-CREATING-EARLY-" + strconv.FormatUint(paymentID, 10)
 	expiresAt := time.Now().Add(10 * time.Minute)
 	staleAt := time.Now().Add(-time.Minute)
-	if err := db.Create(&order.ProductStock{ID: stockID, ShopProductID: shopProductID, ShopID: 4201, ProductID: 5003, AvailableQty: 9, ReservedQty: 1}).Error; err != nil {
+	registerRaceFixtureCleanup(t, db, orderID, paymentID, shopProductID, stockID)
+	if err := db.Create(&order.ProductStock{ID: stockID, ShopProductID: shopProductID, ShopID: 4201, ProductID: productID, AvailableQty: 9, ReservedQty: 1}).Error; err != nil {
 		t.Fatalf("create stock: %v", err)
 	}
 	if err := db.Create(&order.Order{ID: orderID, OrderNo: "ORDER-CREATING-EARLY-" + strconv.FormatUint(orderID, 10), CustomerID: 1, MerchantID: 4001, ShopID: 4201, Status: "pending_payment", PayStatus: "pending", DeliveryStatus: "pending", GoodsAmount: 100, PayableAmount: 100, ExpiresAt: &expiresAt}).Error; err != nil {
 		t.Fatalf("create order: %v", err)
 	}
-	if err := db.Create(&order.OrderItem{ID: idGen.Next(), OrderID: orderID, ShopProductID: shopProductID, ProductID: 5003, ProductSnapshot: []byte(`{"name":"creating-early"}`), Quantity: 1, SalePriceAmount: 100, TotalAmount: 100}).Error; err != nil {
+	if err := db.Create(&order.OrderItem{ID: idGen.Next(), OrderID: orderID, ShopProductID: shopProductID, ProductID: productID, ProductSnapshot: []byte(`{"name":"creating-early"}`), Quantity: 1, SalePriceAmount: 100, TotalAmount: 100}).Error; err != nil {
 		t.Fatalf("create item: %v", err)
 	}
-	if err := db.Create(&order.Payment{ID: paymentID, PaymentNo: paymentNo, OrderID: orderID, CustomerID: 1, Channel: "miniapp", Provider: "wechat", Status: "creating", Amount: 100, Currency: "CNY", ExpiresAt: &expiresAt, UpdatedAt: staleAt}).Error; err != nil {
+	payment := retailOrderPaymentFixture(t, orderID, order.Payment{
+		ID: paymentID, PaymentNo: paymentNo, CustomerID: 1, Channel: "miniapp",
+		Provider: "wechat", Status: "creating", Amount: 100, Currency: "CNY",
+		ExpiresAt: &expiresAt, UpdatedAt: staleAt,
+	})
+	if err := db.Create(&payment).Error; err != nil {
 		t.Fatalf("create payment: %v", err)
 	}
 	// GORM 可能在 Create 时刷新自动更新时间戳，因此固定测试夹具的时间。
 	if err := db.Model(&order.Payment{}).Where("id = ?", paymentID).UpdateColumn("updated_at", staleAt).Error; err != nil {
 		t.Fatalf("age payment fixture: %v", err)
 	}
-	defer cleanupRaceFixture(db, orderID, paymentID, shopProductID, stockID)
 	paidAt := time.Now()
 	provider := &successfulQueryProvider{state: order.ProviderPaymentState{ProviderTradeNo: "wx-creating-early", PaymentNo: paymentNo, Status: "SUCCESS", Amount: 100, Currency: "CNY", PaidAt: &paidAt}}
 	worker := order.NewExpiryWorker(cfg, db, idGen, metrics.New("creating-early", ""), slog.New(slog.NewTextHandler(io.Discard, nil)), provider)

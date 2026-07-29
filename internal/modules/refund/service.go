@@ -35,6 +35,7 @@ type Service struct {
 	provider              Provider
 	idem                  *idempotency.Store
 	deliveryReturnClosure DeliveryReturnClosure
+	settlements           *settlementRegistry
 }
 
 type DeliveryReturnClosure interface {
@@ -43,7 +44,7 @@ type DeliveryReturnClosure interface {
 
 // NewService 创建并初始化服务。
 func NewService(cfg config.Config, db *gorm.DB, ids *snowflake.Generator, provider Provider) *Service {
-	return &Service{cfg: cfg, repo: NewRepository(db), ids: ids, provider: provider, idem: idempotency.NewStore(db)}
+	return &Service{cfg: cfg, repo: NewRepository(db), ids: ids, provider: provider, idem: idempotency.NewStore(db), settlements: newSettlementRegistry()}
 }
 
 func (s *Service) WithDeliveryReturnClosure(closure DeliveryReturnClosure) *Service {
@@ -76,19 +77,65 @@ func (s *Service) ProcessCallback(ctx context.Context, providerCode string, requ
 		now := time.Now()
 		callback := &Callback{ID: s.ids.Next(), Provider: providerCode, ProviderEventID: event.EventID, PayloadHash: hash, SignatureValid: true, ProcessStatus: "received", ReceivedAt: now, RequestID: requestctx.RequestIDPtr(ctx)}
 		created, err := s.repo.CreateCallbackIfAbsent(ctx, tx, callback)
-		if err != nil || !created {
+		if err != nil {
 			return err
 		}
-		row, err := s.repo.LockByNo(ctx, tx, event.State.RefundNo)
+		if !created {
+			existing, err := s.repo.CallbackByEvent(ctx, tx, providerCode, event.EventID)
+			if err != nil {
+				return err
+			}
+			if existing.ProcessStatus == "failed" || existing.ProcessStatus == "received" {
+				reject = problem.Internal("refund callback has not reached a safe terminal settlement")
+			}
+			return nil
+		}
+		lookup, err := s.repo.LookupByNo(ctx, tx, event.State.RefundNo)
 		if isNotFound(err) {
-			return s.repo.UpdateCallback(ctx, tx, callback.ID, map[string]any{"process_status": "ignored", "error_code": "REFUND_NOT_FOUND", "processed_at": &now})
+			reject = problem.Internal("local refund settlement was not found")
+			return s.repo.UpdateCallback(ctx, tx, callback.ID, map[string]any{"process_status": "failed", "error_code": "REFUND_NOT_FOUND", "processed_at": &now})
 		}
 		if err != nil {
 			return err
 		}
-		callback.RefundID = &row.ID
-		if err := s.repo.UpdateCallback(ctx, tx, callback.ID, map[string]any{"refund_id": row.ID}); err != nil {
+		callback.RefundID = &lookup.ID
+		if err := s.repo.UpdateCallback(ctx, tx, callback.ID, map[string]any{"refund_id": lookup.ID}); err != nil {
 			return err
+		}
+
+		handler, routeErr := s.externalSettlementHandler(lookup)
+		if routeErr != nil {
+			reject = routeErr
+			code := "REFUND_SETTLEMENT_ROUTING_FAILED"
+			if routeCode, ok := callbackRoutingFailure(routeErr); ok {
+				code = routeCode
+			}
+			return s.repo.UpdateCallback(ctx, tx, callback.ID, map[string]any{"process_status": "failed", "error_code": code, "processed_at": &now})
+		}
+		if handler != nil {
+			result, applyErr := handler.LockAndApply(ctx, tx, RefundSettlementCommand{Lookup: lookup, State: event.State})
+			if applyErr != nil {
+				return applyErr
+			}
+			if result.Reject != nil {
+				reject = result.Reject
+				code := result.CallbackErrorCode
+				if code == "" {
+					code = "REFUND_CALLBACK_REJECTED"
+				}
+				return s.repo.UpdateCallback(ctx, tx, callback.ID, map[string]any{"process_status": "failed", "error_code": code, "processed_at": &now})
+			}
+			return s.repo.UpdateCallback(ctx, tx, callback.ID, map[string]any{"process_status": "processed", "processed_at": &now})
+		}
+
+		// 保持既有零售锁顺序和状态应用路径不变。
+		row, err := s.repo.LockByNo(ctx, tx, event.State.RefundNo)
+		if err != nil {
+			return err
+		}
+		if !SameRefundSettlementRoute(lookup, row) {
+			reject = settlementRoutingFailure("REFUND_SETTLEMENT_ROUTE_CHANGED", "refund business routing changed during settlement")
+			return s.repo.UpdateCallback(ctx, tx, callback.ID, map[string]any{"process_status": "failed", "error_code": "REFUND_SETTLEMENT_ROUTE_CHANGED", "processed_at": &now})
 		}
 		if err := s.applyState(ctx, tx, row, event.State); err != nil {
 			reject = err
@@ -97,7 +144,11 @@ func (s *Service) ProcessCallback(ctx context.Context, providerCode string, requ
 					return updateErr
 				}
 				if s.deliveryReturnClosure != nil {
-					if reconcileErr := s.deliveryReturnClosure.ReconcileRefundWithTx(ctx, tx, row.AfterSaleID); reconcileErr != nil {
+					afterSaleID, _, linkErr := retailRefundLinks(row)
+					if linkErr != nil {
+						return linkErr
+					}
+					if reconcileErr := s.deliveryReturnClosure.ReconcileRefundWithTx(ctx, tx, afterSaleID); reconcileErr != nil {
 						return reconcileErr
 					}
 				}
@@ -126,10 +177,35 @@ func (s *Service) ApplyClaimedProviderState(ctx context.Context, refundID uint64
 }
 
 func (s *Service) applyProviderState(ctx context.Context, refundID uint64, claimedVersion *uint32, state State) error {
-	return s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	var reject error
+	err := s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		lookup, err := s.repo.Lookup(ctx, tx, refundID)
+		if err != nil {
+			return err
+		}
+		if claimedVersion != nil && lookup.Version != *claimedVersion {
+			return nil
+		}
+		handler, err := s.externalSettlementHandler(lookup)
+		if err != nil {
+			return err
+		}
+		if handler != nil {
+			result, applyErr := handler.LockAndApply(ctx, tx, RefundSettlementCommand{Lookup: lookup, State: state, ClaimedVersion: claimedVersion})
+			if applyErr != nil {
+				return applyErr
+			}
+			reject = result.Reject
+			return nil
+		}
+
+		// 零售退款保持既有锁顺序和行为。
 		row, err := s.repo.Lock(ctx, tx, refundID)
 		if err != nil {
 			return err
+		}
+		if !SameRefundSettlementRoute(lookup, row) {
+			return settlementRoutingFailure("REFUND_SETTLEMENT_ROUTE_CHANGED", "refund business routing changed during settlement")
 		}
 		if claimedVersion != nil && row.Version != *claimedVersion {
 			return nil
@@ -140,16 +216,28 @@ func (s *Service) applyProviderState(ctx context.Context, refundID uint64, claim
 				return updateErr
 			}
 			if s.deliveryReturnClosure != nil {
-				return s.deliveryReturnClosure.ReconcileRefundWithTx(ctx, tx, row.AfterSaleID)
+				afterSaleID, _, linkErr := retailRefundLinks(row)
+				if linkErr != nil {
+					return linkErr
+				}
+				return s.deliveryReturnClosure.ReconcileRefundWithTx(ctx, tx, afterSaleID)
 			}
 			return nil
 		}
 		return err
 	})
+	if err != nil {
+		return err
+	}
+	return reject
 }
 
 // applyState 应用状态。
 func (s *Service) applyState(ctx context.Context, tx *gorm.DB, row Row, state State) error {
+	afterSaleID, orderID, err := retailRefundLinks(row)
+	if err != nil {
+		return err
+	}
 	incomingStatus := strings.ToUpper(strings.TrimSpace(state.Status))
 	idempotent, err := guardTerminalRefundTransition(row, incomingStatus)
 	if err != nil {
@@ -187,11 +275,11 @@ func (s *Service) applyState(ctx context.Context, tx *gorm.DB, row Row, state St
 		if row.Status == "succeeded" {
 			return nil
 		}
-		order, err := s.repo.LockOrder(ctx, tx, row.OrderID)
+		order, err := s.repo.LockOrder(ctx, tx, orderID)
 		if err != nil {
 			return err
 		}
-		afterSale, err := s.repo.LockAfterSale(ctx, tx, row.AfterSaleID)
+		afterSale, err := s.repo.LockAfterSale(ctx, tx, afterSaleID)
 		if err != nil {
 			return err
 		}
@@ -240,11 +328,11 @@ func (s *Service) applyState(ctx context.Context, tx *gorm.DB, row Row, state St
 		if err := s.repo.Update(ctx, tx, row.ID, map[string]any{"status": "succeeded", "provider_refund_id": providerID, "provider_status": providerStatus, "succeeded_at": &now, "locked_by": nil, "locked_until": nil, "next_retry_at": nil, "failure_code": nil, "failure_detail": nil}); err != nil {
 			return err
 		}
-		if err := s.outbox(ctx, tx, "refund.succeeded", row.ID, map[string]any{"refund_id": id(row.ID), "refund_no": row.RefundNo, "after_sale_id": id(row.AfterSaleID), "order_id": id(row.OrderID), "amount": row.Amount}); err != nil {
+		if err := s.outbox(ctx, tx, "refund.succeeded", row.ID, map[string]any{"refund_id": id(row.ID), "refund_no": row.RefundNo, "after_sale_id": id(afterSaleID), "order_id": id(orderID), "amount": row.Amount}); err != nil {
 			return err
 		}
 		if s.deliveryReturnClosure != nil {
-			return s.deliveryReturnClosure.ReconcileRefundWithTx(ctx, tx, row.AfterSaleID)
+			return s.deliveryReturnClosure.ReconcileRefundWithTx(ctx, tx, afterSaleID)
 		}
 		return nil
 	case "PROCESSING":
@@ -256,7 +344,7 @@ func (s *Service) applyState(ctx context.Context, tx *gorm.DB, row Row, state St
 			return err
 		}
 		if s.deliveryReturnClosure != nil {
-			return s.deliveryReturnClosure.ReconcileRefundWithTx(ctx, tx, row.AfterSaleID)
+			return s.deliveryReturnClosure.ReconcileRefundWithTx(ctx, tx, afterSaleID)
 		}
 		return nil
 	case "ABNORMAL":
@@ -265,7 +353,7 @@ func (s *Service) applyState(ctx context.Context, tx *gorm.DB, row Row, state St
 			return err
 		}
 		if s.deliveryReturnClosure != nil {
-			return s.deliveryReturnClosure.ReconcileRefundWithTx(ctx, tx, row.AfterSaleID)
+			return s.deliveryReturnClosure.ReconcileRefundWithTx(ctx, tx, afterSaleID)
 		}
 		return nil
 	default:
@@ -330,6 +418,40 @@ func isStateMismatch(err error) bool {
 // 回调和人工写入会递增版本并屏蔽过期的服务商结果。
 func (s *Service) MarkAttemptError(ctx context.Context, refundID uint64, claimedVersion uint32, cause error) error {
 	return s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		lookup, err := s.repo.Lookup(ctx, tx, refundID)
+		if err != nil {
+			return err
+		}
+		if !workerResultApplicable(lookup, claimedVersion) {
+			return nil
+		}
+		handler, err := s.externalSettlementHandler(lookup)
+		if err != nil {
+			return err
+		}
+		next := time.Now().Add(refundPollDelay(lookup.Attempts))
+		detail := cause.Error()
+		if len(detail) > 500 {
+			detail = detail[:500]
+		}
+		code := paygateway.Code(cause, "PROVIDER_UNAVAILABLE")
+		if handler != nil {
+			failureHandler, ok := handler.(RefundSettlementFailureHandler)
+			if !ok {
+				return settlementRoutingFailure(
+					"REFUND_SETTLEMENT_FAILURE_HANDLER_NOT_FOUND",
+					"external refund settlement failure handler is not registered",
+				)
+			}
+			now := time.Now()
+			return failureHandler.LockAndApplyFailure(ctx, tx, RefundSettlementFailureCommand{
+				Lookup: lookup, ClaimedVersion: claimedVersion,
+				Code: code, Detail: detail, Retryable: true,
+				OccurredAt: now, NextRetryAt: &next,
+			})
+		}
+
+		// 保持既有零售锁定和更新路径。
 		row, err := s.repo.Lock(ctx, tx, refundID)
 		if err != nil {
 			return err
@@ -341,12 +463,6 @@ func (s *Service) MarkAttemptError(ctx context.Context, refundID uint64, claimed
 		if status == "creating" {
 			status = "submission_unknown"
 		}
-		next := time.Now().Add(refundPollDelay(row.Attempts))
-		detail := cause.Error()
-		if len(detail) > 500 {
-			detail = detail[:500]
-		}
-		code := paygateway.Code(cause, "PROVIDER_UNAVAILABLE")
 		return s.repo.Update(ctx, tx, row.ID, map[string]any{"status": status, "next_retry_at": &next, "locked_by": nil, "locked_until": nil, "failure_code": code, "failure_detail": detail})
 	})
 }
@@ -355,12 +471,16 @@ func (s *Service) MarkAttemptError(ctx context.Context, refundID uint64, claimed
 // 尤其不得覆盖 CLOSED 或 failed 状态。
 func (s *Service) MarkPermanentError(ctx context.Context, refundID uint64, claimedVersion uint32, code string, cause error) error {
 	return s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		row, err := s.repo.Lock(ctx, tx, refundID)
+		lookup, err := s.repo.Lookup(ctx, tx, refundID)
 		if err != nil {
 			return err
 		}
-		if !workerResultApplicable(row, claimedVersion) {
+		if !workerResultApplicable(lookup, claimedVersion) {
 			return nil
+		}
+		handler, err := s.externalSettlementHandler(lookup)
+		if err != nil {
+			return err
 		}
 		detail := "provider rejected refund request"
 		if cause != nil {
@@ -370,6 +490,29 @@ func (s *Service) MarkPermanentError(ctx context.Context, refundID uint64, claim
 			detail = detail[:500]
 		}
 		now := time.Now()
+		if handler != nil {
+			failureHandler, ok := handler.(RefundSettlementFailureHandler)
+			if !ok {
+				return settlementRoutingFailure(
+					"REFUND_SETTLEMENT_FAILURE_HANDLER_NOT_FOUND",
+					"external refund settlement failure handler is not registered",
+				)
+			}
+			return failureHandler.LockAndApplyFailure(ctx, tx, RefundSettlementFailureCommand{
+				Lookup: lookup, ClaimedVersion: claimedVersion,
+				Code: code, Detail: detail, Retryable: false,
+				OccurredAt: now,
+			})
+		}
+
+		// 保持既有零售锁定和更新路径。
+		row, err := s.repo.Lock(ctx, tx, refundID)
+		if err != nil {
+			return err
+		}
+		if !workerResultApplicable(row, claimedVersion) {
+			return nil
+		}
 		return s.repo.Update(ctx, tx, row.ID, map[string]any{"status": "exception", "next_retry_at": nil, "locked_by": nil, "locked_until": nil, "failed_at": &now, "failure_code": code, "failure_detail": detail})
 	})
 }
@@ -416,6 +559,11 @@ func (s *Service) Detail(ctx context.Context, claims *auth.Claims, refundNo stri
 	if isNotFound(err) {
 		return DTO{}, problem.NotFound("REFUND_NOT_FOUND", "refund not found")
 	}
+	if err == nil {
+		if gateErr := requireRetailAdminRefund(row); gateErr != nil {
+			return DTO{}, problem.NotFound("REFUND_NOT_FOUND", "refund not found")
+		}
+	}
 	return dto(row), err
 }
 
@@ -445,6 +593,9 @@ func (s *Service) Retry(ctx context.Context, claims *auth.Claims, method, path, 
 			return problem.NotFound("REFUND_NOT_FOUND", "refund not found")
 		}
 		if err != nil {
+			return err
+		}
+		if err := requireRetailAdminRefund(row); err != nil {
 			return err
 		}
 		providerStatus := refundProviderStatus(row)
@@ -532,7 +683,7 @@ func (s *Service) Retry(ctx context.Context, claims *auth.Claims, method, path, 
 		if notifyURL == nil || strings.TrimSpace(*notifyURL) == "" {
 			notifyURL = optional(s.cfg.WeChat.RefundNotifyURL)
 		}
-		replacement := &Row{ID: newID, AfterSaleID: row.AfterSaleID, OrderID: row.OrderID, PaymentID: row.PaymentID, ReplacesRefundID: &row.ID, RefundNo: newNo, Provider: row.Provider, Status: "creating", Currency: row.Currency, Reason: reason, NotifyURL: notifyURL, Amount: row.Amount, TotalAmount: row.TotalAmount, RequestedAt: now, NextRetryAt: &now, Version: 1}
+		replacement := &Row{ID: newID, AfterSaleID: row.AfterSaleID, OrderID: row.OrderID, PaymentID: row.PaymentID, ReplacesRefundID: &row.ID, RefundNo: newNo, BizType: row.BizType, BizID: row.BizID, Provider: row.Provider, Status: "creating", Currency: row.Currency, Reason: reason, NotifyURL: notifyURL, Amount: row.Amount, TotalAmount: row.TotalAmount, RequestedAt: now, NextRetryAt: &now, Version: 1}
 		replacementItems := make([]RefundItem, 0, len(items))
 		for _, item := range items {
 			replacementItems = append(replacementItems, RefundItem{ID: s.ids.Next(), RefundID: newID, AfterSaleItemID: item.AfterSaleItemID, Amount: item.Amount, Quantity: item.Quantity})
@@ -571,6 +722,9 @@ func (s *Service) Reconcile(ctx context.Context, claims *auth.Claims, method, pa
 			return problem.NotFound("REFUND_NOT_FOUND", "refund not found")
 		}
 		if err != nil {
+			return err
+		}
+		if err := requireRetailAdminRefund(row); err != nil {
 			return err
 		}
 		if row.Status != "exception" || refundProviderStatus(row) != "ABNORMAL" {
@@ -620,6 +774,9 @@ func (s *Service) MarkException(ctx context.Context, claims *auth.Claims, method
 			return problem.NotFound("REFUND_NOT_FOUND", "refund not found")
 		}
 		if err != nil {
+			return err
+		}
+		if err := requireRetailAdminRefund(row); err != nil {
 			return err
 		}
 		if row.Status == "succeeded" {
@@ -699,7 +856,7 @@ type DTO struct {
 
 // dto 返回DTO。
 func dto(row Row) DTO {
-	v := DTO{ID: id(row.ID), RefundNo: row.RefundNo, AfterSaleID: id(row.AfterSaleID), OrderID: id(row.OrderID), PaymentID: id(row.PaymentID), Provider: row.Provider, Status: row.Status, Amount: row.Amount, TotalAmount: row.TotalAmount, Currency: row.Currency, Attempts: row.Attempts, RequestedAt: row.RequestedAt.Format(time.RFC3339Nano), CreatedAt: row.CreatedAt.Format(time.RFC3339Nano), UpdatedAt: row.UpdatedAt.Format(time.RFC3339Nano)}
+	v := DTO{ID: id(row.ID), RefundNo: row.RefundNo, AfterSaleID: optionalID(row.AfterSaleID), OrderID: optionalID(row.OrderID), PaymentID: id(row.PaymentID), Provider: row.Provider, Status: row.Status, Amount: row.Amount, TotalAmount: row.TotalAmount, Currency: row.Currency, Attempts: row.Attempts, RequestedAt: row.RequestedAt.Format(time.RFC3339Nano), CreatedAt: row.CreatedAt.Format(time.RFC3339Nano), UpdatedAt: row.UpdatedAt.Format(time.RFC3339Nano)}
 	if row.ReplacesRefundID != nil {
 		v.ReplacesRefundID = id(*row.ReplacesRefundID)
 	}
@@ -743,6 +900,13 @@ func adminPermission(claims *auth.Claims, permission string) (uint64, error) {
 
 // id 返回ID。
 func id(value uint64) string { return strconv.FormatUint(value, 10) }
+
+func optionalID(value *uint64) string {
+	if value == nil {
+		return ""
+	}
+	return id(*value)
+}
 
 // optional 返回可选字符串指针。
 func optional(value string) *string {

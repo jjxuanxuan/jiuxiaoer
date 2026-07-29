@@ -1,6 +1,7 @@
 package asset
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,8 +18,10 @@ import (
 
 	"jiuxiaoer-admin/backend-go/internal/infra/mysql"
 	"jiuxiaoer-admin/backend-go/internal/modules/auth"
+	"jiuxiaoer-admin/backend-go/internal/pkg/idempotency"
 	"jiuxiaoer-admin/backend-go/internal/pkg/pagination"
 	"jiuxiaoer-admin/backend-go/internal/pkg/problem"
+	"jiuxiaoer-admin/backend-go/internal/pkg/requestctx"
 )
 
 // TestL4AssetFormalAcceptanceGaps 验证L 4 资产正式验收 Gaps的预期行为。
@@ -85,49 +88,235 @@ func TestL4AssetFormalAcceptanceGaps(t *testing.T) {
 		}
 	})
 
-	t.Run("ACC-L4-023-two-checkers-execute-adjustment-once", func(t *testing.T) {
-		req := AdjustmentCreateReq{CustomerID: idString(f.customerID), AssetType: TypeBalance, Direction: "credit", Amount: 30, ReasonCode: "ACC023", Reason: "concurrent checker acceptance"}
-		adjustment, err := f.service.CreateAdjustment(f.ctx, &f.maker, "POST", "/api/v1/admin/asset-adjustments", f.key("acc023-create"), req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		checkers := []auth.Claims{adminClaims(88002, "asset_adjustment:approve"), adminClaims(88003, "asset_adjustment:approve")}
-		var successes, conflicts atomic.Int64
+	t.Run("ACC-L4-023-concurrent-create-executes-adjustment-once", func(t *testing.T) {
+		req := AdjustmentCreateReq{CustomerID: idString(f.customerID), AssetType: TypeBalance, Direction: "credit", Amount: 30, ReasonCode: "ACC023", Reason: "concurrent single-admin acceptance"}
+		key := f.key("acc023-create")
+		results := make(chan AdjustmentDTO, 2)
+		errs := make(chan error, 2)
 		var wg sync.WaitGroup
-		for i := range checkers {
-			i := i
+		for i := 0; i < 2; i++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				_, callErr := f.service.ApproveAdjustment(f.ctx, &checkers[i], adjustment.ID, f.key(fmt.Sprintf("acc023-approve-%d", i)), AdjustmentReviewReq{Version: adjustment.Version})
-				if callErr == nil {
-					successes.Add(1)
-				} else if problem.FromError(callErr).ErrorCode == "ASSET_ADJUSTMENT_STATE_CONFLICT" {
-					conflicts.Add(1)
-				} else {
-					t.Errorf("approve error: %v", callErr)
-				}
+				result, callErr := f.service.CreateAdjustment(f.ctx, &f.maker, "POST", "/api/v1/admin/asset-adjustments", key, req)
+				results <- result
+				errs <- callErr
 			}()
 		}
 		wg.Wait()
-		if successes.Load() != 1 || conflicts.Load() != 1 {
-			t.Fatalf("successes=%d conflicts=%d", successes.Load(), conflicts.Load())
+		close(results)
+		close(errs)
+		for callErr := range errs {
+			if callErr != nil {
+				t.Fatalf("concurrent create error: %v", callErr)
+			}
+		}
+		var adjustmentID string
+		for result := range results {
+			if result.Status != "succeeded" || result.AssetTransactionID == "" {
+				t.Fatalf("unexpected adjustment result: %#v", result)
+			}
+			if adjustmentID == "" {
+				adjustmentID = result.ID
+			} else if result.ID != adjustmentID {
+				t.Fatalf("idempotent creates returned different ids: %s != %s", result.ID, adjustmentID)
+			}
 		}
 		var txCount int64
-		if err := f.db.Model(&Transaction{}).Where("source_type='manual_adjustment' AND source_id=?", adjustment.ID).Count(&txCount).Error; err != nil || txCount != 1 {
+		if err := f.db.Model(&Transaction{}).Where("source_type='manual_adjustment' AND source_id=?", adjustmentID).Count(&txCount).Error; err != nil || txCount != 1 {
 			t.Fatalf("adjustment transactions=%d err=%v", txCount, err)
+		}
+		var transaction Transaction
+		if err := f.db.
+			Where("source_type='manual_adjustment' AND source_id=?", adjustmentID).
+			Take(&transaction).Error; err != nil {
+			t.Fatal(err)
+		}
+		if transaction.Action != "credit" {
+			t.Fatalf("manual adjustment transaction action=%q, want credit", transaction.Action)
+		}
+		adjustmentIDValue, parseErr := parseID(adjustmentID)
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		var auditRows []AuditLog
+		if err := f.db.
+			Where("resource_type='asset_adjustment' AND resource_id=?", adjustmentIDValue).
+			Order("id ASC").
+			Find(&auditRows).Error; err != nil {
+			t.Fatal(err)
+		}
+		if len(auditRows) != 2 ||
+			auditRows[0].Action != "asset_adjustment.create" ||
+			auditRows[1].Action != "asset_adjustment.execute" ||
+			auditRows[1].Result != "success" ||
+			auditRows[1].ActorID != f.adminUserID ||
+			auditRows[1].ReasonCode == nil ||
+			*auditRows[1].ReasonCode != req.ReasonCode {
+			t.Fatalf("direct adjustment audits=%+v", auditRows)
+		}
+		var outbox Outbox
+		if err := f.db.
+			Where(
+				"aggregate_type='asset' AND aggregate_id=? AND event_type='asset.transaction.posted'",
+				transaction.ID,
+			).
+			Take(&outbox).Error; err != nil {
+			t.Fatal(err)
+		}
+		var outboxPayload map[string]any
+		if err := json.Unmarshal(outbox.Payload, &outboxPayload); err != nil {
+			t.Fatal(err)
+		}
+		if outboxPayload["action"] != "credit" {
+			t.Fatalf("manual adjustment outbox action is missing: %s", outbox.Payload)
 		}
 	})
 
-	t.Run("ACC-L4-024-insufficient-debit-has-no-entry", func(t *testing.T) {
-		req := AdjustmentCreateReq{CustomerID: idString(f.customerID), AssetType: TypeBalance, Direction: "debit", Amount: 50000, ReasonCode: "ACC024", Reason: "insufficient balance acceptance"}
-		adjustment, err := f.service.CreateAdjustment(f.ctx, &f.maker, "POST", "/api/v1/admin/asset-adjustments", f.key("acc024-create"), req)
+	t.Run("ACC-SOA-023-legacy-executing-resume-uses-current-actor-and-full-audit", func(t *testing.T) {
+		req := AdjustmentCreateReq{
+			CustomerID: idString(f.customerID),
+			AssetType:  TypeBalance,
+			Direction:  "credit",
+			Amount:     17,
+			ReasonCode: "SOA023",
+			Reason:     "resume legacy executing adjustment with current actor",
+			EvidenceRefs: []string{
+				"asset-evidence://soa023",
+			},
+		}
+		key := f.key("soa023-legacy-executing")
+		legacyReviewer := f.ids.Next()
+		reviewedAt := time.Now().UTC().Add(-time.Minute)
+		row := Adjustment{
+			ID:                 f.ids.Next(),
+			AdjustmentNo:       fmt.Sprintf("AD%d", f.ids.Next()),
+			CustomerID:         f.customerID,
+			AssetType:          req.AssetType,
+			Unit:               UnitCNY,
+			Direction:          req.Direction,
+			Amount:             req.Amount,
+			ReasonCode:         req.ReasonCode,
+			Reason:             req.Reason,
+			EvidenceRefs:       jsonData(req.EvidenceRefs),
+			Status:             "executing",
+			CreatedBy:          f.adminUserID,
+			ReviewedBy:         &legacyReviewer,
+			ReviewedAt:         &reviewedAt,
+			IdempotencyKeyHash: keyHash(key),
+			Version:            7,
+		}
+		if err := f.db.Create(&row).Error; err != nil {
+			t.Fatal(err)
+		}
+		responseStatus := 200
+		idem := idempotency.Record{
+			ID:             f.ids.Next(),
+			ActorType:      "admin",
+			ActorID:        f.adminUserID,
+			Method:         "POST",
+			Path:           "/api/v1/admin/asset-adjustments",
+			KeyHash:        idempotency.KeyHash(key),
+			RequestHash:    idempotency.RequestHash(req),
+			ResponseStatus: &responseStatus,
+			ResponseBody:   jsonData(adjustmentDTO(row)),
+			Status:         "succeeded",
+			ExpiredAt:      time.Now().UTC().Add(time.Hour),
+		}
+		if err := f.db.Create(&idem).Error; err != nil {
+			t.Fatal(err)
+		}
+
+		result, err := f.service.CreateAdjustment(
+			f.ctx,
+			&f.maker,
+			"POST",
+			"/api/v1/admin/asset-adjustments",
+			key,
+			req,
+		)
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = f.service.ApproveAdjustment(f.ctx, &f.checker, adjustment.ID, f.key("acc024-approve"), AdjustmentReviewReq{Version: adjustment.Version})
+		if result.Status != "succeeded" || result.Version != 8 ||
+			result.AssetTransactionID == "" {
+			t.Fatalf("legacy executing resume result=%#v", result)
+		}
+
+		var transaction Transaction
+		if err := f.db.
+			Where("source_type='manual_adjustment' AND source_id=?", result.ID).
+			Take(&transaction).Error; err != nil {
+			t.Fatal(err)
+		}
+		if transaction.ActorID != f.adminUserID ||
+			transaction.ActorID == legacyReviewer {
+			t.Fatalf(
+				"resumed transaction actor=%d current=%d legacy=%d",
+				transaction.ActorID,
+				f.adminUserID,
+				legacyReviewer,
+			)
+		}
+
+		var audit AuditLog
+		if err := f.db.
+			Where(
+				"resource_type='asset_adjustment' AND resource_id=? AND action='asset_adjustment.execute'",
+				row.ID,
+			).
+			Take(&audit).Error; err != nil {
+			t.Fatal(err)
+		}
+		var before, after map[string]any
+		if err := json.Unmarshal(audit.BeforeData, &before); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(audit.AfterData, &after); err != nil {
+			t.Fatal(err)
+		}
+		requestID := requestctx.RequestID(f.ctx)
+		if audit.ActorID != f.adminUserID ||
+			audit.BeforeStatus == nil || *audit.BeforeStatus != "executing" ||
+			audit.AfterStatus == nil || *audit.AfterStatus != "succeeded" ||
+			audit.Version == nil || *audit.Version != 8 ||
+			audit.RequestID == nil || *audit.RequestID != requestID ||
+			before["status"] != "executing" || before["version"] != float64(7) ||
+			after["status"] != "succeeded" || after["version"] != float64(8) ||
+			after["permission"] != "asset_adjustment:create" ||
+			after["request_id"] != requestID ||
+			after["correlation_id"] != requestID ||
+			after["service_instance"] != "asset-acceptance-instance" ||
+			after["idempotency_key_hash"] != keyHash(key) ||
+			after["reason_code"] != req.ReasonCode ||
+			after["evidence_count"] != float64(1) ||
+			after["evidence_refs_hash"] != idempotency.RequestHash(req.EvidenceRefs) ||
+			after["asset_transaction_id"] != result.AssetTransactionID {
+			t.Fatalf(
+				"incomplete resumed execution audit=%+v before=%v after=%v",
+				audit,
+				before,
+				after,
+			)
+		}
+		if _, exposed := after["evidence_refs"]; exposed {
+			t.Fatalf("execution audit exposed raw evidence references: %v", after)
+		}
+	})
+
+	t.Run("ACC-L4-024-insufficient-debit-is-recorded-and-replayed", func(t *testing.T) {
+		req := AdjustmentCreateReq{CustomerID: idString(f.customerID), AssetType: TypeBalance, Direction: "debit", Amount: 50000, ReasonCode: "ACC024", Reason: "insufficient balance acceptance"}
+		key := f.key("acc024-create")
+		adjustment, err := f.service.CreateAdjustment(f.ctx, &f.maker, "POST", "/api/v1/admin/asset-adjustments", key, req)
 		if problem.FromError(err).ErrorCode != "ASSET_INSUFFICIENT_AVAILABLE" {
 			t.Fatalf("insufficient debit error=%v", err)
+		}
+		if adjustment.Status != "failed" || adjustment.FailureCode != "ASSET_INSUFFICIENT_AVAILABLE" {
+			t.Fatalf("failed adjustment response=%#v", adjustment)
+		}
+		replayed, replayErr := f.service.CreateAdjustment(f.ctx, &f.maker, "POST", "/api/v1/admin/asset-adjustments", key, req)
+		if problem.FromError(replayErr).ErrorCode != "ASSET_INSUFFICIENT_AVAILABLE" || replayed.ID != adjustment.ID || replayed.Status != "failed" {
+			t.Fatalf("failed adjustment replay=%#v err=%v", replayed, replayErr)
 		}
 		var txCount int64
 		if err := f.db.Model(&Transaction{}).Where("source_type='manual_adjustment' AND source_id=?", adjustment.ID).Count(&txCount).Error; err != nil || txCount != 0 {
@@ -136,6 +325,139 @@ func TestL4AssetFormalAcceptanceGaps(t *testing.T) {
 		var stored Adjustment
 		if err := f.db.Where("id=?", adjustment.ID).Take(&stored).Error; err != nil || stored.Status != "failed" {
 			t.Fatalf("adjustment=%#v err=%v", stored, err)
+		}
+		var failedAudits int64
+		if err := f.db.Model(&AuditLog{}).
+			Where(
+				"resource_type='asset_adjustment' AND resource_id=? AND action='asset_adjustment.execute' AND result='failed' AND error_code=?",
+				stored.ID,
+				"ASSET_INSUFFICIENT_AVAILABLE",
+			).
+			Count(&failedAudits).Error; err != nil || failedAudits != 1 {
+			t.Fatalf("failed adjustment audits=%d err=%v", failedAudits, err)
+		}
+	})
+
+	t.Run("ACC-SOA-007-infrastructure-failure-rolls-back-and-can-retry", func(t *testing.T) {
+		callback := fmt.Sprintf("soa007:reject-adjustment-outbox:%d", f.seq.Add(1))
+		if err := f.db.Callback().Create().Before("gorm:create").Register(callback, func(tx *gorm.DB) {
+			if tx.Statement.Table == "outbox_events" {
+				tx.AddError(errors.New("SOA007 injected outbox failure"))
+			}
+		}); err != nil {
+			t.Fatal(err)
+		}
+		callbackRegistered := true
+		defer func() {
+			if callbackRegistered {
+				_ = f.db.Callback().Create().Remove(callback)
+			}
+		}()
+
+		req := AdjustmentCreateReq{
+			CustomerID: idString(f.customerID),
+			AssetType:  TypeBalance,
+			Direction:  "credit",
+			Amount:     11,
+			ReasonCode: "SOA007",
+			Reason:     "transient infrastructure failure must remain retryable",
+		}
+		key := f.key("soa007-infrastructure")
+		if _, err := f.service.CreateAdjustment(
+			f.ctx,
+			&f.maker,
+			"POST",
+			"/api/v1/admin/asset-adjustments",
+			key,
+			req,
+		); err == nil {
+			t.Fatal("injected outbox failure unexpectedly succeeded")
+		}
+		var adjustmentCount, idempotencyCount int64
+		if err := f.db.Model(&Adjustment{}).
+			Where("reason_code=?", req.ReasonCode).
+			Count(&adjustmentCount).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := f.db.Table("idempotency_keys").
+			Where(
+				"actor_type='admin' AND actor_id=? AND path=? AND key_hash=?",
+				f.adminUserID,
+				"/api/v1/admin/asset-adjustments",
+				keyHash(key),
+			).
+			Count(&idempotencyCount).Error; err != nil {
+			t.Fatal(err)
+		}
+		if adjustmentCount != 0 || idempotencyCount != 0 {
+			t.Fatalf(
+				"infrastructure failure residue adjustments=%d idempotency=%d",
+				adjustmentCount,
+				idempotencyCount,
+			)
+		}
+		if err := f.db.Callback().Create().Remove(callback); err != nil {
+			t.Fatal(err)
+		}
+		callbackRegistered = false
+		retried, err := f.service.CreateAdjustment(
+			f.ctx,
+			&f.maker,
+			"POST",
+			"/api/v1/admin/asset-adjustments",
+			key,
+			req,
+		)
+		if err != nil || retried.Status != "succeeded" {
+			t.Fatalf("retry after infrastructure recovery=%+v err=%v", retried, err)
+		}
+	})
+
+	t.Run("ACC-SOA-002-revoked-live-permission-has-zero-side-effects", func(t *testing.T) {
+		if err := f.db.Model(&struct {
+			ID        uint64
+			DeletedAt *time.Time
+		}{}).
+			Table("role_permissions").
+			Where("id=?", f.adminRolePermissionID).
+			Update("deleted_at", time.Now()).Error; err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if err := f.db.Table("role_permissions").
+				Where("id=?", f.adminRolePermissionID).
+				Update("deleted_at", nil).Error; err != nil {
+				t.Error(err)
+			}
+		}()
+		req := AdjustmentCreateReq{
+			CustomerID: idString(f.customerID),
+			AssetType:  TypeBalance,
+			Direction:  "credit",
+			Amount:     13,
+			ReasonCode: "SOA002",
+			Reason:     "revoked permission must be rejected",
+		}
+		_, err := f.service.CreateAdjustment(
+			f.ctx,
+			&f.maker,
+			"POST",
+			"/api/v1/admin/asset-adjustments",
+			f.key("soa002-revoked"),
+			req,
+		)
+		if problem.FromError(err).ErrorCode != "PERM_FORBIDDEN" {
+			t.Fatalf("revoked permission error=%v", err)
+		}
+		var adjustmentCount int64
+		if err := f.db.Model(&Adjustment{}).
+			Where("reason_code=?", req.ReasonCode).
+			Count(&adjustmentCount).Error; err != nil || adjustmentCount != 0 {
+			t.Fatalf(
+				"revoked permission adjustments=%d err=%v",
+				adjustmentCount,
+				err,
+			)
 		}
 	})
 

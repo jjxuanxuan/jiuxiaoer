@@ -37,17 +37,18 @@ import (
 )
 
 type Service struct {
-	cfg         config.Config
-	repo        *Repository
-	idStore     *idempotency.Store
-	idGen       *snowflake.Generator
-	payment     PaymentProvider
-	metrics     *metrics.Registry
-	serviceArea *servicearea.Service
-	dispatch    *dispatch.Service
-	locations   *customerlocation.Service
-	incidents   IncidentResolver
-	log         *slog.Logger
+	cfg                config.Config
+	repo               *Repository
+	idStore            *idempotency.Store
+	idGen              *snowflake.Generator
+	payment            PaymentProvider
+	metrics            *metrics.Registry
+	serviceArea        *servicearea.Service
+	dispatch           *dispatch.Service
+	locations          *customerlocation.Service
+	incidents          IncidentResolver
+	log                *slog.Logger
+	paymentSettlements *paymentSettlementRegistry
 }
 
 type IncidentResolver interface {
@@ -100,11 +101,12 @@ func (s *Service) WithLogger(log *slog.Logger) *Service {
 // NewService 组装订单写入、幂等和 Snowflake ID 生成能力。
 func NewService(cfg config.Config, db *gorm.DB, idGen *snowflake.Generator) *Service {
 	return &Service{
-		cfg:     cfg,
-		repo:    NewRepository(db),
-		idStore: idempotency.NewStore(db),
-		idGen:   idGen,
-		log:     slog.Default(),
+		cfg:                cfg,
+		repo:               NewRepository(db),
+		idStore:            idempotency.NewStore(db),
+		idGen:              idGen,
+		log:                slog.Default(),
+		paymentSettlements: newPaymentSettlementRegistry(),
 	}
 }
 
@@ -572,6 +574,9 @@ func (s *Service) cancel(ctx context.Context, claims *auth.Claims, actor cancelA
 		if err != nil {
 			return err
 		}
+		if row.OrderType == "wine_ticket_redemption" || row.SettlementMode == "wine_ticket" {
+			return problem.Conflict("WT_REDEMPTION_CANCEL_REQUIRED", "wine-ticket redemption orders must be cancelled through the redemption endpoint")
+		}
 		if uint(row.Version) != *req.ExpectedVersion {
 			return problem.Conflict("VERSION_CONFLICT", "order version changed")
 		}
@@ -864,7 +869,9 @@ func (s *Service) MockPay(ctx context.Context, claims *auth.Claims, method strin
 		payment := Payment{
 			ID:             paymentID,
 			PaymentNo:      paymentNo(orderID),
-			OrderID:        orderID,
+			BizType:        stringPtr("retail_order"),
+			BizID:          &orderID,
+			OrderID:        &orderID,
 			CustomerID:     customerID,
 			Channel:        "mock",
 			Provider:       "mock",
@@ -936,8 +943,9 @@ func (s *Service) CreatePayment(ctx context.Context, claims *auth.Claims, method
 	var openID string
 	var response PaymentDTO
 	callProvider := false
+	claimID := s.idGen.Next()
 	err = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		started, err := s.idStore.Start(ctx, tx, s.idGen.Next(), claims.AccountType, customerID, method, path, key, idempotency.ResourceRequestHash("payment.create", orderID, req))
+		started, err := s.idStore.Start(ctx, tx, claimID, claims.AccountType, customerID, method, path, key, idempotency.ResourceRequestHash("payment.create", orderID, req))
 		if err != nil {
 			return err
 		}
@@ -984,7 +992,7 @@ func (s *Service) CreatePayment(ctx context.Context, claims *auth.Claims, method
 		if err == nil {
 			if (payment.Status == "pending" || payment.Status == "succeeded") && len(payment.ClientPayload) > 0 {
 				response = paymentDTO(payment)
-				return s.idStore.Succeed(ctx, tx, claims.AccountType, customerID, path, key, response)
+				return s.idStore.SucceedOwned(ctx, tx, claimID, claims.AccountType, customerID, path, key, response)
 			}
 			if payment.Status == "closed" || payment.Status == "succeeded" {
 				return problem.Conflict("ORDER_INVALID_STATUS", "payment cannot be recreated")
@@ -1002,7 +1010,9 @@ func (s *Service) CreatePayment(ctx context.Context, claims *auth.Claims, method
 			payment = Payment{
 				ID:             s.idGen.Next(),
 				PaymentNo:      paymentNo(orderID),
-				OrderID:        orderID,
+				BizType:        stringPtr("retail_order"),
+				BizID:          &orderID,
+				OrderID:        &orderID,
 				CustomerID:     customerID,
 				Channel:        req.ClientType,
 				Provider:       req.Provider,
@@ -1040,6 +1050,9 @@ func (s *Service) CreatePayment(ctx context.Context, claims *auth.Claims, method
 		s.metrics.IncPayment(req.Provider, "create_failed")
 		next := time.Now()
 		_ = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			if err := s.idStore.FailOwned(ctx, tx, claimID, claims.AccountType, customerID, path, key); err != nil {
+				return err
+			}
 			values := map[string]any{"status": "creating", "next_reconcile_at": &next, "failure_code": paygateway.Code(providerErr, "PROVIDER_UNAVAILABLE"), "version": gorm.Expr("version + 1")}
 			if !paygateway.Retryable(providerErr) {
 				values["status"] = "failed"
@@ -1049,7 +1062,7 @@ func (s *Service) CreatePayment(ctx context.Context, claims *auth.Claims, method
 			if err := s.repo.UpdatePayment(ctx, tx, payment.ID, values); err != nil {
 				return err
 			}
-			return s.idStore.Fail(ctx, tx, claims.AccountType, customerID, path, key)
+			return nil
 		})
 		message := "payment creation was rejected by the provider"
 		if paygateway.Retryable(providerErr) {
@@ -1063,7 +1076,18 @@ func (s *Service) CreatePayment(ctx context.Context, claims *auth.Claims, method
 
 	payload := jsonData(providerResult.ClientPayload)
 	nextReconcileAt := nextPaymentReconcileAt(payment, time.Now())
+	payment.Status = "pending"
+	payment.ProviderStatus = optionalString(providerResult.Status)
+	payment.ProviderPrepayID = optionalString(providerResult.ProviderPrepayID)
+	payment.ProviderTradeNo = optionalString(providerResult.ProviderTradeNo)
+	payment.ClientPayload = payload
+	response = paymentDTO(payment)
 	err = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 锁顺序与认领事务保持一致：先锁幂等持有者，再锁支付记录。
+		// 陈旧持有者会在变更或补偿已被新持有者接受的支付前退出。
+		if err := s.idStore.SucceedOwned(ctx, tx, claimID, claims.AccountType, customerID, path, key, response); err != nil {
+			return err
+		}
 		locked, err := s.repo.LockPaymentByOrderProvider(ctx, tx, orderID, req.Provider)
 		if err != nil {
 			return err
@@ -1083,18 +1107,15 @@ func (s *Service) CreatePayment(ctx context.Context, claims *auth.Claims, method
 		}); err != nil {
 			return err
 		}
-		payment.Status = "pending"
-		payment.ProviderStatus = optionalString(providerResult.Status)
-		payment.ProviderPrepayID = optionalString(providerResult.ProviderPrepayID)
-		payment.ProviderTradeNo = optionalString(providerResult.ProviderTradeNo)
-		payment.ClientPayload = payload
-		response = paymentDTO(payment)
 		if err := s.createOutbox(ctx, tx, "payment.created", "payment", payment.ID, map[string]any{"payment_id": idString(payment.ID), "order_id": idString(orderID), "provider": req.Provider, "provider_request_id": providerResult.RequestID}); err != nil {
 			return err
 		}
-		return s.idStore.Succeed(ctx, tx, claims.AccountType, customerID, path, key, response)
+		return nil
 	})
 	if err != nil {
+		if idempotency.IsClaimLost(err) {
+			return PaymentDTO{}, err
+		}
 		closeCtx, cancel := context.WithTimeout(context.Background(), s.cfg.WeChat.HTTPTimeout)
 		closeResult, closeErr := s.payment.Close(closeCtx, payment.PaymentNo)
 		cancel()
@@ -1151,6 +1172,7 @@ func (s *Service) ProcessPaymentCallback(ctx context.Context, providerCode strin
 	}
 
 	var callbackReject error
+	var externalSuccessState *ProviderPaymentState
 	err = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		callback := PaymentCallback{
 			ID:              s.idGen.Next(),
@@ -1164,31 +1186,110 @@ func (s *Service) ProcessPaymentCallback(ctx context.Context, providerCode strin
 			RequestID:       requestctx.RequestIDPtr(ctx),
 		}
 		created, err := s.repo.CreatePaymentCallbackIfAbsent(ctx, tx, callback)
-		if err != nil || !created {
+		if err != nil {
 			return err
+		}
+		if !created {
+			existing, err := s.repo.PaymentCallbackByEvent(ctx, tx, providerCode, event.EventID)
+			if err != nil {
+				return err
+			}
+			if existing.ProcessStatus == "failed" || existing.ProcessStatus == "received" {
+				if callbackSettlementAlreadyConverged(
+					ctx,
+					tx,
+					s.repo,
+					existing,
+					event,
+				) {
+					now := time.Now()
+					return s.repo.UpdatePaymentCallback(
+						ctx,
+						tx,
+						existing.ID,
+						map[string]any{
+							"process_status": "processed",
+							"error_code":     nil,
+							"processed_at":   &now,
+						},
+					)
+				}
+				callbackReject = problem.Internal("payment callback has not reached a safe terminal settlement")
+			}
+			return nil
 		}
 		paymentLookup, err := s.repo.GetPaymentByNo(ctx, tx, event.PaymentNo, providerCode)
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			now := time.Now()
-			return s.repo.UpdatePaymentCallback(ctx, tx, callback.ID, map[string]any{"process_status": "ignored", "error_code": "PAYMENT_NOT_FOUND", "processed_at": &now})
+			callbackReject = problem.Internal("local payment settlement was not found")
+			return s.repo.UpdatePaymentCallback(ctx, tx, callback.ID, map[string]any{"process_status": "failed", "error_code": "PAYMENT_NOT_FOUND", "processed_at": &now})
 		}
 		if err != nil {
 			return err
 		}
-		orderRow, err := s.repo.LockOrder(ctx, tx, paymentLookup.OrderID)
-		if err != nil {
-			return err
-		}
-		payment, err := s.repo.LockPaymentByNo(ctx, tx, event.PaymentNo, providerCode)
-		if err != nil {
-			return err
+		bizType, bizID := paymentBusiness(paymentLookup)
+		var (
+			payment     Payment
+			stateReject error
+		)
+		if bizType == RetailOrderPaymentBusiness {
+			if paymentLookup.OrderID == nil || bizID == 0 {
+				now := time.Now()
+				callbackReject = problem.Internal("retail payment order registry is incomplete")
+				return s.repo.UpdatePaymentCallback(ctx, tx, callback.ID, map[string]any{
+					"process_status": "failed",
+					"error_code":     "PAYMENT_BUSINESS_LINK_INVALID",
+					"processed_at":   &now,
+				})
+			}
+			orderRow, err := s.repo.LockOrder(ctx, tx, *paymentLookup.OrderID)
+			if err != nil {
+				return err
+			}
+			payment, err = s.repo.LockPaymentByNo(ctx, tx, event.PaymentNo, providerCode)
+			if err != nil {
+				return err
+			}
+			if !samePaymentBusiness(paymentLookup, payment) {
+				return problem.Internal("payment business registry changed during settlement")
+			}
+			state := ProviderPaymentState{ProviderTradeNo: event.ProviderTradeNo, PaymentNo: event.PaymentNo, Status: event.Status, AppID: event.AppID, MchID: event.MchID, Amount: event.Amount, Currency: event.Currency, AmountPresent: true, PaidAt: event.PaidAt}
+			_, stateReject, err = s.applyProviderPaymentStateTx(ctx, tx, orderRow, payment, state, "system", 0, "callback:"+event.EventID)
+			if err != nil {
+				return err
+			}
+		} else {
+			handler, handlerErr := s.externalSettlementHandler(paymentLookup)
+			if handlerErr != nil {
+				now := time.Now()
+				callbackReject = handlerErr
+				return s.repo.UpdatePaymentCallback(ctx, tx, callback.ID, map[string]any{
+					"process_status": "failed",
+					"error_code":     "PAYMENT_SETTLEMENT_HANDLER_NOT_FOUND",
+					"processed_at":   &now,
+				})
+			}
+			if err := handler.LockBusiness(ctx, tx, bizID); err != nil {
+				return err
+			}
+			payment, err = s.repo.LockPaymentByNo(ctx, tx, event.PaymentNo, providerCode)
+			if err != nil {
+				return err
+			}
+			if !samePaymentBusiness(paymentLookup, payment) {
+				return problem.Internal("payment business registry changed during settlement")
+			}
+			state := ProviderPaymentState{ProviderTradeNo: event.ProviderTradeNo, PaymentNo: event.PaymentNo, Status: event.Status, AppID: event.AppID, MchID: event.MchID, Amount: event.Amount, Currency: event.Currency, AmountPresent: true, PaidAt: event.PaidAt}
+			if strings.EqualFold(strings.TrimSpace(state.Status), "SUCCESS") {
+				stateCopy := state
+				externalSuccessState = &stateCopy
+			}
+			_, stateReject, err = s.applyExternalPaymentStateTx(ctx, tx, handler, payment, state)
+			if err != nil {
+				return err
+			}
 		}
 		if err := s.repo.UpdatePaymentCallback(ctx, tx, callback.ID, map[string]any{"payment_id": payment.ID}); err != nil {
-			return err
-		}
-		state := ProviderPaymentState{ProviderTradeNo: event.ProviderTradeNo, PaymentNo: event.PaymentNo, Status: event.Status, AppID: event.AppID, MchID: event.MchID, Amount: event.Amount, Currency: event.Currency, AmountPresent: true, PaidAt: event.PaidAt}
-		_, stateReject, err := s.applyProviderPaymentStateTx(ctx, tx, orderRow, payment, state, "system", 0, "callback:"+event.EventID)
-		if err != nil {
 			return err
 		}
 		now := time.Now()
@@ -1202,6 +1303,24 @@ func (s *Service) ProcessPaymentCallback(ctx context.Context, providerCode strin
 		return s.repo.UpdatePaymentCallback(ctx, tx, callback.ID, map[string]any{"process_status": "processed", "processed_at": &now})
 	})
 	if err != nil {
+		if externalSuccessState != nil {
+			reason := settlementFailureCode(err)
+			persistErr := s.persistExternalPaymentSettlementFailure(
+				ctx,
+				event.PaymentNo,
+				providerCode,
+				*externalSuccessState,
+				reason,
+			)
+			callbackErr := s.recordFailedExternalSettlementCallback(
+				ctx,
+				providerCode,
+				event,
+				payloadHash,
+				reason,
+			)
+			err = errors.Join(err, persistErr, callbackErr)
+		}
 		s.metrics.IncPayment(providerCode, "callback_failed")
 		return err
 	}
@@ -1211,6 +1330,96 @@ func (s *Service) ProcessPaymentCallback(ctx context.Context, providerCode strin
 	}
 	s.metrics.IncPayment(providerCode, "callback_succeeded")
 	return nil
+}
+
+func callbackSettlementAlreadyConverged(
+	ctx context.Context,
+	tx *gorm.DB,
+	repo *Repository,
+	callback PaymentCallback,
+	event PaymentCallbackEvent,
+) bool {
+	if callback.PaymentID == nil ||
+		!strings.EqualFold(strings.TrimSpace(event.Status), "SUCCESS") {
+		return false
+	}
+	payment, err := repo.GetPaymentByID(ctx, tx, *callback.PaymentID)
+	if err != nil ||
+		payment.Status != "succeeded" ||
+		payment.ProviderTradeNo == nil ||
+		strings.TrimSpace(*payment.ProviderTradeNo) == "" ||
+		strings.TrimSpace(*payment.ProviderTradeNo) !=
+			strings.TrimSpace(event.ProviderTradeNo) {
+		return false
+	}
+	return payment.PaymentNo == event.PaymentNo &&
+		payment.Amount == event.Amount &&
+		payment.Currency == event.Currency
+}
+
+func (s *Service) recordFailedExternalSettlementCallback(
+	ctx context.Context,
+	providerCode string,
+	event PaymentCallbackEvent,
+	payloadHash string,
+	errorCode string,
+) error {
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	return s.repo.DB().WithContext(persistCtx).Transaction(func(tx *gorm.DB) error {
+		payment, err := s.repo.GetPaymentByNo(
+			persistCtx,
+			tx,
+			event.PaymentNo,
+			providerCode,
+		)
+		if err != nil {
+			return err
+		}
+		now := time.Now()
+		callback := PaymentCallback{
+			ID:              s.idGen.Next(),
+			Provider:        providerCode,
+			ProviderEventID: event.EventID,
+			ProviderTradeNo: optionalString(event.ProviderTradeNo),
+			PaymentID:       &payment.ID,
+			PayloadHash:     payloadHash,
+			SignatureValid:  true,
+			ProcessStatus:   "failed",
+			ErrorCode:       stringPtr(errorCode),
+			ReceivedAt:      now,
+			ProcessedAt:     &now,
+			RequestID:       requestctx.RequestIDPtr(persistCtx),
+		}
+		created, err := s.repo.CreatePaymentCallbackIfAbsent(
+			persistCtx,
+			tx,
+			callback,
+		)
+		if err != nil || created {
+			return err
+		}
+		existing, err := s.repo.PaymentCallbackByEvent(
+			persistCtx,
+			tx,
+			providerCode,
+			event.EventID,
+		)
+		if err != nil || existing.ProcessStatus == "processed" {
+			return err
+		}
+		return s.repo.UpdatePaymentCallback(
+			persistCtx,
+			tx,
+			existing.ID,
+			map[string]any{
+				"payment_id":     payment.ID,
+				"process_status": "failed",
+				"error_code":     errorCode,
+				"processed_at":   &now,
+			},
+		)
+	})
 }
 
 // recordRejectedCallback 返回记录 Rejected 回调。
@@ -1440,6 +1649,13 @@ func paymentNo(orderID uint64) string {
 // idString 将数字 ID 转换为字符串。
 func idString(id uint64) string {
 	return strconv.FormatUint(id, 10)
+}
+
+func optionalIDString(id *uint64) string {
+	if id == nil {
+		return ""
+	}
+	return idString(*id)
 }
 
 // optionalString 将空字符串转换为空指针，否则返回字符串指针。
@@ -1828,7 +2044,7 @@ func paymentDTO(row Payment) PaymentDTO {
 	return PaymentDTO{
 		ID:              idString(row.ID),
 		PaymentNo:       row.PaymentNo,
-		OrderID:         idString(row.OrderID),
+		OrderID:         optionalIDString(row.OrderID),
 		Channel:         row.Channel,
 		Provider:        row.Provider,
 		ProviderTradeNo: stringValue(row.ProviderTradeNo),

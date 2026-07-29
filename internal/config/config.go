@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	mysqldriver "github.com/go-sql-driver/mysql"
 )
 
 type Config struct {
@@ -33,6 +35,7 @@ type Config struct {
 	SMS              SMSConfig
 	WeChat           WeChatConfig
 	Feature          FeatureConfig
+	WineTicket       WineTicketConfig
 	Security         SecurityConfig
 	Metrics          MetricsConfig
 	CP1              CP1Config
@@ -60,12 +63,15 @@ type HTTPConfig struct {
 }
 
 type MySQLConfig struct {
-	DSN             string
-	Required        bool
-	MaxOpenConns    int
-	MaxIdleConns    int
-	ConnMaxLifetime time.Duration
-	PingTimeout     time.Duration
+	DSN                            string
+	Required                       bool
+	MaxOpenConns                   int
+	MaxIdleConns                   int
+	ConnMaxLifetime                time.Duration
+	PingTimeout                    time.Duration
+	RequiredTimeZone               string
+	RequireWineTicketSchema        bool
+	RequireWineTicketMoneyContract bool
 }
 
 type RedisConfig struct {
@@ -343,6 +349,8 @@ type WeChatConfig struct {
 	PayMchID          string
 	PayCertSerial     string
 	PayPrivateKeyPath string
+	PayPublicKeyID    string
+	PayPublicKeyPath  string
 	PayAPIv3Key       string
 	PayNotifyURL      string
 	RefundNotifyURL   string
@@ -356,6 +364,41 @@ type FeatureConfig struct {
 	StockReserveEnabled     bool
 	MQPublisherEnabled      bool
 }
+
+// WineTicketConfig 让所有酒票入口保持失败关闭。
+// 总开关只会暴露已通过数据库结构和时区门禁的基础设施；
+// 每个业务分支仍需单独显式开启。
+type WineTicketConfig struct {
+	Enabled                              bool
+	MaintenanceOwner                     string
+	PackageReadEnabled                   bool
+	AdminEnabled                         bool
+	PurchaseEnabled                      bool
+	RedemptionEnabled                    bool
+	GiftEnabled                          bool
+	ReminderEnabled                      bool
+	WeChatReminderEnabled                bool
+	WeChatReminderProviderEnabled        bool
+	WeChatReminderProductNameField       string
+	WeChatReminderRemainingQuantityField string
+	WeChatReminderExpiryDateField        string
+	WeChatReminderPage                   string
+	RenewalEnabled                       bool
+	RefundEnabled                        bool
+	ReconciliationEnabled                bool
+	ReconciliationBatchSize              int
+	ReconciliationBatchInterval          time.Duration
+	ReconciliationSweepInterval          time.Duration
+	ReconciliationDailyStart             time.Duration
+	ReconciliationLeaseDuration          time.Duration
+	GiftTokenPepper                      string
+	QuoteTokenSecret                     string
+}
+
+const (
+	WineTicketMaintenanceOwnerAPI    = "api"
+	WineTicketMaintenanceOwnerWorker = "worker"
+)
 
 type SecurityConfig struct {
 	AdminBootstrapPassword    string
@@ -403,6 +446,14 @@ const (
 // 依赖是否必需由 infra 包负责校验，不放在配置解析阶段处理。
 func Load() Config {
 	appEnv := env("JXE_APP_ENV", "local")
+	wineTicketEnabled := boolEnv("JXE_WINE_TICKET_ENABLED", false)
+	wineTicketMoneyEnabled := boolEnv("JXE_WINE_TICKET_PURCHASE_ENABLED", false) ||
+		boolEnv("JXE_WINE_TICKET_RENEWAL_ENABLED", false) ||
+		boolEnv("JXE_WINE_TICKET_REFUND_ENABLED", false)
+	requiredMySQLTimeZone := env("JXE_MYSQL_REQUIRED_TIME_ZONE", "")
+	if wineTicketEnabled && requiredMySQLTimeZone == "" {
+		requiredMySQLTimeZone = "+08:00"
+	}
 	return Config{
 		App: AppConfig{
 			Name:            "jiuxiaoer-api",
@@ -424,12 +475,15 @@ func Load() Config {
 			MaxBodyBytes:      int64Env("JXE_HTTP_MAX_BODY_BYTES", 1<<20),
 		},
 		MySQL: MySQLConfig{
-			DSN:             env("JXE_MYSQL_DSN", ""),
-			Required:        boolEnv("JXE_MYSQL_REQUIRED", false),
-			MaxOpenConns:    intEnv("JXE_MYSQL_MAX_OPEN_CONNS", 50),
-			MaxIdleConns:    intEnv("JXE_MYSQL_MAX_IDLE_CONNS", 10),
-			ConnMaxLifetime: durationEnv("JXE_MYSQL_CONN_MAX_LIFETIME", 30*time.Minute),
-			PingTimeout:     durationEnv("JXE_MYSQL_PING_TIMEOUT", 3*time.Second),
+			DSN:                            env("JXE_MYSQL_DSN", ""),
+			Required:                       boolEnv("JXE_MYSQL_REQUIRED", false),
+			MaxOpenConns:                   intEnv("JXE_MYSQL_MAX_OPEN_CONNS", 50),
+			MaxIdleConns:                   intEnv("JXE_MYSQL_MAX_IDLE_CONNS", 10),
+			ConnMaxLifetime:                durationEnv("JXE_MYSQL_CONN_MAX_LIFETIME", 30*time.Minute),
+			PingTimeout:                    durationEnv("JXE_MYSQL_PING_TIMEOUT", 3*time.Second),
+			RequiredTimeZone:               requiredMySQLTimeZone,
+			RequireWineTicketSchema:        wineTicketEnabled,
+			RequireWineTicketMoneyContract: wineTicketEnabled && wineTicketMoneyEnabled,
 		},
 		Redis: RedisConfig{
 			Addr:        env("JXE_REDIS_ADDR", ""),
@@ -671,6 +725,8 @@ func Load() Config {
 			PayMchID:          env("JXE_WECHAT_PAY_MCH_ID", ""),
 			PayCertSerial:     env("JXE_WECHAT_PAY_CERT_SERIAL", ""),
 			PayPrivateKeyPath: env("JXE_WECHAT_PAY_PRIVATE_KEY_PATH", ""),
+			PayPublicKeyID:    env("JXE_WECHAT_PAY_PUBLIC_KEY_ID", ""),
+			PayPublicKeyPath:  env("JXE_WECHAT_PAY_PUBLIC_KEY_PATH", ""),
 			PayAPIv3Key:       env("JXE_WECHAT_PAY_API_V3_KEY", ""),
 			PayNotifyURL:      env("JXE_WECHAT_PAY_NOTIFY_URL", ""),
 			RefundNotifyURL:   env("JXE_WECHAT_REFUND_NOTIFY_URL", ""),
@@ -682,6 +738,68 @@ func Load() Config {
 			OrderIdempotencyEnabled: boolEnv("JXE_ORDER_IDEMPOTENCY_ENABLED", true),
 			StockReserveEnabled:     boolEnv("JXE_STOCK_RESERVE_ENABLED", true),
 			MQPublisherEnabled:      boolEnv("JXE_MQ_PUBLISH_ENABLED", boolEnv("JXE_MQ_PUBLISHER_ENABLED", false)),
+		},
+		WineTicket: WineTicketConfig{
+			Enabled:            wineTicketEnabled,
+			MaintenanceOwner:   env("JXE_WINE_TICKET_MAINTENANCE_OWNER", WineTicketMaintenanceOwnerAPI),
+			PackageReadEnabled: boolEnv("JXE_WINE_TICKET_PACKAGE_READ_ENABLED", false),
+			AdminEnabled:       boolEnv("JXE_WINE_TICKET_ADMIN_ENABLED", false),
+			PurchaseEnabled:    boolEnv("JXE_WINE_TICKET_PURCHASE_ENABLED", false),
+			RedemptionEnabled:  boolEnv("JXE_WINE_TICKET_REDEMPTION_ENABLED", false),
+			GiftEnabled:        boolEnv("JXE_WINE_TICKET_GIFT_ENABLED", false),
+			ReminderEnabled:    boolEnv("JXE_WINE_TICKET_REMINDER_ENABLED", false),
+			WeChatReminderEnabled: boolEnv(
+				"JXE_WINE_TICKET_WECHAT_REMINDER_ENABLED",
+				false,
+			),
+			WeChatReminderProviderEnabled: boolEnv(
+				"JXE_WINE_TICKET_WECHAT_REMINDER_PROVIDER_ENABLED",
+				false,
+			),
+			WeChatReminderProductNameField: env(
+				"JXE_WINE_TICKET_WECHAT_REMINDER_PRODUCT_NAME_FIELD",
+				"",
+			),
+			WeChatReminderRemainingQuantityField: env(
+				"JXE_WINE_TICKET_WECHAT_REMINDER_REMAINING_QUANTITY_FIELD",
+				"",
+			),
+			WeChatReminderExpiryDateField: env(
+				"JXE_WINE_TICKET_WECHAT_REMINDER_EXPIRY_DATE_FIELD",
+				"",
+			),
+			WeChatReminderPage: env(
+				"JXE_WINE_TICKET_WECHAT_REMINDER_PAGE",
+				"",
+			),
+			RenewalEnabled: boolEnv("JXE_WINE_TICKET_RENEWAL_ENABLED", false),
+			RefundEnabled:  boolEnv("JXE_WINE_TICKET_REFUND_ENABLED", false),
+			ReconciliationEnabled: boolEnv(
+				"JXE_WINE_TICKET_RECONCILIATION_ENABLED",
+				false,
+			),
+			ReconciliationBatchSize: intEnv(
+				"JXE_WINE_TICKET_RECONCILIATION_BATCH_SIZE",
+				250,
+			),
+			ReconciliationBatchInterval: durationEnv(
+				"JXE_WINE_TICKET_RECONCILIATION_BATCH_INTERVAL",
+				100*time.Millisecond,
+			),
+			ReconciliationSweepInterval: durationEnv(
+				"JXE_WINE_TICKET_RECONCILIATION_SWEEP_INTERVAL",
+				15*time.Minute,
+			),
+			ReconciliationDailyStart: durationEnv(
+				"JXE_WINE_TICKET_RECONCILIATION_DAILY_START",
+				5*time.Minute,
+			),
+			ReconciliationLeaseDuration: durationEnv(
+				"JXE_WINE_TICKET_RECONCILIATION_LEASE_DURATION",
+				5*time.Minute,
+			),
+			GiftTokenPepper:  env("JXE_WINE_TICKET_GIFT_TOKEN_PEPPER", "local_wine_ticket_gift_token_pepper_change_me"),
+			QuoteTokenSecret: env("JXE_WINE_TICKET_QUOTE_TOKEN_SECRET", "local_wine_ticket_quote_token_secret_change_me"),
 		},
 		Security: SecurityConfig{
 			AdminBootstrapPassword:    env("JXE_ADMIN_BOOTSTRAP_PASSWORD", "admin123"),
@@ -740,9 +858,11 @@ func (c Config) Validate() error {
 	if c.MySQL.MaxOpenConns <= 0 || c.MySQL.MaxIdleConns < 0 || c.MySQL.MaxIdleConns > c.MySQL.MaxOpenConns {
 		problems = append(problems, "invalid MySQL connection pool limits")
 	}
+	problems = append(problems, c.wechatPayRuntimeProblems()...)
 	if c.MySQL.PingTimeout <= 0 || c.Redis.PingTimeout <= 0 {
 		problems = append(problems, "dependency ping timeouts must be positive")
 	}
+	problems = append(problems, c.wineTicketRuntimeProblems()...)
 	if c.RabbitMQ.DialTimeout <= 0 || c.RabbitMQ.ReconnectMin <= 0 || c.RabbitMQ.ReconnectMax < c.RabbitMQ.ReconnectMin {
 		problems = append(problems, "invalid RabbitMQ timeout or reconnect limits")
 	}
@@ -1173,6 +1293,242 @@ func (c Config) Validate() error {
 	}
 	if len(problems) > 0 {
 		return fmt.Errorf("invalid configuration: %s", strings.Join(problems, "; "))
+	}
+	return nil
+}
+
+func (c Config) wineTicketRuntimeProblems() []string {
+	var problems []string
+	if c.WineTicket.MaintenanceOwner != WineTicketMaintenanceOwnerAPI &&
+		c.WineTicket.MaintenanceOwner != WineTicketMaintenanceOwnerWorker {
+		problems = append(
+			problems,
+			"JXE_WINE_TICKET_MAINTENANCE_OWNER must be api or worker",
+		)
+	}
+	branchesEnabled := c.WineTicket.PackageReadEnabled ||
+		c.WineTicket.AdminEnabled ||
+		c.WineTicket.PurchaseEnabled ||
+		c.WineTicket.RedemptionEnabled ||
+		c.WineTicket.GiftEnabled ||
+		c.WineTicket.ReminderEnabled ||
+		c.WineTicket.WeChatReminderEnabled ||
+		c.WineTicket.WeChatReminderProviderEnabled ||
+		c.WineTicket.RenewalEnabled ||
+		c.WineTicket.RefundEnabled ||
+		c.WineTicket.ReconciliationEnabled
+	if !c.WineTicket.Enabled {
+		if branchesEnabled {
+			problems = append(problems, "wine-ticket branch switches require JXE_WINE_TICKET_ENABLED=true")
+		}
+		return problems
+	}
+
+	if c.MySQL.DSN == "" || !c.MySQL.Required {
+		problems = append(problems, "enabled wine tickets require MySQL and JXE_MYSQL_REQUIRED=true")
+	} else {
+		dsn, err := mysqldriver.ParseDSN(c.MySQL.DSN)
+		if err != nil {
+			problems = append(problems, "enabled wine tickets require a valid JXE_MYSQL_DSN")
+		} else {
+			if !dsn.ParseTime {
+				problems = append(problems, "enabled wine tickets require JXE_MYSQL_DSN parseTime=true")
+			}
+			if dsn.Loc != time.Local {
+				problems = append(problems, "enabled wine tickets require JXE_MYSQL_DSN loc=Local")
+			}
+		}
+	}
+	if c.MySQL.RequiredTimeZone != "+08:00" {
+		problems = append(problems, "enabled wine tickets require JXE_MYSQL_REQUIRED_TIME_ZONE=+08:00")
+	}
+	if time.Local.String() != "Asia/Shanghai" {
+		problems = append(problems, "enabled wine tickets require process TZ=Asia/Shanghai with zoneinfo available")
+	}
+	if !c.MySQL.RequireWineTicketSchema {
+		problems = append(problems, "enabled wine tickets require wine-ticket schema verification")
+	}
+	if len(c.WineTicket.GiftTokenPepper) < 32 {
+		problems = append(problems, "JXE_WINE_TICKET_GIFT_TOKEN_PEPPER must contain at least 32 characters")
+	}
+	if len(c.WineTicket.QuoteTokenSecret) < 32 {
+		problems = append(problems, "JXE_WINE_TICKET_QUOTE_TOKEN_SECRET must contain at least 32 characters")
+	}
+	if c.WineTicket.WeChatReminderEnabled && !c.WineTicket.ReminderEnabled {
+		problems = append(
+			problems,
+			"JXE_WINE_TICKET_WECHAT_REMINDER_ENABLED=true requires JXE_WINE_TICKET_REMINDER_ENABLED=true",
+		)
+	}
+	if c.WineTicket.WeChatReminderEnabled &&
+		!c.WineTicket.WeChatReminderProviderEnabled {
+		problems = append(
+			problems,
+			"JXE_WINE_TICKET_WECHAT_REMINDER_ENABLED=true requires JXE_WINE_TICKET_WECHAT_REMINDER_PROVIDER_ENABLED=true",
+		)
+	}
+	if c.WineTicket.WeChatReminderProviderEnabled {
+		if strings.TrimSpace(c.WeChat.MiniAppID) == "" ||
+			strings.TrimSpace(c.WeChat.MiniAppSecret) == "" {
+			problems = append(
+				problems,
+				"enabled wine-ticket WeChat reminder provider requires Mini Program AppID and secret",
+			)
+		}
+		if !validWineTicketWeChatPage(c.WineTicket.WeChatReminderPage) {
+			problems = append(
+				problems,
+				"JXE_WINE_TICKET_WECHAT_REMINDER_PAGE must be a safe pages/... Mini Program path",
+			)
+		}
+		fields := []string{
+			c.WineTicket.WeChatReminderProductNameField,
+			c.WineTicket.WeChatReminderRemainingQuantityField,
+			c.WineTicket.WeChatReminderExpiryDateField,
+		}
+		seenFields := make(map[string]bool, len(fields))
+		for _, field := range fields {
+			field = strings.TrimSpace(field)
+			if !validWineTicketWeChatTemplateField(field) || seenFields[field] {
+				problems = append(
+					problems,
+					"wine-ticket WeChat reminder template field mappings must be valid and unique",
+				)
+				break
+			}
+			seenFields[field] = true
+		}
+		if isProduction(c.App.Env) &&
+			c.WeChat.APIBaseURL != "https://api.weixin.qq.com" {
+			problems = append(
+				problems,
+				"production wine-ticket WeChat reminder provider requires the official HTTPS WeChat API endpoint",
+			)
+		}
+	}
+	if c.WineTicket.ReconciliationEnabled {
+		if c.WineTicket.ReconciliationBatchSize < 1 ||
+			c.WineTicket.ReconciliationBatchSize > 2000 {
+			problems = append(
+				problems,
+				"JXE_WINE_TICKET_RECONCILIATION_BATCH_SIZE must be between 1 and 2000",
+			)
+		}
+		if c.WineTicket.ReconciliationBatchInterval <= 0 {
+			problems = append(
+				problems,
+				"JXE_WINE_TICKET_RECONCILIATION_BATCH_INTERVAL must be positive",
+			)
+		}
+		if c.WineTicket.ReconciliationSweepInterval <= 0 {
+			problems = append(
+				problems,
+				"JXE_WINE_TICKET_RECONCILIATION_SWEEP_INTERVAL must be positive",
+			)
+		}
+		if c.WineTicket.ReconciliationDailyStart < 0 ||
+			c.WineTicket.ReconciliationDailyStart >= 6*time.Hour {
+			problems = append(
+				problems,
+				"JXE_WINE_TICKET_RECONCILIATION_DAILY_START must be between 0 and 6h",
+			)
+		}
+		if c.WineTicket.ReconciliationLeaseDuration <= 0 {
+			problems = append(
+				problems,
+				"JXE_WINE_TICKET_RECONCILIATION_LEASE_DURATION must be positive",
+			)
+		}
+	}
+	if c.WineTicket.PurchaseEnabled || c.WineTicket.RenewalEnabled || c.WineTicket.RefundEnabled {
+		if !c.MySQL.RequireWineTicketMoneyContract {
+			problems = append(problems, "wine-ticket money branches require the schema-only money registry CONTRACT gate")
+		}
+		if !c.WeChat.PayEnabled {
+			problems = append(problems, "wine-ticket money branches require JXE_WECHAT_PAY_ENABLED=true")
+		}
+		if !c.Feature.OrderIdempotencyEnabled {
+			problems = append(problems, "wine-ticket money branches require JXE_ORDER_IDEMPOTENCY_ENABLED=true")
+		}
+		// 购买和续期都可能在支付机构确认支付后创建补偿退款。
+		// 因此即使客户退款创建开关关闭，这些后台任务仍属于资金契约的一部分。
+		if !c.Order.ExpiryWorkerEnabled {
+			problems = append(problems, "wine-ticket money branches require JXE_ORDER_EXPIRY_WORKER_ENABLED=true")
+		}
+		if !c.AfterSale.RefundExecutionEnabled {
+			problems = append(problems, "wine-ticket money branches require JXE_REFUND_EXECUTION_ENABLED=true")
+		}
+		if !c.AfterSale.WorkerEnabled {
+			problems = append(problems, "wine-ticket money branches require JXE_REFUND_WORKER_ENABLED=true")
+		}
+	}
+	if isProduction(c.App.Env) {
+		if strings.Contains(c.WineTicket.GiftTokenPepper, "change_me") || strings.Contains(c.WineTicket.QuoteTokenSecret, "change_me") {
+			problems = append(problems, "production wine tickets require non-default gift and quote secrets")
+		}
+		if c.WineTicket.PurchaseEnabled || c.WineTicket.RenewalEnabled || c.WineTicket.RefundEnabled {
+			if c.WeChat.PayMockEnabled {
+				problems = append(problems, "production wine-ticket money branches must not use mock WeChat Pay")
+			}
+			if strings.TrimSpace(c.WeChat.PayPublicKeyID) == "" || strings.TrimSpace(c.WeChat.PayPublicKeyPath) == "" {
+				problems = append(problems, "production wine-ticket money branches require JXE_WECHAT_PAY_PUBLIC_KEY_ID and JXE_WECHAT_PAY_PUBLIC_KEY_PATH")
+			}
+			if c.WeChat.RefundNotifyURL == "" {
+				problems = append(problems, "production wine-ticket money branches require JXE_WECHAT_REFUND_NOTIFY_URL")
+			}
+			if !c.WineTicket.ReconciliationEnabled {
+				problems = append(problems, "production wine-ticket money branches require JXE_WINE_TICKET_RECONCILIATION_ENABLED=true")
+			}
+		}
+	}
+	return problems
+}
+
+func validWineTicketWeChatPage(page string) bool {
+	page = strings.TrimSpace(page)
+	if !strings.HasPrefix(page, "pages/") || len(page) > 256 {
+		return false
+	}
+	for _, character := range page {
+		if (character >= 'a' && character <= 'z') ||
+			(character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') ||
+			character == '/' || character == '_' || character == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func validWineTicketWeChatTemplateField(field string) bool {
+	field = strings.TrimSpace(field)
+	if len(field) < 2 || len(field) > 64 {
+		return false
+	}
+	for index, character := range field {
+		if index == 0 {
+			if (character < 'a' || character > 'z') &&
+				(character < 'A' || character > 'Z') {
+				return false
+			}
+			continue
+		}
+		if (character < 'a' || character > 'z') &&
+			(character < 'A' || character > 'Z') &&
+			(character < '0' || character > '9') &&
+			character != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+func (c Config) wechatPayRuntimeProblems() []string {
+	publicKeyID := strings.TrimSpace(c.WeChat.PayPublicKeyID)
+	publicKeyPath := strings.TrimSpace(c.WeChat.PayPublicKeyPath)
+	if (publicKeyID == "") != (publicKeyPath == "") {
+		return []string{"JXE_WECHAT_PAY_PUBLIC_KEY_ID and JXE_WECHAT_PAY_PUBLIC_KEY_PATH must be configured together"}
 	}
 	return nil
 }

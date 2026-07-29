@@ -19,6 +19,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/modules/member"
 	"jiuxiaoer-admin/backend-go/internal/pkg/pagination"
 	"jiuxiaoer-admin/backend-go/internal/pkg/problem"
+	"jiuxiaoer-admin/backend-go/internal/pkg/requestctx"
 	"jiuxiaoer-admin/backend-go/internal/pkg/snowflake"
 )
 
@@ -29,7 +30,11 @@ type acceptanceFixture struct {
 	ids                   *snowflake.Generator
 	service               *Service
 	customerID, accountID uint64
-	maker, checker        auth.Claims
+	adminAccountID        uint64
+	adminRoleID           uint64
+	adminUserID           uint64
+	adminRolePermissionID uint64
+	maker                 auth.Claims
 	seq                   atomic.Uint64
 }
 
@@ -39,8 +44,12 @@ func newAcceptanceFixture(t *testing.T) *acceptanceFixture {
 	if os.Getenv("JXE_RUN_INTEGRATION") != "1" {
 		t.Skip("set JXE_RUN_INTEGRATION=1 to run L4 acceptance tests")
 	}
-	ctx := context.Background()
+	ctx := requestctx.WithRequestID(
+		context.Background(),
+		fmt.Sprintf("asset-acceptance-%d", time.Now().UnixNano()),
+	)
 	cfg := config.Load()
+	cfg.App.InstanceID = "asset-acceptance-instance"
 	cfg.Asset.MemberEnabled = true
 	cfg.Asset.ReadEnabled = true
 	cfg.Asset.WriteEnabled = true
@@ -63,9 +72,61 @@ func newAcceptanceFixture(t *testing.T) *acceptanceFixture {
 	if err := db.Exec("INSERT INTO customers (id,account_id,phone,status) VALUES (?,?,?,'active')", f.customerID, f.accountID, phone).Error; err != nil {
 		t.Fatalf("insert customer: %v", err)
 	}
+	f.adminAccountID = ids.Next()
+	f.adminRoleID = ids.Next()
+	f.adminUserID = ids.Next()
+	f.adminRolePermissionID = ids.Next()
+	adminUsername := fmt.Sprintf("asset_acceptance_%d", f.adminAccountID)
+	roleCode := fmt.Sprintf("asset_acceptance_%d", f.adminRoleID)
+	if err := db.Exec(
+		"INSERT INTO accounts (id,account_type,username,status) VALUES (?,'admin',?,'active')",
+		f.adminAccountID,
+		adminUsername,
+	).Error; err != nil {
+		t.Fatalf("insert admin account: %v", err)
+	}
+	if err := db.Exec(
+		"INSERT INTO roles (id,code,name,scope,status) VALUES (?,?,?,'all','active')",
+		f.adminRoleID,
+		roleCode,
+		"资产验收角色",
+	).Error; err != nil {
+		t.Fatalf("insert admin role: %v", err)
+	}
+	if err := db.Exec(
+		`INSERT INTO admin_users
+			(id,account_id,role_id,admin_sub_role,name,status)
+		 VALUES (?,?,?,'finance','资产验收管理员','active')`,
+		f.adminUserID,
+		f.adminAccountID,
+		f.adminRoleID,
+	).Error; err != nil {
+		t.Fatalf("insert admin user: %v", err)
+	}
+	if err := db.Exec(
+		`INSERT INTO role_permissions (id,role_id,permission_id)
+		 SELECT ?,?,p.id
+		   FROM permissions p
+		  WHERE p.code='asset_adjustment:create'
+		    AND p.status='active'
+		    AND p.deleted_at IS NULL`,
+		f.adminRolePermissionID,
+		f.adminRoleID,
+	).Error; err != nil {
+		t.Fatalf("insert admin role permission: %v", err)
+	}
+	var permissionCount int64
+	if err := db.Table("role_permissions").
+		Where("id=?", f.adminRolePermissionID).
+		Count(&permissionCount).Error; err != nil || permissionCount != 1 {
+		t.Fatalf(
+			"asset adjustment permission fixture count=%d err=%v",
+			permissionCount,
+			err,
+		)
+	}
 	f.service = NewService(cfg, db, ids)
-	f.maker = adminClaims(88001, "asset_adjustment:create", "asset_adjustment:approve", "asset_transaction:list", "asset_transaction:view", "asset_reconcile:run", "asset_reconcile:view", "asset_reconcile:repair")
-	f.checker = adminClaims(88002, "asset_adjustment:approve")
+	f.maker = adminClaims(f.adminUserID, "asset_adjustment:create", "asset_transaction:list", "asset_transaction:view", "asset_reconcile:run", "asset_reconcile:view", "asset_reconcile:repair")
 	t.Cleanup(func() { f.cleanup(t) })
 	return f
 }
@@ -305,21 +366,14 @@ func TestL4LedgerAcceptanceIntegration(t *testing.T) {
 		}
 	})
 
-	t.Run("ACC-L4-020-021-022-maker-checker-adjustment", func(t *testing.T) {
+	t.Run("ACC-L4-020-021-022-single-admin-adjustment", func(t *testing.T) {
 		req := AdjustmentCreateReq{CustomerID: idString(f.customerID), AssetType: TypeBalance, Direction: "credit", Amount: 50, ReasonCode: "TEST", Reason: "acceptance adjustment"}
 		adjustment, err := f.service.CreateAdjustment(f.ctx, &f.maker, "POST", "/api/v1/admin/asset-adjustments", f.key("adjust-create"), req)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err = f.service.ApproveAdjustment(f.ctx, &f.maker, adjustment.ID, f.key("self-approve"), AdjustmentReviewReq{Version: adjustment.Version}); err == nil || problem.FromError(err).ErrorCode != "ADJUSTMENT_SELF_APPROVAL_FORBIDDEN" {
-			t.Fatalf("self approval should fail: %v", err)
-		}
-		approved, err := f.service.ApproveAdjustment(f.ctx, &f.checker, adjustment.ID, f.key("checker-approve"), AdjustmentReviewReq{Version: adjustment.Version})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if approved.Status != "succeeded" || approved.AssetTransactionID == "" {
-			t.Fatalf("adjustment not issued: %#v", approved)
+		if adjustment.Status != "succeeded" || adjustment.AssetTransactionID == "" || adjustment.ReviewedBy != adjustment.CreatedBy {
+			t.Fatalf("adjustment not issued by creator: %#v", adjustment)
 		}
 		f.assertBalance(t, TypeBalance, 210, 0)
 	})
@@ -451,13 +505,17 @@ func (f *acceptanceFixture) cleanup(t *testing.T) {
 		_ = f.db.Table("asset_lots").Where("account_id IN ?", accountIDs).Pluck("id", &lotIDs).Error
 	}
 	_ = f.db.Table("asset_adjustments").Where("customer_id=?", f.customerID).Pluck("id", &adjustmentIDs).Error
-	_ = f.db.Table("asset_reconciliation_jobs").Where("requested_by IN ?", []uint64{88001, 88002}).Pluck("id", &jobIDs).Error
+	_ = f.db.Table("asset_reconciliation_jobs").Where("requested_by=?", f.adminUserID).Pluck("id", &jobIDs).Error
 	if len(jobIDs) > 0 {
 		f.db.Where("job_id IN ?", jobIDs).Delete(&ReconciliationItem{})
 		f.db.Where("id IN ?", jobIDs).Delete(&ReconciliationJob{})
 	}
 	f.db.Where("customer_id=?", f.customerID).Delete(&Compensation{})
 	if len(adjustmentIDs) > 0 {
+		f.db.Where(
+			"resource_type='asset_adjustment' AND resource_id IN ?",
+			adjustmentIDs,
+		).Delete(&AuditLog{})
 		f.db.Where("id IN ?", adjustmentIDs).Delete(&Adjustment{})
 	}
 	if len(holdIDs) > 0 {
@@ -483,9 +541,13 @@ func (f *acceptanceFixture) cleanup(t *testing.T) {
 		f.db.Where("account_id IN ?", accountIDs).Delete(&Balance{})
 		f.db.Where("id IN ?", accountIDs).Delete(&Account{})
 	}
-	f.db.Exec("DELETE FROM idempotency_keys WHERE actor_type='admin' AND actor_id IN (?,?)", 88001, 88002)
+	f.db.Exec("DELETE FROM idempotency_keys WHERE actor_type='admin' AND actor_id=?", f.adminUserID)
 	f.db.Exec("DELETE FROM customers WHERE id=?", f.customerID)
 	f.db.Exec("DELETE FROM accounts WHERE id=?", f.accountID)
+	f.db.Exec("DELETE FROM admin_users WHERE id=?", f.adminUserID)
+	f.db.Exec("DELETE FROM role_permissions WHERE id=?", f.adminRolePermissionID)
+	f.db.Exec("DELETE FROM roles WHERE id=?", f.adminRoleID)
+	f.db.Exec("DELETE FROM accounts WHERE id=?", f.adminAccountID)
 	if sqlDB, err := f.db.DB(); err == nil {
 		_ = sqlDB.Close()
 	}

@@ -4,15 +4,23 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"gorm.io/gorm"
 
+	"jiuxiaoer-admin/backend-go/internal/config"
+	"jiuxiaoer-admin/backend-go/internal/infra/wechat"
+	"jiuxiaoer-admin/backend-go/internal/modules/aftersale"
+	"jiuxiaoer-admin/backend-go/internal/modules/deliveryreturn"
 	"jiuxiaoer-admin/backend-go/internal/modules/dispatch"
 	"jiuxiaoer-admin/backend-go/internal/modules/mq"
 	"jiuxiaoer-admin/backend-go/internal/modules/notification"
+	"jiuxiaoer-admin/backend-go/internal/modules/order"
 	"jiuxiaoer-admin/backend-go/internal/modules/printjob"
 	"jiuxiaoer-admin/backend-go/internal/modules/realtime"
+	"jiuxiaoer-admin/backend-go/internal/modules/refund"
 	"jiuxiaoer-admin/backend-go/internal/modules/search"
+	"jiuxiaoer-admin/backend-go/internal/modules/wineticket"
 )
 
 var mqWorkerRoles = map[string]bool{
@@ -27,10 +35,13 @@ var mqWorkerRoles = map[string]bool{
 	"realtime-relay":           true,
 	"mq-dead-sink":             true,
 	"search-retention":         true,
+	"wine-ticket-maintenance":  true,
 }
 
-// RunMQWorker 运行消息队列工作器处理流程。
-// RunMQWorker 在不打开 API 监听器的情况下运行 RabbitMQ 骨干。
+// RunMQWorker 在不打开 API 监听器的情况下运行选定后台角色。
+// MQ 角色运行 RabbitMQ 骨干；search-retention 和
+// wine-ticket-maintenance 是不要求 RabbitMQ 的数据库任务角色，且只在
+// JXE_WINE_TICKET_MAINTENANCE_OWNER=worker 时取得维护任务所有权。
 // 部署时每个进程使用不同的雪花节点 ID；本地开发可继续使用
 // Server.Run 和进程内工作任务。
 func (s *Server) RunMQWorker(ctx context.Context, role string) error {
@@ -38,6 +49,18 @@ func (s *Server) RunMQWorker(ctx context.Context, role string) error {
 		return fmt.Errorf("unknown MQ worker role %q", role)
 	}
 	selected := func(candidate string) bool { return role == "all" || role == candidate }
+	if role == "wine-ticket-maintenance" &&
+		s.cfg.WineTicket.MaintenanceOwner != config.WineTicketMaintenanceOwnerWorker {
+		return fmt.Errorf(
+			"wine-ticket maintenance worker requires JXE_WINE_TICKET_MAINTENANCE_OWNER=worker (got %q)",
+			s.cfg.WineTicket.MaintenanceOwner,
+		)
+	}
+	if role == "wine-ticket-maintenance" && !s.cfg.WineTicket.Enabled {
+		return fmt.Errorf("wine-ticket maintenance worker requires JXE_WINE_TICKET_ENABLED=true")
+	}
+	wineTicketMaintenanceSelected := selected("wine-ticket-maintenance") &&
+		workerOwnsWineTicketMaintenance(s.cfg)
 	if selected("mq-consumer-print") && s.cfg.MQ.ConsumerPrintEnabled {
 		if err := s.ensurePrintProvider(ctx); err != nil {
 			return err
@@ -54,9 +77,13 @@ func (s *Server) RunMQWorker(ctx context.Context, role string) error {
 			return err
 		}
 	}
-	needsMQ := role != "search-retention"
+	needsMQ := role != "search-retention" && role != "wine-ticket-maintenance"
 	if needsMQ && (s.deps.RabbitMQ == nil || s.deps.IDGen == nil) {
 		return fmt.Errorf("MQ worker requires RabbitMQ and Snowflake ID generation")
+	}
+	if wineTicketMaintenanceSelected &&
+		s.deps.IDGen == nil {
+		return fmt.Errorf("wine-ticket maintenance worker requires Snowflake ID generation")
 	}
 	if selected("mq-consumer-cache") && s.cfg.MQ.ConsumerCacheEnabled && s.deps.Redis == nil {
 		return fmt.Errorf("cache MQ worker requires Redis")
@@ -108,6 +135,92 @@ func (s *Server) RunMQWorker(ctx context.Context, role string) error {
 	if selected("search-retention") && s.cfg.Search.CleanupEnabled {
 		worker := search.NewWorker(s.cfg.Search, s.deps.DB, s.deps.Metrics, s.cfg.App.InstanceID+":search-retention", s.log)
 		spawn(func() { worker.Run(runCtx) })
+	}
+	if wineTicketMaintenanceSelected {
+		wineTicketModule := wineticket.NewModule(
+			s.deps.DB,
+			s.deps.IDGen,
+			wineticket.ModuleOptions{
+				GiftTokenPepper:  s.cfg.WineTicket.GiftTokenPepper,
+				QuoteTokenSecret: s.cfg.WineTicket.QuoteTokenSecret,
+				WeChatAppID:      s.cfg.WeChat.MiniAppID,
+				InstanceID:       s.cfg.App.InstanceID,
+			},
+		)
+
+		s.startWineTicketOrderExpiryWorker(
+			runCtx,
+			wineTicketModule,
+			spawn,
+		)
+
+		giftWorker := wineTicketModule.NewGiftExpiryWorker(s.log)
+		spawn(func() { giftWorker.Run(runCtx) })
+
+		reminderProvider, providerErr := wechat.NewSubscriptionMessageProvider(
+			s.cfg.WeChat,
+			s.cfg.WineTicket,
+		)
+		if providerErr != nil {
+			cancel()
+			waitGroup.Wait()
+			return providerErr
+		}
+		expiryWorker := wineTicketModule.NewExpiryMaintenanceWorker(
+			reminderProvider,
+			s.cfg.App.InstanceID+":wine-ticket-expiry",
+			s.log,
+		).
+			WithRemindersEnabled(s.cfg.WineTicket.ReminderEnabled).
+			WithWeChatEnabled(s.cfg.WineTicket.WeChatReminderEnabled).
+			WithSendLease(4*s.cfg.WeChat.HTTPTimeout + time.Minute)
+		spawn(func() { expiryWorker.Run(runCtx) })
+
+		if s.cfg.WineTicket.ReconciliationEnabled {
+			worker := wineTicketModule.NewIntegrityWorker(s.log).
+				ConfigureSchedule(
+					s.cfg.App.InstanceID,
+					s.cfg.WineTicket.ReconciliationDailyStart,
+					s.cfg.WineTicket.ReconciliationLeaseDuration,
+				).
+				ConfigureBounds(
+					s.cfg.WineTicket.ReconciliationBatchSize,
+					s.cfg.WineTicket.ReconciliationBatchInterval,
+					s.cfg.WineTicket.ReconciliationSweepInterval,
+				)
+			spawn(func() { worker.Run(runCtx) })
+		}
+
+		if s.cfg.AfterSale.WorkerEnabled &&
+			s.cfg.AfterSale.RefundExecutionEnabled &&
+			s.deps.RefundProvider != nil {
+			afterSaleService := aftersale.NewService(
+				s.cfg, s.deps.DB, s.deps.IDGen,
+			)
+			returnService := deliveryreturn.NewService(
+				s.cfg, s.deps.DB, s.deps.Redis, s.deps.IDGen,
+			).WithAfterSale(afterSaleService)
+			returnService.WithReturnSettlementHandler(
+				wineTicketModule.ReturnSettlement(afterSaleService),
+			)
+			service := refund.NewService(
+				s.cfg,
+				s.deps.DB,
+				s.deps.IDGen,
+				s.deps.RefundProvider,
+			).
+				WithRefundSettlementHandler(
+					wineTicketModule.PurchaseRefundSettlement(),
+				).
+				WithRefundSettlementHandler(
+					wineTicketModule.RenewalRefundSettlement(),
+				).
+				WithDeliveryReturnClosure(returnService)
+			worker := refund.NewWorker(
+				s.cfg, service, s.deps.RefundProvider, s.log,
+			)
+			spawn(func() { worker.Run(runCtx) })
+		}
 	}
 
 	if selected("outbox-publisher") && s.cfg.Feature.MQPublisherEnabled {
@@ -213,4 +326,32 @@ func (s *Server) RunMQWorker(ctx context.Context, role string) error {
 		s.closeInfra()
 		return runErr
 	}
+}
+
+// startWineTicketOrderExpiryWorker 确保即使未配置远程支付机构，
+// 本地订单过期仍归选定的维护进程负责。
+// 支付机构对账可以关闭，但释放本地已过期未支付订单不能关闭。
+func (s *Server) startWineTicketOrderExpiryWorker(
+	ctx context.Context,
+	module *wineticket.Module,
+	spawn func(func()),
+) {
+	if !s.cfg.Order.ExpiryWorkerEnabled {
+		return
+	}
+	providers := make([]order.PaymentProvider, 0, 1)
+	if s.deps.PaymentProvider != nil {
+		providers = append(providers, s.deps.PaymentProvider)
+	}
+	worker := order.NewExpiryWorker(
+		s.cfg,
+		s.deps.DB,
+		s.deps.IDGen,
+		s.deps.Metrics,
+		s.log,
+		providers...,
+	).
+		WithPaymentSettlementHandler(module.PurchasePaymentSettlement()).
+		WithPaymentSettlementHandler(module.RenewalPaymentSettlement())
+	spawn(func() { worker.Run(ctx) })
 }

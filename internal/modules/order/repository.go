@@ -163,7 +163,12 @@ func (r *Repository) CreateOutbox(ctx context.Context, tx *gorm.DB, row OutboxEv
 
 // ListCustomerOrders 查询用户订单列表。
 func (r *Repository) ListCustomerOrders(ctx context.Context, customerID uint64, filters CustomerOrderListFilters, query pagination.Query) ([]Order, error) {
-	db := r.db.WithContext(ctx).Where("customer_id = ? AND deleted_at IS NULL", customerID)
+	db := r.db.WithContext(ctx).Where(
+		"customer_id = ? AND order_type = ? AND settlement_mode = ? AND deleted_at IS NULL",
+		customerID,
+		retailOrderType,
+		cashSettlementMode,
+	)
 	if filters.Status != "" {
 		db = db.Where("status = ?", filters.Status)
 	}
@@ -223,7 +228,13 @@ func (r *Repository) LatestPaymentByOrder(ctx context.Context, orderID uint64) (
 // GetCustomerOrder 获取用户订单。
 func (r *Repository) GetCustomerOrder(ctx context.Context, customerID uint64, orderID uint64) (Order, []OrderItem, error) {
 	var row Order
-	if err := r.db.WithContext(ctx).Where("id = ? AND customer_id = ? AND deleted_at IS NULL", orderID, customerID).First(&row).Error; err != nil {
+	if err := r.db.WithContext(ctx).Where(
+		"id = ? AND customer_id = ? AND order_type = ? AND settlement_mode = ? AND deleted_at IS NULL",
+		orderID,
+		customerID,
+		retailOrderType,
+		cashSettlementMode,
+	).First(&row).Error; err != nil {
 		return Order{}, nil, err
 	}
 	items, err := r.OrderItems(ctx, r.db, orderID)
@@ -235,7 +246,13 @@ func (r *Repository) LockCustomerOrder(ctx context.Context, tx *gorm.DB, custome
 	var row Order
 	err := tx.WithContext(ctx).
 		Clauses(clause.Locking{Strength: "UPDATE"}).
-		Where("id = ? AND customer_id = ? AND deleted_at IS NULL", orderID, customerID).
+		Where(
+			"id = ? AND customer_id = ? AND order_type = ? AND settlement_mode = ? AND deleted_at IS NULL",
+			orderID,
+			customerID,
+			retailOrderType,
+			cashSettlementMode,
+		).
 		First(&row).Error
 	return row, err
 }
@@ -277,14 +294,42 @@ func (r *Repository) ClaimNextReconcilablePayment(ctx context.Context, provider 
 	var payment Payment
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Table("payments AS p").Select("p.*").
-			Joins("JOIN orders o ON o.id = p.order_id AND o.deleted_at IS NULL").
+			Joins("LEFT JOIN orders o ON o.id = p.order_id AND o.deleted_at IS NULL").
 			Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
-			Where("p.provider = ? AND p.status IN ? AND ((p.next_reconcile_at IS NOT NULL AND p.next_reconcile_at <= ?) OR (p.next_reconcile_at IS NULL AND (p.status = 'pending' OR p.updated_at <= ?))) AND p.expires_at > ? AND p.deleted_at IS NULL AND o.status = 'pending_payment'", provider, []string{"creating", "pending"}, now, staleBefore, now).
+			Where(`
+				p.provider = ?
+				AND p.status IN ?
+				AND (
+					(p.next_reconcile_at IS NOT NULL AND p.next_reconcile_at <= ?)
+					OR (
+						p.next_reconcile_at IS NULL
+						AND p.status IN ('creating', 'pending')
+						AND (p.status = 'pending' OR p.updated_at <= ?)
+					)
+				)
+				AND p.deleted_at IS NULL
+				AND (
+					(
+						COALESCE(p.biz_type, ?) = ?
+						AND o.status = 'pending_payment'
+						AND p.expires_at > ?
+					)
+					OR (
+						p.biz_type IS NOT NULL
+						AND p.biz_type <> ?
+					)
+				)
+			`, provider, []string{"creating", "pending", "exception"}, now, staleBefore,
+				RetailOrderPaymentBusiness, RetailOrderPaymentBusiness, now, RetailOrderPaymentBusiness).
 			Order("COALESCE(p.next_reconcile_at,p.updated_at) ASC, p.id ASC").Take(&payment).Error; err != nil {
 			return err
 		}
 		leaseUntil := now.Add(30 * time.Second)
-		result := tx.Model(&Payment{}).Where("id = ? AND status IN ?", payment.ID, []string{"creating", "pending"}).
+		result := tx.Model(&Payment{}).Where(
+			"id = ? AND status IN ?",
+			payment.ID,
+			[]string{"creating", "pending", "exception"},
+		).
 			Updates(map[string]any{"next_reconcile_at": leaseUntil, "reconcile_attempts": gorm.Expr("reconcile_attempts + 1"), "version": gorm.Expr("version + 1")})
 		if result.Error != nil {
 			return result.Error
@@ -347,11 +392,42 @@ func (r *Repository) LockPaymentByNo(ctx context.Context, tx *gorm.DB, paymentNo
 	return payment, err
 }
 
+// LockPaymentByID 锁定一条公共支付记录，不假设其关联零售订单。
+func (r *Repository) LockPaymentByID(ctx context.Context, tx *gorm.DB, paymentID uint64) (Payment, error) {
+	var payment Payment
+	err := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ? AND deleted_at IS NULL", paymentID).
+		First(&payment).Error
+	return payment, err
+}
+
 // GetPaymentByNo 按支付单号获取支付记录。
 func (r *Repository) GetPaymentByNo(ctx context.Context, tx *gorm.DB, paymentNo string, provider string) (Payment, error) {
 	var payment Payment
 	err := tx.WithContext(ctx).
 		Where("payment_no = ? AND provider = ? AND deleted_at IS NULL", paymentNo, provider).
+		First(&payment).Error
+	return payment, err
+}
+
+// GetPaymentByID 无锁加载一条公共支付记录。
+func (r *Repository) GetPaymentByID(ctx context.Context, db *gorm.DB, paymentID uint64) (Payment, error) {
+	if db == nil {
+		db = r.db
+	}
+	var payment Payment
+	err := db.WithContext(ctx).
+		Where("id = ? AND deleted_at IS NULL", paymentID).
+		First(&payment).Error
+	return payment, err
+}
+
+// GetBusinessPayment 加载不可变的业务与支付关系。
+func (r *Repository) GetBusinessPayment(ctx context.Context, bizType string, bizID uint64, provider string) (Payment, error) {
+	var payment Payment
+	err := r.db.WithContext(ctx).
+		Where("biz_type = ? AND biz_id = ? AND provider = ? AND deleted_at IS NULL", bizType, bizID, provider).
+		Order("id DESC").
 		First(&payment).Error
 	return payment, err
 }
@@ -408,6 +484,14 @@ func (r *Repository) CustomerPhoneBound(ctx context.Context, tx *gorm.DB, custom
 func (r *Repository) CreatePaymentCallbackIfAbsent(ctx context.Context, tx *gorm.DB, row PaymentCallback) (bool, error) {
 	result := tx.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&row)
 	return result.RowsAffected == 1, result.Error
+}
+
+// PaymentCallbackByEvent 加载支付机构重复通知的持久化结果，
+// 避免此前失败的回调被错误确认成功。
+func (r *Repository) PaymentCallbackByEvent(ctx context.Context, tx *gorm.DB, provider, eventID string) (PaymentCallback, error) {
+	var row PaymentCallback
+	err := tx.WithContext(ctx).Where("provider=? AND provider_event_id=?", provider, eventID).Take(&row).Error
+	return row, err
 }
 
 // UpdatePaymentCallback 更新支付回调。

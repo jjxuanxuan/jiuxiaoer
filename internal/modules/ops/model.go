@@ -57,14 +57,9 @@ type AssignmentReq struct {
 	Reason          string `json:"reason" binding:"required,min=2,max=255"`
 	ExpectedVersion uint   `json:"expected_version" binding:"required,min=1"`
 }
-type ForceCompleteRequestReq struct {
-	CheckerAdminID  string `json:"checker_admin_id" binding:"required"`
+type ForceCompleteReq struct {
 	ReasonCode      string `json:"reason_code" binding:"required,max=64"`
 	Reason          string `json:"reason" binding:"required,min=2,max=255"`
-	ExpectedVersion uint   `json:"expected_version" binding:"required,min=1"`
-}
-type ForceCompleteReq struct {
-	ApprovalID      string `json:"approval_id" binding:"required"`
 	ExpectedVersion uint   `json:"expected_version" binding:"required,min=1"`
 }
 type CancelReq struct {
@@ -93,38 +88,6 @@ type AssignmentDTO struct {
 	VersionBefore   uint   `json:"version_before"`
 	VersionAfter    uint   `json:"version_after"`
 	CreatedAt       string `json:"created_at"`
-}
-type Approval struct {
-	ID              uint64
-	Action          string
-	ResourceType    string
-	ResourceID      uint64
-	MakerAdminID    uint64
-	CheckerAdminID  uint64
-	ReasonCode      string
-	Reason          string
-	ExpectedVersion uint
-	Status          string
-	ExpiresAt       time.Time
-	ApprovedAt      *time.Time
-	RequestID       *string
-	CreatedAt       time.Time
-}
-
-// TableName 返回当前数据模型对应的数据库表名。
-func (Approval) TableName() string { return "admin_override_approvals" }
-
-type ApprovalDTO struct {
-	ID              string `json:"id"`
-	DeliveryOrderID string `json:"delivery_order_id"`
-	MakerAdminID    string `json:"maker_admin_id"`
-	CheckerAdminID  string `json:"checker_admin_id"`
-	ReasonCode      string `json:"reason_code"`
-	Reason          string `json:"reason"`
-	ExpectedVersion uint   `json:"expected_version"`
-	Status          string `json:"status"`
-	ExpiresAt       string `json:"expires_at"`
-	ApprovedAt      string `json:"approved_at,omitempty"`
 }
 type Outbox struct {
 	ID            uint64

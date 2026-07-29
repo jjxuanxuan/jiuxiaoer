@@ -45,6 +45,14 @@ func NewExpiryWorker(cfg config.Config, db *gorm.DB, idGen *snowflake.Generator,
 	return worker
 }
 
+// WithPaymentSettlementHandler 安装与 HTTP 回调服务相同的非零售结算处理器。
+func (w *ExpiryWorker) WithPaymentSettlementHandler(handler PaymentSettlementHandler) *ExpiryWorker {
+	if w != nil && w.service != nil {
+		w.service.WithPaymentSettlementHandler(handler)
+	}
+	return w
+}
+
 // Run 运行当前实例的核心处理流程。
 func (w *ExpiryWorker) Run(ctx context.Context) {
 	if w == nil || w.service == nil || w.service.repo.DB() == nil {
@@ -99,6 +107,21 @@ func (w *ExpiryWorker) ReconcileCreatingBatch(ctx context.Context, now time.Time
 		state, queryErr := w.service.payment.Query(providerCtx, payment.PaymentNo)
 		cancel()
 		if queryErr != nil {
+			bizType, _ := paymentBusiness(payment)
+			if bizType != RetailOrderPaymentBusiness &&
+				payment.ExpiresAt != nil && !payment.ExpiresAt.After(now) &&
+				(paygateway.IsCode(queryErr, "ORDER_NOT_EXIST") || paygateway.IsCode(queryErr, "ORDER_NOT_EXISTS")) {
+				state = ProviderPaymentState{
+					PaymentNo: payment.PaymentNo, Status: "CLOSED",
+					AppID: w.service.cfg.WeChat.MiniAppID, MchID: w.service.cfg.WeChat.PayMchID,
+					Amount: payment.Amount, Currency: payment.Currency, AmountPresent: true,
+				}
+				if _, applyErr := w.service.ApplyProviderPaymentState(ctx, payment.PaymentNo, payment.Provider, state, "system", 0, "reconcile-expired:"+payment.PaymentNo); applyErr != nil {
+					return processed, applyErr
+				}
+				processed++
+				continue
+			}
 			if markErr := w.service.MarkPaymentReconcileError(ctx, payment, queryErr); markErr != nil {
 				return processed, markErr
 			}
@@ -106,6 +129,36 @@ func (w *ExpiryWorker) ReconcileCreatingBatch(ctx context.Context, now time.Time
 			w.log.Warn("payment reconciliation query failed", slog.String("payment_no", payment.PaymentNo), slog.String("provider_code", paygateway.Code(queryErr, "PROVIDER_UNAVAILABLE")), slog.String("provider_request_id", paygateway.RequestID(queryErr)), slog.Bool("retryable", paygateway.Retryable(queryErr)))
 			processed++
 			continue
+		}
+		bizType, _ := paymentBusiness(payment)
+		if bizType != RetailOrderPaymentBusiness && payment.ExpiresAt != nil && !payment.ExpiresAt.After(now) {
+			status := strings.ToUpper(strings.TrimSpace(state.Status))
+			switch status {
+			case "SUCCESS", "CLOSED", "REVOKED", "PAYERROR":
+				// 在下方应用支付机构终态事实。
+			case "USERPAYING":
+				if _, err := w.service.ApplyProviderPaymentState(ctx, payment.PaymentNo, payment.Provider, state, "system", 0, "reconcile:"+payment.PaymentNo); err != nil {
+					return processed, err
+				}
+				next := now.Add(15 * time.Second)
+				if err := w.service.repo.UpdatePayment(ctx, w.service.repo.DB(), payment.ID, map[string]any{"next_reconcile_at": next}); err != nil {
+					return processed, err
+				}
+				processed++
+				continue
+			default:
+				closeCtx, closeCancel := context.WithTimeout(ctx, 5*time.Second)
+				closeResult, closeErr := w.service.payment.Close(closeCtx, payment.PaymentNo)
+				closeCancel()
+				if closeErr != nil {
+					if markErr := w.service.MarkPaymentReconcileError(ctx, payment, closeErr); markErr != nil {
+						return processed, markErr
+					}
+					return processed, closeErr
+				}
+				w.log.Info("payment provider call completed", slog.String("operation", "payment.close"), slog.String("payment_no", payment.PaymentNo), slog.String("provider_request_id", closeResult.RequestID))
+				state.Status = "CLOSED"
+			}
 		}
 		if _, err := w.service.ApplyProviderPaymentState(ctx, payment.PaymentNo, payment.Provider, state, "system", 0, "reconcile:"+payment.PaymentNo); err != nil {
 			w.metrics.IncOrderExpiry("payment_provider_state_failed")

@@ -126,6 +126,15 @@ make run
 | `make seed` | 写入或更新本地演示数据 |
 
 如需把 Worker 拆成独立进程，应为每个进程设置不同的 `JXE_INSTANCE_ID` 和 `JXE_SNOWFLAKE_NODE_ID`，避免节点租约冲突。
+酒票数据库后台闭环可使用
+`JXE_WINE_TICKET_MAINTENANCE_OWNER=worker JXE_WORKER_ROLE=wine-ticket-maintenance /app/jiuxiaoer-worker`
+独立运行；默认 `JXE_WINE_TICKET_MAINTENANCE_OWNER=api`，保持 API
+进程内任务的兼容行为。独立角色会拒绝 owner 不是 `worker` 的配置。
+该角色不依赖 RabbitMQ，负责支付收敛、转赠超时、T-7/到期、退款执行和酒票对账。
+由于支付过期和退款执行是普通零售与酒票共用的任务队列，owner 切到
+`worker` 时这两类共享任务也整体转移到该进程；API 不再启动它们，保证
+普通零售与酒票都不会漏扫或双跑。同一环境的所有 API 和该 Worker 必须
+使用相同 owner 值。
 
 ## 项目结构
 

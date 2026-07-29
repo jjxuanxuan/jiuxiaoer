@@ -199,7 +199,23 @@ func (h *Hub) DeliverMerchant(ctx context.Context, wakeup MerchantWakeup) error 
 }
 
 func validMerchantWakeup(wakeup MerchantWakeup) bool {
-	if wakeup.AccountID == 0 || wakeup.Event.EventID == "" || wakeup.Event.OrderID == "" || wakeup.Event.ShopID == "" || wakeup.Event.SoundKey != "new_paid_order" || wakeup.Event.OccurredAt.IsZero() {
+	if wakeup.AccountID == 0 || wakeup.Event.EventID == "" || wakeup.Event.OrderID == "" || wakeup.Event.ShopID == "" || wakeup.Event.OccurredAt.IsZero() {
+		return false
+	}
+	switch wakeup.Event.EventType {
+	case "":
+		if wakeup.Event.SoundKey != "new_paid_order" {
+			return false
+		}
+	case "store.order.paid":
+		if wakeup.Event.SoundKey != "new_paid_order" {
+			return false
+		}
+	case "store.wine_ticket.redemption.created":
+		if wakeup.Event.SoundKey != "new_wine_ticket_redemption" {
+			return false
+		}
+	default:
 		return false
 	}
 	orderID, orderErr := strconv.ParseUint(wakeup.Event.OrderID, 10, 64)

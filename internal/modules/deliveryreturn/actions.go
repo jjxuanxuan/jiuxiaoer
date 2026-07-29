@@ -98,9 +98,20 @@ func (s *Service) Approve(ctx context.Context, claims *auth.Claims, method, rout
 		if err != nil {
 			return returnNotFound()
 		}
+		order, err := s.repo.LockOrder(ctx, tx, ref.OrderID)
+		if err != nil {
+			return problem.Conflict("INVALID_RETURN_STATE", "delivery return order is unavailable")
+		}
+		handler, err := s.settlementHandler(order)
+		if err != nil {
+			return err
+		}
 		row, err := s.repo.ReturnByID(ctx, tx, id, true)
 		if err != nil {
 			return returnNotFound()
+		}
+		if err := validateReturnSettlementRoute(handler, row); err != nil {
+			return err
 		}
 		if row.Version != req.ExpectedVersion {
 			return problem.Conflict("VERSION_CONFLICT", "delivery return version changed")
@@ -108,7 +119,7 @@ func (s *Service) Approve(ctx context.Context, claims *auth.Claims, method, rout
 		if row.Status != StatusRequested || delivery.Status != "delivering" || delivery.PickedUpAt == nil {
 			return problem.Conflict("INVALID_RETURN_STATE", "delivery return cannot be approved in its current state")
 		}
-		if err := s.approveReturnLocked(ctx, tx, &row, delivery, actorID, note); err != nil {
+		if err := s.approveReturnLocked(ctx, tx, &row, delivery, order, handler, actorID, note); err != nil {
 			if errors.Is(err, aftersale.ErrDeliveryReturnManualReview) {
 				if transitionErr := s.markManualReview(ctx, tx, &row, actorID, key, "customer after-sale or refund reservation conflicts with full refund"); transitionErr != nil {
 					return transitionErr
@@ -135,20 +146,34 @@ func (s *Service) Approve(ctx context.Context, claims *auth.Claims, method, rout
 	return persisted.DTO, persisted.err()
 }
 
-func (s *Service) approveReturnLocked(ctx context.Context, tx *gorm.DB, row *Return, delivery DeliveryOrder, actorID uint64, note string) error {
-	result, err := s.afterSales.CreateSystemDeliveryReturnWithTx(ctx, tx, aftersale.SystemDeliveryReturnRequest{
-		DeliveryReturnID: row.ID, OrderID: row.OrderID, ApprovedBy: actorID,
-		ReasonCode: row.ReasonCode, Description: note,
-	})
+func (s *Service) approveReturnLocked(
+	ctx context.Context,
+	tx *gorm.DB,
+	row *Return,
+	delivery DeliveryOrder,
+	order OrderRef,
+	handler ReturnSettlementHandler,
+	actorID uint64,
+	note string,
+) error {
+	result, err := handler.Approve(ctx, tx, *row, delivery, order, actorID, note)
 	if err != nil {
 		return err
+	}
+	if result.AfterSaleID == 0 || result.SettlementBizID == nil || *result.SettlementBizID == 0 {
+		return problem.Internal("delivery return settlement approval is incomplete")
+	}
+	if result.OrderStatus == "" || result.AfterSaleStatus == "" {
+		return problem.Internal("delivery return settlement order projection is incomplete")
 	}
 	now := s.now().UTC()
 	deadline := now.Add(s.cfg.DeliveryReturn.ReceiptDeadlineAfter)
 	from := row.Status
 	updated, err := s.repo.UpdateReturnVersioned(ctx, tx, *row, map[string]any{
 		"status": StatusReturning, "after_sale_id": result.AfterSaleID,
-		"approved_by": actorID, "approved_at": now, "receipt_deadline_at": deadline,
+		"settlement_type": handler.SettlementType(), "settlement_biz_id": *result.SettlementBizID,
+		"settlement_status": "processing",
+		"approved_by":       actorID, "approved_at": now, "receipt_deadline_at": deadline,
 	})
 	if err != nil {
 		return err
@@ -167,17 +192,22 @@ func (s *Service) approveReturnLocked(ctx context.Context, tx *gorm.DB, row *Ret
 		return err
 	}
 	if err := s.repo.UpdateOrder(ctx, tx, row.OrderID, map[string]any{
-		"status": "refunding", "delivery_status": "returning", "after_sale_status": "processing", "version": gorm.Expr("version+1"),
+		"status": result.OrderStatus, "delivery_status": "returning",
+		"after_sale_status": result.AfterSaleStatus, "version": gorm.Expr("version+1"),
 	}); err != nil {
 		return err
 	}
 	row.Status, row.AfterSaleID, row.ApprovedBy, row.ApprovedAt, row.ReceiptDeadlineAt = StatusReturning, &result.AfterSaleID, &actorID, &now, &deadline
+	row.SettlementType, row.SettlementBizID, row.SettlementStatus = stringPointer(handler.SettlementType()), result.SettlementBizID, stringPointer("processing")
 	row.Version++
 	return s.writeFacts(ctx, tx, *row, "admin", &actorID, "approve", from, StatusReturning, "")
 }
 
 func (s *Service) markManualReview(ctx context.Context, tx *gorm.DB, row *Return, actorID uint64, key, detail string) error {
 	from := row.Status
+	// 该冲突在审批创建结算业务记录前发现。
+	// 独立结算轴应保持 not_started：
+	// 零售 Contract 记录只有绑定 settlement_biz_id 后才能进入异常状态。
 	updated, err := s.repo.UpdateReturnVersioned(ctx, tx, *row, map[string]any{"status": StatusDisputed})
 	if err != nil || !updated {
 		if err != nil {
@@ -354,8 +384,13 @@ func (s *Service) Receive(ctx context.Context, claims *auth.Claims, method, rout
 		if err != nil {
 			return returnNotFound()
 		}
-		if _, err := s.repo.LockOrder(ctx, tx, ref.OrderID); err != nil {
+		order, err := s.repo.LockOrder(ctx, tx, ref.OrderID)
+		if err != nil {
 			return problem.Conflict("INVALID_RETURN_STATE", "delivery return order is unavailable")
+		}
+		handler, err := s.settlementHandler(order)
+		if err != nil {
+			return err
 		}
 		// 退款回调会在退回关闭钩子前锁定售后单。
 		// 此处保持相同的相对顺序，避免回调与收货之间形成循环等待。
@@ -369,6 +404,9 @@ func (s *Service) Receive(ctx context.Context, claims *auth.Claims, method, rout
 		}
 		if row.Version != req.ExpectedVersion {
 			return problem.Conflict("VERSION_CONFLICT", "delivery return version changed")
+		}
+		if err := validateReturnSettlementRoute(handler, row); err != nil {
+			return err
 		}
 		if row.Status != StatusArrived && row.Status != StatusException {
 			return problem.Conflict("INVALID_RETURN_STATE", "delivery return is not ready for receipt")
@@ -431,12 +469,17 @@ func (s *Service) Receive(ctx context.Context, claims *auth.Claims, method, rout
 				Note: optionalString(input.Note),
 			})
 		}
-		stocks := map[uint64]ProductStock{}
-		if len(restockIDs) > 0 {
-			stocks, err = s.repo.LockStocks(ctx, tx, uniqueIDs(restockIDs))
-			if err != nil {
-				return err
-			}
+		settlementPlan, stocks, err := s.prepareReceivedSettlementAndLockStocks(
+			ctx,
+			tx,
+			row,
+			afterSale,
+			order,
+			handler,
+			restockIDs,
+		)
+		if err != nil {
+			return err
 		}
 		available := map[uint64]int{}
 		totals := map[uint64]int{}
@@ -508,7 +551,15 @@ func (s *Service) Receive(ctx context.Context, claims *auth.Claims, method, rout
 		if err := s.writeFacts(ctx, tx, row, "merchant", &actorID, "receive", from, StatusReceived, key); err != nil {
 			return err
 		}
-		if err := s.TryCloseByAfterSaleWithTx(ctx, tx, afterSale.ID); err != nil {
+		if err := s.trySettleReceivedLocked(
+			ctx,
+			tx,
+			&row,
+			afterSale,
+			order,
+			handler,
+			settlementPlan,
+		); err != nil {
 			return err
 		}
 		aggregate, err := s.repo.AggregateTx(ctx, tx, row.ID)
@@ -523,7 +574,9 @@ func (s *Service) Receive(ctx context.Context, claims *auth.Claims, method, rout
 	}
 	// 收货事务可能在并发退款回调提交前已经开始。使用新事务重新计算关闭状态，
 	// 避免 MySQL REPEATABLE READ 让已完全结束的退回滞留在 received 状态。
-	if persisted.ErrorCode == "" && persisted.DTO.AfterSaleID != "" {
+	if persisted.ErrorCode == "" &&
+		persisted.DTO.SettlementType == SettlementRetailCashRefund &&
+		persisted.DTO.AfterSaleID != "" {
 		if afterSaleID, parseErr := parseID(persisted.DTO.AfterSaleID); parseErr == nil {
 			_ = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 				return s.TryCloseByAfterSaleWithTx(ctx, tx, afterSaleID)
@@ -533,6 +586,78 @@ func (s *Service) Receive(ctx context.Context, claims *auth.Claims, method, rout
 	return persisted.DTO, persisted.err()
 }
 
+func (s *Service) prepareReceivedSettlementAndLockStocks(
+	ctx context.Context,
+	tx *gorm.DB,
+	row Return,
+	afterSale AfterSale,
+	order OrderRef,
+	handler ReturnSettlementHandler,
+	restockIDs []uint64,
+) (ReturnSettlementReceivePlan, map[uint64]ProductStock, error) {
+	plan, err := prepareReturnSettlementReceived(ctx, tx, handler, row, afterSale, order)
+	if err != nil {
+		return nil, nil, err
+	}
+	stocks := map[uint64]ProductStock{}
+	if len(restockIDs) == 0 {
+		return plan, stocks, nil
+	}
+	stocks, err = s.repo.LockStocks(ctx, tx, uniqueIDs(restockIDs))
+	if err != nil {
+		return nil, nil, err
+	}
+	return plan, stocks, nil
+}
+
+func (s *Service) trySettleReceivedLocked(
+	ctx context.Context,
+	tx *gorm.DB,
+	row *Return,
+	afterSale AfterSale,
+	order OrderRef,
+	handler ReturnSettlementHandler,
+	settlementPlan ReturnSettlementReceivePlan,
+) error {
+	if row.Status != StatusReceived && row.Status != StatusException {
+		return nil
+	}
+	complete, err := s.repo.ClosureComplete(ctx, tx, afterSale.ID, row.ID)
+	if err != nil || !complete {
+		return err
+	}
+	ready, err := applyReturnSettlementReceived(
+		ctx,
+		tx,
+		handler,
+		settlementPlan,
+		*row,
+		afterSale,
+		order,
+	)
+	if err != nil || !ready {
+		return err
+	}
+	now := s.now().UTC()
+	updated, err := s.repo.UpdateReturnVersioned(ctx, tx, *row, map[string]any{
+		"status": StatusClosed, "closed_at": now, "active_delivery_order_id": nil,
+		"settlement_status": "succeeded", "settled_at": now,
+	})
+	if err != nil {
+		return err
+	}
+	if !updated {
+		return problem.Conflict("VERSION_CONFLICT", "delivery return version changed")
+	}
+	if err := deliveryverification.Invalidate(ctx, tx, s.ids, row.DeliveryOrderID, "delivery_return_closed"); err != nil {
+		return err
+	}
+	from := row.Status
+	row.Status, row.ClosedAt, row.ActiveDeliveryOrderID, row.Version = StatusClosed, &now, nil, row.Version+1
+	row.SettlementStatus, row.SettledAt = stringPointer("succeeded"), &now
+	return s.writeFacts(ctx, tx, *row, "system", nil, "close", from, StatusClosed, "")
+}
+
 func (s *Service) TryCloseByAfterSaleWithTx(ctx context.Context, tx *gorm.DB, afterSaleID uint64) error {
 	row, err := s.repo.ReturnByAfterSale(ctx, tx, afterSaleID, true)
 	if IsNotFound(err) {
@@ -540,6 +665,9 @@ func (s *Service) TryCloseByAfterSaleWithTx(ctx context.Context, tx *gorm.DB, af
 	}
 	if err != nil || (row.Status != StatusReceived && row.Status != StatusException) {
 		return err
+	}
+	if row.SettlementType == nil || *row.SettlementType != SettlementRetailCashRefund {
+		return problem.Internal("refund closure reached a non-cash delivery return")
 	}
 	refundStatus, err := s.repo.RefundStatus(ctx, tx, afterSaleID)
 	if err != nil || refundStatus != "succeeded" {
@@ -552,6 +680,7 @@ func (s *Service) TryCloseByAfterSaleWithTx(ctx context.Context, tx *gorm.DB, af
 	now := s.now().UTC()
 	updated, err := s.repo.UpdateReturnVersioned(ctx, tx, row, map[string]any{
 		"status": StatusClosed, "closed_at": now, "active_delivery_order_id": nil,
+		"settlement_status": "succeeded", "settled_at": now,
 	})
 	if err != nil || !updated {
 		return err
@@ -561,6 +690,7 @@ func (s *Service) TryCloseByAfterSaleWithTx(ctx context.Context, tx *gorm.DB, af
 	}
 	from := row.Status
 	row.Status, row.ClosedAt, row.ActiveDeliveryOrderID, row.Version = StatusClosed, &now, nil, row.Version+1
+	row.SettlementStatus, row.SettledAt = stringPointer("succeeded"), &now
 	return s.writeFacts(ctx, tx, row, "system", nil, "close", from, StatusClosed, "")
 }
 
@@ -585,11 +715,12 @@ func (s *Service) ReconcileRefundWithTx(ctx context.Context, tx *gorm.DB, afterS
 		return err
 	}
 	from := row.Status
-	updated, err := s.repo.UpdateReturnVersioned(ctx, tx, row, map[string]any{"status": StatusException})
+	updated, err := s.repo.UpdateReturnVersioned(ctx, tx, row, map[string]any{"status": StatusException, "settlement_status": "exception"})
 	if err != nil || !updated {
 		return err
 	}
 	row.Status, row.Version = StatusException, row.Version+1
+	row.SettlementStatus = stringPointer("exception")
 	return s.writeFacts(ctx, tx, row, "system", nil, "refund_exception", from, StatusException, "")
 }
 
@@ -602,6 +733,21 @@ func (s *Service) CreateApproveFromIncidentWithTx(ctx context.Context, tx *gorm.
 	delivery, err := s.repo.LockDelivery(ctx, tx, deliveryID)
 	if err != nil || delivery.Status != "delivering" || delivery.PickedUpAt == nil {
 		return 0, problem.Conflict("INVALID_RETURN_STATE", "incident delivery is not returnable")
+	}
+	order, err := s.repo.LockOrder(ctx, tx, delivery.OrderID)
+	if err != nil {
+		return 0, problem.Conflict("INVALID_RETURN_STATE", "delivery return order is unavailable")
+	}
+	handler, err := s.settlementHandler(order)
+	if err != nil {
+		return 0, err
+	}
+	binding, err := handler.InitialBinding(ctx, tx, order)
+	if err != nil {
+		return 0, err
+	}
+	if err := validateReturnSettlementBinding(handler, binding); err != nil {
+		return 0, err
 	}
 	incident, err := s.repo.Incident(ctx, tx, incidentID)
 	if err != nil || incident.DeliveryOrderID != delivery.ID {
@@ -616,7 +762,9 @@ func (s *Service) CreateApproveFromIncidentWithTx(ctx context.Context, tx *gorm.
 			ID: s.ids.Next(), DeliveryOrderID: delivery.ID, ActiveDeliveryOrderID: &active,
 			OrderID: delivery.OrderID, ShopID: delivery.ShopID, RiderID: valueOrZero(delivery.RiderID),
 			IncidentID: &incidentID, ReasonCode: reason, Status: StatusRequested,
-			InitiatorType: "admin", InitiatorID: actorID, RequestNote: optionalString(note),
+			SettlementType: optionalString(binding.SettlementType), SettlementBizID: binding.SettlementBizID,
+			SettlementStatus: stringPointer("not_started"),
+			InitiatorType:    "admin", InitiatorID: actorID, RequestNote: optionalString(note),
 			RequestedAt: now, Version: 1, CreatedAt: now, UpdatedAt: now,
 		}
 		row.ReturnNo = "DR" + idString(row.ID)
@@ -634,13 +782,16 @@ func (s *Service) CreateApproveFromIncidentWithTx(ctx context.Context, tx *gorm.
 	} else if row.IncidentID != nil && *row.IncidentID != incidentID {
 		return 0, problem.Conflict("RETURN_ALREADY_ACTIVE", "delivery has a return linked to another incident")
 	}
+	if err := validateReturnSettlementRoute(handler, row); err != nil {
+		return 0, err
+	}
 	if row.Status == StatusReturning || row.Status == StatusArrived || row.Status == StatusReceived || row.Status == StatusClosed {
 		return row.ID, nil
 	}
 	if row.Status != StatusRequested {
 		return 0, problem.Conflict("INVALID_RETURN_STATE", "active delivery return requires manual review")
 	}
-	if err := s.approveReturnLocked(ctx, tx, &row, delivery, actorID, note); err != nil {
+	if err := s.approveReturnLocked(ctx, tx, &row, delivery, order, handler, actorID, note); err != nil {
 		return 0, err
 	}
 	return row.ID, nil

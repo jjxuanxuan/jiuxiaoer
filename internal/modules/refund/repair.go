@@ -81,6 +81,9 @@ func (s *Service) RepairStored(ctx context.Context, claims *auth.Claims, method,
 	if err != nil {
 		return RepairResult{}, err
 	}
+	if err := requireRetailAdminRefund(row); err != nil {
+		return RepairResult{}, err
+	}
 	if row.Provider != s.provider.Code() {
 		return RepairResult{}, problem.Conflict("REFUND_PROVIDER_MISMATCH", "refund provider does not match configured provider")
 	}
@@ -136,6 +139,9 @@ func (s *Service) RepairStored(ctx context.Context, claims *auth.Claims, method,
 		current, lockErr := s.repo.LockByNo(ctx, tx, refundNo)
 		if lockErr != nil {
 			return lockErr
+		}
+		if gateErr := requireRetailAdminRefund(current); gateErr != nil {
+			return gateErr
 		}
 		result.BeforeStatus = current.Status
 		if current.Version != row.Version {
@@ -207,7 +213,11 @@ func (s *Service) RepairStored(ctx context.Context, claims *auth.Claims, method,
 				return updateErr
 			}
 			if s.deliveryReturnClosure != nil {
-				if closureErr := s.deliveryReturnClosure.ReconcileRefundWithTx(ctx, tx, current.AfterSaleID); closureErr != nil {
+				afterSaleID, _, linkErr := retailRefundLinks(current)
+				if linkErr != nil {
+					return linkErr
+				}
+				if closureErr := s.deliveryReturnClosure.ReconcileRefundWithTx(ctx, tx, afterSaleID); closureErr != nil {
 					return closureErr
 				}
 			}

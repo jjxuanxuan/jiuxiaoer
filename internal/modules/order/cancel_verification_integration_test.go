@@ -50,7 +50,12 @@ func TestCustomerCancelInvalidatesEarlyVerificationMySQL(t *testing.T) {
 	if err := db.Create(&order.OrderItem{ID: ids.Next(), OrderID: orderID, ShopProductID: shopProductID, ProductID: 5001, ProductSnapshot: []byte(`{"name":"legacy early delivery"}`), Quantity: 1, SalePriceAmount: 100, TotalAmount: 100}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&order.Payment{ID: paymentID, PaymentNo: fmt.Sprintf("PAY-CANCEL-VERIFY-%d", paymentID), OrderID: orderID, CustomerID: customerID, Channel: "miniapp", Provider: "wechat", Status: "pending", Amount: 100, Currency: "CNY", ExpiresAt: &expiresAt}).Error; err != nil {
+	payment := retailOrderPaymentFixture(t, orderID, order.Payment{
+		ID: paymentID, PaymentNo: fmt.Sprintf("PAY-CANCEL-VERIFY-%d", paymentID),
+		CustomerID: customerID, Channel: "miniapp", Provider: "wechat",
+		Status: "pending", Amount: 100, Currency: "CNY", ExpiresAt: &expiresAt,
+	})
+	if err := db.Create(&payment).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Table("delivery_orders").Create(map[string]any{"id": deliveryID, "order_id": orderID, "shop_id": 4201, "status": "pending_assign", "assignment_version": 1, "dispatch_status": "pending", "pickup_ready_status": "waiting_store"}).Error; err != nil {

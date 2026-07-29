@@ -11,6 +11,9 @@ type StoreOrderActionReq struct {
 type StoreOrderSummaryDTO struct {
 	ID                  string                   `json:"id"`
 	OrderNo             string                   `json:"order_no"`
+	OrderType           string                   `json:"order_type"`
+	SettlementMode      string                   `json:"settlement_mode"`
+	SettlementLabel     string                   `json:"settlement_label"`
 	ShopID              string                   `json:"shop_id"`
 	Status              string                   `json:"status"`
 	PayStatus           string                   `json:"pay_status"`
@@ -27,6 +30,9 @@ type StoreOrderSummaryDTO struct {
 	CreatedAt           string                   `json:"created_at"`
 	UpdatedAt           string                   `json:"updated_at"`
 	PaidAt              string                   `json:"paid_at,omitempty"`
+	ScheduledStartAt    string                   `json:"scheduled_start_at,omitempty"`
+	ScheduledEndAt      string                   `json:"scheduled_end_at,omitempty"`
+	NotBeforeAt         string                   `json:"not_before_at,omitempty"`
 }
 
 type OrderItemDTO struct {
@@ -47,6 +53,9 @@ type OrderItemDTO struct {
 type StoreOrderDetailDTO struct {
 	ID                  string                       `json:"id"`
 	OrderNo             string                       `json:"order_no"`
+	OrderType           string                       `json:"order_type"`
+	SettlementMode      string                       `json:"settlement_mode"`
+	SettlementLabel     string                       `json:"settlement_label"`
 	ShopID              string                       `json:"shop_id"`
 	Status              string                       `json:"status"`
 	PayStatus           string                       `json:"pay_status"`
@@ -78,6 +87,9 @@ type StoreOrderDetailDTO struct {
 	CustomerContactMask string                       `json:"customer_contact_mask"`
 	DeliverySummary     *StoreDeliverySummaryDTO     `json:"delivery_summary"`
 	RecentLogs          []StoreOrderLogSummaryDTO    `json:"recent_logs"`
+	ScheduledStartAt    string                       `json:"scheduled_start_at,omitempty"`
+	ScheduledEndAt      string                       `json:"scheduled_end_at,omitempty"`
+	NotBeforeAt         string                       `json:"not_before_at,omitempty"`
 }
 
 type StoreShopSummaryDTO struct {
@@ -160,6 +172,9 @@ type StoreDeliverySummaryDTO struct {
 	Status            string `json:"status"`
 	PickupReadyStatus string `json:"pickup_ready_status"`
 	AssignmentVersion uint   `json:"assignment_version"`
+	ScheduledStartAt  string `json:"scheduled_start_at,omitempty"`
+	ScheduledEndAt    string `json:"scheduled_end_at,omitempty"`
+	NotBeforeAt       string `json:"not_before_at,omitempty"`
 }
 
 type StoreOrderLogSummaryDTO struct {

@@ -40,6 +40,10 @@ type Return struct {
 	RiderID               uint64
 	IncidentID            *uint64
 	AfterSaleID           *uint64
+	SettlementType        *string
+	SettlementBizID       *uint64
+	SettlementStatus      *string
+	SettledAt             *time.Time
 	ReasonCode            string
 	Status                string
 	InitiatorType         string
@@ -243,8 +247,12 @@ type OrderItem struct {
 func (OrderItem) TableName() string { return "order_items" }
 
 type OrderRef struct {
-	ID      uint64
-	Version int
+	ID             uint64
+	OrderType      string
+	SettlementMode string
+	PayStatus      string
+	PaidAmount     int64
+	Version        int
 }
 
 func (OrderRef) TableName() string { return "orders" }

@@ -15,7 +15,7 @@ concurrency:
 jobs:
   payment-refund:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     services:
       mysql:
         image: mysql:8.4
@@ -29,24 +29,110 @@ jobs:
           --health-interval=5s
           --health-timeout=5s
           --health-retries=20
+      redis:
+        image: redis:8
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+      rabbitmq:
+        image: rabbitmq:4-management
+        env:
+          RABBITMQ_DEFAULT_USER: jxe_gate
+          RABBITMQ_DEFAULT_PASS: integration-rabbitmq-password
+          RABBITMQ_DEFAULT_VHOST: jxe_gate
+        ports:
+          - 5672:5672
+          - 15672:15672
+        options: >-
+          --health-cmd="rabbitmq-diagnostics -q ping"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
     env:
-      JXE_MYSQL_DSN: "root:integration-root-password@tcp(127.0.0.1:3306)/jxe?charset=utf8mb4&parseTime=true&loc=Local"
+      TZ: "Asia/Shanghai"
+      JXE_MYSQL_DSN: "root:integration-root-password@tcp(127.0.0.1:3306)/jxe?charset=utf8mb4&parseTime=true&loc=Local&time_zone=%27%2B08%3A00%27"
+      JXE_CONTRACT_DSN: "root:integration-root-password@tcp(127.0.0.1:3306)/jxe_contract?charset=utf8mb4&parseTime=true&loc=Local&time_zone=%27%2B08%3A00%27"
+      JXE_MYSQL_RUNTIME_DSN: "jxe_gate_runtime:integration-runtime-password@tcp(127.0.0.1:3306)/jxe?charset=utf8mb4&parseTime=true&loc=Local&time_zone=%27%2B08%3A00%27"
+      JXE_CONTRACT_RUNTIME_DSN: "jxe_gate_runtime:integration-runtime-password@tcp(127.0.0.1:3306)/jxe_contract?charset=utf8mb4&parseTime=true&loc=Local&time_zone=%27%2B08%3A00%27"
       JXE_MYSQL_REQUIRED: "true"
+      JXE_MYSQL_REQUIRED_TIME_ZONE: "+08:00"
+      JXE_REDIS_ADDR: "127.0.0.1:6379"
+      JXE_RABBITMQ_URL: "amqp://jxe_gate:integration-rabbitmq-password@127.0.0.1:5672/jxe_gate"
+      JXE_RABBITMQ_MANAGEMENT_URL: "http://127.0.0.1:15672/api"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
+      - name: Pin MySQL global timezone
+        run: mysql --protocol=TCP -h 127.0.0.1 -P 3306 -uroot -pintegration-root-password -e "SET GLOBAL time_zone = '+08:00'"
       - name: Apply schema migrations
         run: go run github.com/pressly/goose/v3/cmd/goose@v3.26.0 -dir ./migrations mysql "$JXE_MYSQL_DSN" up
-      - name: Unit and package tests
-        run: go test -count=1 ./...
-      - name: Payment, refund, and reconciliation race tests
-        run: go test -race ./internal/infra/wechatpay ./internal/modules/order ./internal/modules/refund ./internal/modules/aftersale ./internal/modules/reconciliation
+      - name: Seed Expand acceptance fixtures
+        run: go run ./cmd/seed
+      - name: Provision restricted Expand runtime user
+        run: |
+          mysql_container="$(docker ps --filter ancestor=mysql:8.4 --format '{{.ID}}' | head -n 1)"
+          test -n "$mysql_container"
+          JXE_MYSQL_CONTAINER="$mysql_container" \
+            JXE_MYSQL_DATABASE=jxe \
+            JXE_MYSQL_RUNTIME_USER=jxe_gate_runtime \
+            JXE_MYSQL_RUNTIME_PASSWORD=integration-runtime-password \
+            JXE_MYSQL_ROOT_PASSWORD=integration-root-password \
+            bash ./deploy/mysql/provision-local-runtime-user.sh
+      - name: Wine-ticket end-to-end package gate
+        run: make test-wine-ticket-e2e
+      - name: Full race gate
+        run: make test-race
       - name: Static analysis
         run: go vet ./...
-      - name: MySQL money-flow acceptance tests
+      - name: OpenAPI contract gate
+        run: make openapi-check
+      - name: Alert and runbook gate
+        run: make alerts-check
+      - name: Expand-schema integration gate
         env:
-          JXE_RUN_INTEGRATION: "1"
-        run: go test -p 1 -count=1 ./internal/modules/order ./internal/modules/refund ./internal/modules/aftersale ./internal/modules/reconciliation
+          JXE_WINE_TICKET_PURCHASE_ENABLED: "false"
+        run: make test-integration
+      - name: MQ integration gate
+        run: make test-mq-integration
+      - name: Reconciliation gate
+        env:
+          JXE_WINE_TICKET_PURCHASE_ENABLED: "false"
+        run: make test-wine-ticket-reconciliation
+      - name: Contract-schema regression gate
+        env:
+          JXE_CONTRACT_DSN: "root:integration-root-password@tcp(127.0.0.1:3306)/jxe_contract?charset=utf8mb4&parseTime=true&loc=Local&time_zone=%27%2B08%3A00%27"
+        run: |
+          mysql --protocol=TCP -h 127.0.0.1 -P 3306 -uroot -pintegration-root-password -e "CREATE DATABASE jxe_contract CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci"
+          go run github.com/pressly/goose/v3/cmd/goose@v3.26.0 -dir ./migrations mysql "$JXE_CONTRACT_DSN" up
+          JXE_MYSQL_DSN="$JXE_CONTRACT_DSN" go run ./cmd/seed
+          go run github.com/pressly/goose/v3/cmd/goose@v3.26.0 -allow-missing -dir ./migrations/manual mysql "$JXE_CONTRACT_DSN" up
+          mysql_container="$(docker ps --filter ancestor=mysql:8.4 --format '{{.ID}}' | head -n 1)"
+          test -n "$mysql_container"
+          JXE_MYSQL_CONTAINER="$mysql_container" \
+            JXE_MYSQL_DATABASE=jxe_contract \
+            JXE_MYSQL_RUNTIME_USER=jxe_gate_runtime \
+            JXE_MYSQL_RUNTIME_PASSWORD=integration-runtime-password \
+            JXE_MYSQL_ROOT_PASSWORD=integration-root-password \
+            bash ./deploy/mysql/provision-local-runtime-user.sh
+          JXE_MYSQL_DSN="$JXE_CONTRACT_DSN" JXE_MYSQL_RUNTIME_DSN="$JXE_CONTRACT_RUNTIME_DSN" JXE_WINE_TICKET_PURCHASE_ENABLED=true make test-integration
+      - name: P0 MySQL concurrency gate
+        run: make test-wine-ticket-concurrency
+
+  wine-ticket-migration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Expand, backfill, Contract, and roundtrip migration gate
+        run: make migrate-check

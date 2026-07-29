@@ -176,6 +176,10 @@ func (s *Service) AcceptOrder(ctx context.Context, claims *auth.Claims, method s
 		return StoreOrderDetailDTO{}, err
 	}
 	reqHash := storeOrderActionRequestHash(orderID, "accept", req)
+	deliveryID, err := s.deliveryActionProbe(ctx, orderID)
+	if err != nil {
+		return StoreOrderDetailDTO{}, err
+	}
 
 	resultErr = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		started, err := s.idStore.Start(ctx, tx, s.idGen.Next(), claims.AccountType, identity.MerchantUserID, method, path, key, reqHash)
@@ -186,10 +190,9 @@ func (s *Service) AcceptOrder(ctx context.Context, claims *auth.Claims, method s
 			return s.cachedResponse(ctx, tx, claims.AccountType, identity.MerchantUserID, path, key, &resp)
 		}
 
-		row, err := s.repo.LockAuthorizedOrder(ctx, tx, identity.MerchantID, identity.ShopIDs, orderID)
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return problem.NotFound("ORDER_NOT_FOUND", "order not found")
-		}
+		_, row, err := s.lockDeliveryThenAuthorizedOrder(
+			ctx, tx, identity, orderID, deliveryID,
+		)
 		if err != nil {
 			return err
 		}
@@ -200,9 +203,6 @@ func (s *Service) AcceptOrder(ctx context.Context, claims *auth.Claims, method s
 		}
 		if row.Status != "paid" {
 			return problem.Conflict("ORDER_INVALID_STATUS", "only paid orders can be accepted")
-		}
-		if _, err := s.lockRequiredDelivery(ctx, tx, orderID); err != nil {
-			return err
 		}
 		updated, err := s.repo.TransitionOrder(ctx, tx, orderID, row.Status, row.Version, map[string]any{"status": "accepted"})
 		if err != nil {
@@ -259,6 +259,10 @@ func (s *Service) StartPreparingOrder(ctx context.Context, claims *auth.Claims, 
 	if err != nil {
 		return StoreOrderDetailDTO{}, err
 	}
+	deliveryID, err := s.deliveryActionProbe(ctx, orderID)
+	if err != nil {
+		return StoreOrderDetailDTO{}, err
+	}
 	resultErr = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		started, err := s.idStore.Start(ctx, tx, s.idGen.Next(), claims.AccountType, identity.MerchantUserID, method, path, key, storeOrderActionRequestHash(orderID, "start_preparing", req))
 		if err != nil {
@@ -267,10 +271,9 @@ func (s *Service) StartPreparingOrder(ctx context.Context, claims *auth.Claims, 
 		if !started {
 			return s.cachedResponse(ctx, tx, claims.AccountType, identity.MerchantUserID, path, key, &resp)
 		}
-		row, err := s.repo.LockAuthorizedOrder(ctx, tx, identity.MerchantID, identity.ShopIDs, orderID)
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return problem.NotFound("ORDER_NOT_FOUND", "order not found")
-		}
+		_, row, err := s.lockDeliveryThenAuthorizedOrder(
+			ctx, tx, identity, orderID, deliveryID,
+		)
 		if err != nil {
 			return err
 		}
@@ -281,9 +284,6 @@ func (s *Service) StartPreparingOrder(ctx context.Context, claims *auth.Claims, 
 		}
 		if row.Status != "accepted" {
 			return problem.Conflict("ORDER_INVALID_STATUS", "only accepted orders can start preparing")
-		}
-		if _, err := s.lockRequiredDelivery(ctx, tx, orderID); err != nil {
-			return err
 		}
 		updated, err := s.repo.TransitionOrder(ctx, tx, orderID, row.Status, row.Version, map[string]any{"status": "preparing"})
 		if err != nil {
@@ -326,6 +326,10 @@ func (s *Service) PrepareOrder(ctx context.Context, claims *auth.Claims, method 
 		return StoreOrderDetailDTO{}, err
 	}
 	reqHash := storeOrderActionRequestHash(orderID, "prepare", req)
+	deliveryID, err := s.deliveryActionProbe(ctx, orderID)
+	if err != nil {
+		return StoreOrderDetailDTO{}, err
+	}
 
 	resultErr = s.repo.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		started, err := s.idStore.Start(ctx, tx, s.idGen.Next(), claims.AccountType, identity.MerchantUserID, method, path, key, reqHash)
@@ -336,10 +340,9 @@ func (s *Service) PrepareOrder(ctx context.Context, claims *auth.Claims, method 
 			return s.cachedResponse(ctx, tx, claims.AccountType, identity.MerchantUserID, path, key, &resp)
 		}
 
-		row, err := s.repo.LockAuthorizedOrder(ctx, tx, identity.MerchantID, identity.ShopIDs, orderID)
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return problem.NotFound("ORDER_NOT_FOUND", "order not found")
-		}
+		delivery, row, err := s.lockDeliveryThenAuthorizedOrder(
+			ctx, tx, identity, orderID, deliveryID,
+		)
 		if err != nil {
 			return err
 		}
@@ -352,29 +355,6 @@ func (s *Service) PrepareOrder(ctx context.Context, claims *auth.Claims, method 
 			return problem.Conflict("ORDER_INVALID_STATUS", "only preparing orders can be marked ready")
 		}
 		shop, err := s.repo.LockAuthorizedShop(ctx, tx, identity.MerchantID, identity.ShopIDs, row.ShopID)
-		if err != nil {
-			return err
-		}
-		delivery, err := s.repo.LockDeliveryByOrder(ctx, tx, orderID)
-		if errors.Is(err, gorm.ErrRecordNotFound) && s.dispatch != nil {
-			created, _, createErr := s.dispatch.EnsurePaidOrderTask(ctx, tx, dispatch.PaidOrderInput{OrderID: orderID, ShopID: row.ShopID, AddressSnapshot: row.AddressSnapshot})
-			err = createErr
-			delivery = DeliveryOrder{
-				ID:                created.ID,
-				OrderID:           created.OrderID,
-				ShopID:            created.ShopID,
-				RiderID:           created.RiderID,
-				Status:            created.Status,
-				DispatchStatus:    created.DispatchStatus,
-				PickupReadyStatus: created.PickupReadyStatus,
-				PickupReadyAt:     created.PickupReadyAt,
-				PickupSnapshot:    created.PickupSnapshot,
-				RecipientSnapshot: created.RecipientSnapshot,
-			}
-		}
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return problem.Conflict("DELIVERY_NOT_CREATED", "paid order has no delivery task")
-		}
 		if err != nil {
 			return err
 		}
@@ -827,14 +807,95 @@ func storeOrderActionRequestHash(orderID uint64, action string, req StoreOrderAc
 	})
 }
 
-// lockRequiredDelivery 强制执行商户履约状态变更使用的已支付订单不变量：
-// 每次成功操作在改变状态前都同时持有订单及其配送记录的锁。
-func (s *Service) lockRequiredDelivery(ctx context.Context, tx *gorm.DB, orderID uint64) (DeliveryOrder, error) {
-	delivery, err := s.repo.LockDeliveryByOrder(ctx, tx, orderID)
+// deliveryActionProbe 只执行无锁查询。
+// 在 lockDeliveryThenAuthorizedOrder 重新读取关系前，返回的 ID 不可信。
+func (s *Service) deliveryActionProbe(
+	ctx context.Context,
+	orderID uint64,
+) (uint64, error) {
+	deliveryID, err := s.repo.DeliveryIDByOrder(
+		ctx,
+		s.repo.DB(),
+		orderID,
+	)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return DeliveryOrder{}, problem.Conflict("DELIVERY_NOT_CREATED", "paid order has no delivery task")
+		return 0, nil
 	}
-	return delivery, err
+	return deliveryID, err
+}
+
+// lockDeliveryThenAuthorizedOrder 是商户订单操作唯一的锁前缀：
+// delivery_order -> order。
+// 配送记录缺失时使用无锁范围查询，使未授权订单与不存在订单保持不可区分，
+// 同时避免重新引入旧的订单优先循环锁。
+func (s *Service) lockDeliveryThenAuthorizedOrder(
+	ctx context.Context,
+	tx *gorm.DB,
+	identity merchantIdentity,
+	orderID uint64,
+	deliveryID uint64,
+) (DeliveryOrder, Order, error) {
+	if deliveryID == 0 {
+		_, err := s.repo.AuthorizedOrder(
+			ctx,
+			tx,
+			identity.MerchantID,
+			identity.ShopIDs,
+			orderID,
+		)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return DeliveryOrder{}, Order{}, problem.NotFound(
+				"ORDER_NOT_FOUND",
+				"order not found",
+			)
+		}
+		if err != nil {
+			return DeliveryOrder{}, Order{}, err
+		}
+		return DeliveryOrder{}, Order{}, problem.Conflict(
+			"DELIVERY_NOT_CREATED",
+			"paid order has no delivery task",
+		)
+	}
+	deliveryRow, err := s.repo.LockDeliveryByID(ctx, tx, deliveryID)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return DeliveryOrder{}, Order{}, problem.Conflict(
+			"DELIVERY_NOT_CREATED",
+			"paid order has no delivery task",
+		)
+	}
+	if err != nil {
+		return DeliveryOrder{}, Order{}, err
+	}
+	if deliveryRow.OrderID != orderID {
+		return DeliveryOrder{}, Order{}, problem.Conflict(
+			"DELIVERY_RELATION_CHANGED",
+			"delivery relation changed; refresh and retry",
+		)
+	}
+	orderRow, err := s.repo.LockAuthorizedOrder(
+		ctx,
+		tx,
+		identity.MerchantID,
+		identity.ShopIDs,
+		orderID,
+	)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return DeliveryOrder{}, Order{}, problem.NotFound(
+			"ORDER_NOT_FOUND",
+			"order not found",
+		)
+	}
+	if err != nil {
+		return DeliveryOrder{}, Order{}, err
+	}
+	if deliveryRow.ShopID != orderRow.ShopID {
+		return DeliveryOrder{}, Order{}, problem.Conflict(
+			"DELIVERY_RELATION_CHANGED",
+			"delivery relation changed; refresh and retry",
+		)
+	}
+	return deliveryRow, orderRow, nil
 }
 
 // merchantShopProductActionInput 返回商户门店商品操作输入。
@@ -1086,13 +1147,19 @@ func storeOrderSummaryDTO(row Order, shop Shop, rows []OrderItem) StoreOrderSumm
 	}
 	return StoreOrderSummaryDTO{
 		ID: idString(row.ID), OrderNo: row.OrderNo, ShopID: idString(row.ShopID),
-		Status: row.Status, PayStatus: row.PayStatus, DeliveryStatus: row.DeliveryStatus,
+		OrderType:       normalizedStoreOrderType(row.OrderType),
+		SettlementMode:  normalizedStoreSettlementMode(row.SettlementMode),
+		SettlementLabel: storeSettlementLabel(row.OrderType, row.SettlementMode),
+		Status:          row.Status, PayStatus: row.PayStatus, DeliveryStatus: row.DeliveryStatus,
 		PayableAmount: row.PayableAmount,
 		ShopSummary:   StoreShopSummaryDTO{ID: idString(row.ShopID), Name: shopName},
 		ItemSummary:   itemSummary, ItemKindCount: len(rows), TotalQuantity: totalQuantity,
 		AddressSummary: address, CustomerContactMask: contactMask,
 		HasRemark: strings.TrimSpace(stringValue(row.Remark)) != "", Version: row.Version,
 		CreatedAt: row.CreatedAt.Format(time.RFC3339), UpdatedAt: row.UpdatedAt.Format(time.RFC3339), PaidAt: timeString(row.PaidAt),
+		ScheduledStartAt: timeString(row.DeliveryScheduledStartAt),
+		ScheduledEndAt:   timeString(row.DeliveryScheduledEndAt),
+		NotBeforeAt:      timeString(row.DeliveryNotBeforeAt),
 	}
 }
 
@@ -1149,6 +1216,9 @@ func storeOrderDetailDTO(row Order, shop Shop, orderItems []OrderItem, payment P
 	result := StoreOrderDetailDTO{
 		ID:                  idString(row.ID),
 		OrderNo:             row.OrderNo,
+		OrderType:           normalizedStoreOrderType(row.OrderType),
+		SettlementMode:      normalizedStoreSettlementMode(row.SettlementMode),
+		SettlementLabel:     storeSettlementLabel(row.OrderType, row.SettlementMode),
 		ShopID:              idString(row.ShopID),
 		Status:              row.Status,
 		PayStatus:           row.PayStatus,
@@ -1198,9 +1268,39 @@ func storeOrderDetailDTO(row Order, shop Shop, orderItems []OrderItem, payment P
 		result.DeliverySummary = &StoreDeliverySummaryDTO{
 			DeliveryOrderID: idString(delivery.ID), RiderID: optionalIDString(delivery.RiderID),
 			Status: delivery.Status, PickupReadyStatus: pickupReadyStatus, AssignmentVersion: delivery.AssignmentVersion,
+			ScheduledStartAt: timeString(delivery.ScheduledStartAt),
+			ScheduledEndAt:   timeString(delivery.ScheduledEndAt),
+			NotBeforeAt:      timeString(delivery.NotBeforeAt),
 		}
+		result.ScheduledStartAt = timeString(delivery.ScheduledStartAt)
+		result.ScheduledEndAt = timeString(delivery.ScheduledEndAt)
+		result.NotBeforeAt = timeString(delivery.NotBeforeAt)
 	}
 	return result
+}
+
+func normalizedStoreOrderType(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "retail"
+	}
+	return value
+}
+
+func normalizedStoreSettlementMode(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "cash"
+	}
+	return value
+}
+
+func storeSettlementLabel(orderType, settlementMode string) string {
+	if normalizedStoreOrderType(orderType) == "wine_ticket_redemption" &&
+		normalizedStoreSettlementMode(settlementMode) == "wine_ticket" {
+		return "酒票已核销，本单无需收款"
+	}
+	return "现金支付"
 }
 
 type storedOrderAddressSnapshot struct {

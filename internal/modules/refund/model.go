@@ -6,9 +6,13 @@ import (
 )
 
 type Row struct {
-	ID, AfterSaleID, OrderID, PaymentID                                    uint64
+	ID                                                                     uint64
+	AfterSaleID, OrderID                                                   *uint64
+	PaymentID                                                              uint64
 	ReplacesRefundID                                                       *uint64
 	RefundNo, Provider, Status, Currency, Reason                           string
+	BizType                                                                *string
+	BizID                                                                  *uint64
 	NotifyURL                                                              *string
 	ProviderRefundID, ProviderStatus, FailureCode, FailureDetail, LockedBy *string
 	Amount, TotalAmount                                                    int64
@@ -50,6 +54,7 @@ func (Callback) TableName() string { return "refund_callbacks" }
 type Payment struct {
 	ID                                    uint64
 	PaymentNo, Provider, Status, Currency string
+	ProviderTradeNo                       *string
 	Amount, RefundedAmount                int64
 	Version                               int
 }

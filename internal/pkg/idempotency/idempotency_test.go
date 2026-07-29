@@ -150,4 +150,94 @@ func TestReplayCompletedClassifiesAndReplays(t *testing.T) {
 	}
 }
 
+func TestOwnedCompletionFencesStaleOwnerAndPreservesSuccess(t *testing.T) {
+	db, err := gorm.Open(
+		sqlite.Open(fmt.Sprintf("file:idempotency-fencing-%d?mode=memory&cache=shared", time.Now().UnixNano())),
+		&gorm.Config{},
+	)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.AutoMigrate(&Record{}); err != nil {
+		t.Fatalf("migrate idempotency records: %v", err)
+	}
+	if err := db.Exec(
+		"CREATE UNIQUE INDEX uk_idempotency_fencing ON idempotency_keys(actor_type, actor_id, path, key_hash)",
+	).Error; err != nil {
+		t.Fatalf("create idempotency business key: %v", err)
+	}
+
+	ctx := context.Background()
+	store := NewStore(db)
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	const (
+		ownerA uint64 = 101
+		ownerB uint64 = 202
+	)
+	const (
+		actorType = "customer"
+		actorID   = uint64(7)
+		path      = "/portable/fencing"
+		key       = "portable-fencing-key"
+		hash      = "same-request"
+	)
+	lockedUntil := now.Add(time.Minute)
+	if err := db.Create(&Record{
+		ID:          ownerA,
+		ActorType:   actorType,
+		ActorID:     actorID,
+		Method:      "POST",
+		Path:        path,
+		KeyHash:     KeyHash(key),
+		RequestHash: hash,
+		Status:      "processing",
+		LockedUntil: &lockedUntil,
+		ExpiredAt:   now.Add(24 * time.Hour),
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}).Error; err != nil {
+		t.Fatalf("seed owner A claim: %v", err)
+	}
+	if err := db.Model(&Record{}).
+		Where("id = ?", ownerA).
+		Updates(map[string]any{
+			"id":           ownerB,
+			"locked_until": lockedUntil.Add(time.Minute),
+		}).Error; err != nil {
+		t.Fatalf("simulate owner B reclaim: %v", err)
+	}
+
+	var claimed Record
+	if err := db.Where(
+		"actor_type = ? AND actor_id = ? AND path = ? AND key_hash = ?",
+		actorType, actorID, path, KeyHash(key),
+	).First(&claimed).Error; err != nil {
+		t.Fatalf("load reclaimed record: %v", err)
+	}
+	if claimed.ID != ownerB {
+		t.Fatalf("reclaimed owner=%d, want %d", claimed.ID, ownerB)
+	}
+	if err := store.SucceedOwned(
+		ctx, db, ownerA, actorType, actorID, path, key, map[string]string{"owner": "A"},
+	); !IsClaimLost(err) {
+		t.Fatalf("stale owner A succeed err=%v, want claim lost", err)
+	}
+	if err := store.FailOwned(ctx, db, ownerA, actorType, actorID, path, key); !IsClaimLost(err) {
+		t.Fatalf("stale owner A fail err=%v, want claim lost", err)
+	}
+	if err := store.SucceedOwned(
+		ctx, db, ownerB, actorType, actorID, path, key, map[string]string{"owner": "B"},
+	); err != nil {
+		t.Fatalf("owner B succeed: %v", err)
+	}
+	if err := store.Fail(ctx, db, actorType, actorID, path, key); err != nil {
+		t.Fatalf("legacy fail after success: %v", err)
+	}
+	var replay map[string]string
+	found, err := store.CachedResponse(ctx, db, actorType, actorID, path, key, &replay)
+	if err != nil || !found || replay["owner"] != "B" {
+		t.Fatalf("final replay found=%v response=%v err=%v", found, replay, err)
+	}
+}
+
 func timePointer(value time.Time) *time.Time { return &value }
