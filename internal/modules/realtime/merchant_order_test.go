@@ -3,6 +3,7 @@ package realtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -120,6 +121,108 @@ func TestMerchantPaidOrderFanoutUsesAuthorizedAccountsAndSafeEvent(t *testing.T)
 	defer extraCancel()
 	if extra, extraErr := subscription.ReceiveMessage(extraCtx); extraErr == nil {
 		t.Fatalf("unexpected second merchant account fanout: %s", extra.Payload)
+	}
+}
+
+// TestMerchantWineTicketRedemptionFanoutValidatesZeroCashDiscriminators 验证酒票提酒
+// 只有在订单、酒票核销单和配送单三方事实一致且确实为零现金结算时才会通知门店。
+func TestMerchantWineTicketRedemptionFanoutValidatesZeroCashDiscriminators(t *testing.T) {
+	db := realtimeSQLite(t)
+	createMerchantRealtimeTables(t, db)
+	for _, statement := range []string{
+		"CREATE TABLE orders (id INTEGER PRIMARY KEY, merchant_id INTEGER NOT NULL, shop_id INTEGER NOT NULL, order_type TEXT NOT NULL, settlement_mode TEXT NOT NULL, pay_status TEXT NOT NULL, payable_amount INTEGER NOT NULL, paid_amount INTEGER NOT NULL, deleted_at DATETIME)",
+		"CREATE TABLE wine_ticket_redemptions (id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL)",
+		"CREATE TABLE delivery_orders (id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL, deleted_at DATETIME)",
+		"INSERT INTO orders(id,merchant_id,shop_id,order_type,settlement_mode,pay_status,payable_amount,paid_amount) VALUES (9101,301,401,'wine_ticket_redemption','wine_ticket','not_required',0,0)",
+		"INSERT INTO wine_ticket_redemptions(id,order_id) VALUES (9201,9101)",
+		"INSERT INTO delivery_orders(id,order_id) VALUES (9301,9101)",
+	} {
+		if err := db.Exec(statement).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	insertMerchantRealtimeAccount(t, db, 101, 201, 301, 401, "active", "active", nil)
+	insertMerchantRealtimeAccount(t, db, 102, 202, 301, 402, "active", "active", nil)
+
+	mini := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mini.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	subscription := client.Subscribe(context.Background(), wakeupChannel)
+	if _, err := subscription.Receive(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = subscription.Close() })
+
+	service := NewService(realtimeTestConfig(), db, client, snowflake.New(25), nil)
+	handler := NewMQHandler(service)
+	eventID := uuid.NewString()
+	occurredAt := time.Now().UTC().Truncate(time.Millisecond)
+	envelope := mq.EventEnvelope{
+		EventID: eventID, EventType: "wine_ticket.redemption_created", EventVersion: 1,
+		AggregateType: "wine_ticket_redemption", AggregateID: "9201", OccurredAt: occurredAt,
+		Payload: json.RawMessage(`{"redemption_no":"WTR202607270001","order_id":"9101","delivery_order_id":"9301","customer_id":"5001","quantity":2,"scheduled_start_at":"2026-07-28T02:00:00Z","scheduled_end_at":"2026-07-28T04:00:00Z","not_before_at":"2026-07-28T01:30:00Z","customer_phone":"must-not-forward"}`),
+	}
+	result, err := handler.Handle(context.Background(), db, envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RefType != "merchant_wine_ticket_redemption" || result.RefID != 9101 {
+		t.Fatalf("unexpected consumer result: %+v", result)
+	}
+	if err := handler.AfterCommit(context.Background(), envelope, result); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	message, err := subscription.ReceiveMessage(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wakeup MerchantWakeup
+	if err := json.Unmarshal([]byte(message.Payload), &wakeup); err != nil {
+		t.Fatal(err)
+	}
+	if wakeup.AccountID != 101 {
+		t.Fatalf("event leaked to a non-authorized account: %+v", wakeup)
+	}
+	if wakeup.Event.EventID != eventID ||
+		wakeup.Event.EventType != merchantWineTicketRedemptionClientEvent ||
+		wakeup.Event.OrderID != "9101" ||
+		wakeup.Event.ShopID != "401" ||
+		wakeup.Event.SoundKey != "new_wine_ticket_redemption" ||
+		wakeup.Event.OccurredAt.IsZero() {
+		t.Fatalf("unexpected wine-ticket merchant event: %+v", wakeup.Event)
+	}
+	encoded, err := json.Marshal(wakeup.Event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var safe map[string]any
+	if err := json.Unmarshal(encoded, &safe); err != nil {
+		t.Fatal(err)
+	}
+	allowed := map[string]bool{
+		"event_id": true, "event_type": true, "order_id": true,
+		"shop_id": true, "sound_key": true, "occurred_at": true,
+	}
+	if len(safe) != len(allowed) {
+		t.Fatalf("wine-ticket event contains uncontracted fields: %+v", safe)
+	}
+	for key := range safe {
+		if !allowed[key] {
+			t.Fatalf("wine-ticket event contains unsafe field %q", key)
+		}
+	}
+
+	if err := db.Exec("UPDATE orders SET settlement_mode='cash',pay_status='succeeded',paid_amount=1 WHERE id=9101").Error; err != nil {
+		t.Fatal(err)
+	}
+	_, err = handler.Handle(context.Background(), db, envelope)
+	var consumerErr *mq.ConsumerError
+	if !errors.As(err, &consumerErr) ||
+		consumerErr.Class != mq.FailureBusinessTerminal ||
+		consumerErr.Code != "REALTIME_WINE_TICKET_REDEMPTION_INVALID" {
+		t.Fatalf("cash or paid redemption must be rejected terminally, got %v", err)
 	}
 }
 

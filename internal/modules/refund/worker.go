@@ -130,6 +130,7 @@ func (w *Worker) submit(ctx context.Context, row Row) (State, error) {
 	if err != nil {
 		return State{}, err
 	}
+	businessType, _ := RefundBusiness(row)
 	reason := row.Reason
 	if reason == "" {
 		reason = "after-sale refund"
@@ -138,7 +139,17 @@ func (w *Worker) submit(ctx context.Context, row Row) (State, error) {
 	if row.NotifyURL != nil && *row.NotifyURL != "" {
 		notifyURL = *row.NotifyURL
 	}
-	return w.provider.Refund(ctx, Input{RefundNo: row.RefundNo, PaymentNo: payment.PaymentNo, Reason: reason, NotifyURL: notifyURL, Currency: row.Currency, Amount: row.Amount, TotalAmount: row.TotalAmount})
+	providerTradeNo := ""
+	if payment.ProviderTradeNo != nil {
+		providerTradeNo = *payment.ProviderTradeNo
+	}
+	return w.provider.Refund(ctx, Input{
+		RefundNo: row.RefundNo, PaymentNo: payment.PaymentNo,
+		ProviderTradeNo: providerTradeNo, Reason: reason,
+		NotifyURL: notifyURL, Currency: row.Currency,
+		BusinessType: businessType,
+		Amount:       row.Amount, TotalAmount: row.TotalAmount,
+	})
 }
 
 func submissionRetryAllowed(code string) bool {

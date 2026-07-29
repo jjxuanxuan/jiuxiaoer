@@ -94,6 +94,12 @@ func (s *Service) CommitAssignment(ctx context.Context, method, path, key string
 		if input.ExpectedAssignmentVersion != 0 && delivery.AssignmentVersion != input.ExpectedAssignmentVersion {
 			return problem.Conflict("VERSION_CONFLICT", "delivery assignment version changed")
 		}
+		var settlementOrder domainOrder
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND deleted_at IS NULL", delivery.OrderID).
+			First(&settlementOrder).Error; err != nil {
+			return err
+		}
 
 		var job Job
 		jobFound := false
@@ -155,6 +161,17 @@ func (s *Service) CommitAssignment(ctx context.Context, method, path, key string
 			return problem.Conflict("DELIVERY_ALREADY_ASSIGNED", "delivery order has already been assigned")
 		}
 		if err := s.recheckRider(ctx, tx, input.RiderID, delivery, job, input.Source, now); err != nil {
+			return err
+		}
+		if err := s.applyAssignmentSettlement(
+			ctx,
+			tx,
+			delivery,
+			settlementOrder,
+			now,
+			input.ActorType,
+			input.ActorID,
+		); err != nil {
 			return err
 		}
 

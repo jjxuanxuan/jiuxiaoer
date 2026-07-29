@@ -162,11 +162,15 @@ func (r *Repository) loadAggregate(ctx context.Context, db *gorm.DB, out *Aggreg
 		out.RefundStatus = "not_authorized"
 		return nil
 	}
-	var refundStatus string
-	if err := db.WithContext(ctx).Table("refunds").Select("status").Where("after_sale_id=? AND deleted_at IS NULL", *out.Return.AfterSaleID).Order("id DESC").Limit(1).Scan(&refundStatus).Error; err != nil {
-		return err
+	if out.Return.SettlementType != nil && *out.Return.SettlementType == SettlementWineTicketRestore {
+		out.RefundStatus = "not_required"
+	} else {
+		var refundStatus string
+		if err := db.WithContext(ctx).Table("refunds").Select("status").Where("after_sale_id=? AND deleted_at IS NULL", *out.Return.AfterSaleID).Order("id DESC").Limit(1).Scan(&refundStatus).Error; err != nil {
+			return err
+		}
+		out.RefundStatus = refundStatus
 	}
-	out.RefundStatus = refundStatus
 	var rows []struct {
 		AfterSaleItemID  uint64
 		OrderItemID      uint64
@@ -302,22 +306,40 @@ func (r *Repository) RefundStatus(ctx context.Context, tx *gorm.DB, afterSaleID 
 }
 
 func (r *Repository) ClosureComplete(ctx context.Context, tx *gorm.DB, afterSaleID, returnID uint64) (bool, error) {
-	var expected int64
-	if err := tx.WithContext(ctx).Table("after_sale_items").Where("after_sale_id=? AND deleted_at IS NULL", afterSaleID).Count(&expected).Error; err != nil {
+	// 本方法中的所有查询都是加锁当前读。
+	// 退款回调可能在并发收货提交前建立 REPEATABLE READ 快照；
+	// 若使用普通 SELECT，即使回调等待并锁定配送退回记录，
+	// 仍可能看不到收货及其库存事实。
+	var expectedItems []struct{ ID uint64 }
+	if err := tx.WithContext(ctx).Table("after_sale_items").
+		Select("id").
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("after_sale_id=? AND deleted_at IS NULL", afterSaleID).
+		Order("id").
+		Find(&expectedItems).Error; err != nil {
 		return false, err
 	}
 	var receipt struct{ ID uint64 }
-	if err := tx.WithContext(ctx).Table("return_receipts").Select("id").Where("after_sale_id=?", afterSaleID).Take(&receipt).Error; err != nil {
+	if err := tx.WithContext(ctx).Table("return_receipts").
+		Select("id").
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("after_sale_id=?", afterSaleID).
+		Order("id").
+		Take(&receipt).Error; err != nil {
 		if IsNotFound(err) {
 			return false, nil
 		}
 		return false, err
 	}
 	var items []ReceiptItem
-	if err := tx.WithContext(ctx).Where("return_receipt_id=?", receipt.ID).Find(&items).Error; err != nil {
+	if err := tx.WithContext(ctx).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("return_receipt_id=?", receipt.ID).
+		Order("id").
+		Find(&items).Error; err != nil {
 		return false, err
 	}
-	if expected == 0 || int64(len(items)) != expected {
+	if len(expectedItems) == 0 || len(items) != len(expectedItems) {
 		return false, nil
 	}
 	for _, item := range items {
@@ -326,11 +348,17 @@ func (r *Repository) ClosureComplete(ctx context.Context, tx *gorm.DB, afterSale
 		}
 		if item.Disposition == "restock" {
 			key := fmt.Sprintf("delivery_return:%d:%d:restock", returnID, item.AfterSaleItemID)
-			var count int64
-			if err := tx.WithContext(ctx).Table("stock_records").Where("business_action_key=?", key).Count(&count).Error; err != nil {
+			var records []struct{ ID uint64 }
+			if err := tx.WithContext(ctx).Table("stock_records").
+				Select("id").
+				Clauses(clause.Locking{Strength: "UPDATE"}).
+				Where("business_action_key=?", key).
+				Order("id").
+				Limit(1).
+				Find(&records).Error; err != nil {
 				return false, err
 			}
-			if count == 0 {
+			if len(records) == 0 {
 				return false, nil
 			}
 		}

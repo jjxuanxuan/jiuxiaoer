@@ -3,6 +3,7 @@ package wechatpay
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/wechatpay-apiv3/wechatpay-go/core"
+	"github.com/wechatpay-apiv3/wechatpay-go/core/auth"
 	"github.com/wechatpay-apiv3/wechatpay-go/core/auth/verifiers"
 	"github.com/wechatpay-apiv3/wechatpay-go/core/downloader"
 	"github.com/wechatpay-apiv3/wechatpay-go/core/notify"
@@ -46,12 +48,33 @@ func New(ctx context.Context, cfg config.WeChatConfig, billTimeouts ...time.Dura
 	if err != nil {
 		return nil, fmt.Errorf("load WeChat Pay private key: %w", err)
 	}
+	publicKey, err := loadWechatPayPublicKey(cfg)
+	if err != nil {
+		return nil, err
+	}
 	mgr := downloader.NewCertificateDownloaderMgr(ctx)
 	if err := mgr.RegisterDownloaderWithPrivateKey(ctx, privateKey, cfg.PayCertSerial, cfg.PayMchID, cfg.PayAPIv3Key); err != nil {
 		mgr.Stop()
 		return nil, fmt.Errorf("initialize WeChat Pay platform certificates: %w", err)
 	}
-	client, err := core.NewClient(ctx, option.WithWechatPayAutoAuthCipherUsingDownloaderMgr(cfg.PayMchID, cfg.PayCertSerial, privateKey, mgr))
+	certificateVisitor := mgr.GetCertificateVisitor(cfg.PayMchID)
+	verifier := newWechatPayVerifier(certificateVisitor, cfg.PayPublicKeyID, publicKey)
+	clientOptions := []core.ClientOption{
+		option.WithWechatPayAutoAuthCipherUsingDownloaderMgr(cfg.PayMchID, cfg.PayCertSerial, privateKey, mgr),
+	}
+	if publicKey != nil {
+		clientOptions = []core.ClientOption{
+			option.WithWechatPayPublicKeyAuthCipher(
+				cfg.PayMchID,
+				cfg.PayCertSerial,
+				privateKey,
+				strings.TrimSpace(cfg.PayPublicKeyID),
+				publicKey,
+			),
+			option.WithVerifier(verifier),
+		}
+	}
+	client, err := core.NewClient(ctx, clientOptions...)
 	if err != nil {
 		mgr.Stop()
 		return nil, fmt.Errorf("initialize WeChat Pay client: %w", err)
@@ -71,7 +94,6 @@ func New(ctx context.Context, cfg config.WeChatConfig, billTimeouts ...time.Dura
 		mgr.Stop()
 		return nil, fmt.Errorf("initialize WeChat Pay bill download client: %w", err)
 	}
-	verifier := verifiers.NewSHA256WithRSAVerifier(mgr.GetCertificateVisitor(cfg.PayMchID))
 	notifyHandler, err := notify.NewRSANotifyHandler(cfg.PayAPIv3Key, verifier)
 	if err != nil {
 		mgr.Stop()
@@ -86,6 +108,33 @@ func New(ctx context.Context, cfg config.WeChatConfig, billTimeouts ...time.Dura
 		notifyHandler: notifyHandler,
 		downloader:    mgr,
 	}, nil
+}
+
+func loadWechatPayPublicKey(cfg config.WeChatConfig) (*rsa.PublicKey, error) {
+	publicKeyID := strings.TrimSpace(cfg.PayPublicKeyID)
+	publicKeyPath := strings.TrimSpace(cfg.PayPublicKeyPath)
+	if publicKeyID == "" && publicKeyPath == "" {
+		return nil, nil
+	}
+	if publicKeyID == "" || publicKeyPath == "" {
+		return nil, errors.New("WeChat Pay public key ID and path must be configured together")
+	}
+	publicKey, err := utils.LoadPublicKeyWithPath(publicKeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("load WeChat Pay public key: %w", err)
+	}
+	return publicKey, nil
+}
+
+func newWechatPayVerifier(certificateVisitor core.CertificateGetter, publicKeyID string, publicKey *rsa.PublicKey) auth.Verifier {
+	if publicKey == nil {
+		return verifiers.NewSHA256WithRSAVerifier(certificateVisitor)
+	}
+	return verifiers.NewSHA256WithRSACombinedVerifier(
+		certificateVisitor,
+		strings.TrimSpace(publicKeyID),
+		*publicKey,
+	)
 }
 
 type provider struct {

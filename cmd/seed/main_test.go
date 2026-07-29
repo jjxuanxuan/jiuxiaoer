@@ -8,7 +8,7 @@ import (
 func TestValidatePermissionCatalogRejectsIDCodeConflicts(t *testing.T) {
 	expected := []permissionSeed{
 		{ID: 2132, Code: "cart:view"},
-		{ID: 2143, Code: "delivery:force_complete_request"},
+		{ID: 2068, Code: "delivery:force_complete"},
 	}
 	tests := []struct {
 		name   string
@@ -32,7 +32,7 @@ func TestValidatePermissionCatalogRejectsIDCodeConflicts(t *testing.T) {
 	}
 }
 
-func TestForceCompleteRolePermissionSplit(t *testing.T) {
+func TestSingleOperatorAdminPermissions(t *testing.T) {
 	byRole := make(map[uint64]map[uint64]bool)
 	for _, assignment := range rolePermissionAssignments() {
 		byRole[assignment.roleID] = make(map[uint64]bool, len(assignment.permissionIDs))
@@ -41,23 +41,101 @@ func TestForceCompleteRolePermissionSplit(t *testing.T) {
 		}
 	}
 
-	tests := []struct {
-		roleID      uint64
-		wantRequest bool
-		wantApprove bool
-	}{
-		{roleID: roleOperation, wantRequest: true, wantApprove: false},
-		{roleID: roleAdminManager, wantRequest: false, wantApprove: true},
-		{roleID: roleSuperAdmin, wantRequest: true, wantApprove: true},
+	activeMatrix := map[uint64]map[uint64]bool{
+		2048: {
+			roleSuperAdmin:   true,
+			roleAdminManager: true,
+			roleFinance:      true,
+		},
+		2068: {
+			roleSuperAdmin:   true,
+			roleAdminManager: true,
+			roleOperation:    true,
+		},
+		2148: {
+			roleSuperAdmin:   true,
+			roleAdminManager: true,
+			roleOperation:    true,
+		},
+		2164: {
+			roleSuperAdmin:   true,
+			roleAdminManager: true,
+			roleOperation:    true,
+		},
 	}
-	for _, tt := range tests {
-		permissions := byRole[tt.roleID]
-		if got := permissions[2143]; got != tt.wantRequest {
-			t.Errorf("role %d request permission = %t, want %t", tt.roleID, got, tt.wantRequest)
+	for permissionID, expectedRoles := range activeMatrix {
+		for _, roleID := range []uint64{
+			roleSuperAdmin,
+			roleAdminManager,
+			roleOperation,
+			roleFinance,
+			roleCustomerService,
+		} {
+			if got, want := byRole[roleID][permissionID], expectedRoles[roleID]; got != want {
+				t.Errorf(
+					"role %d direct permission %d = %t, want %t",
+					roleID,
+					permissionID,
+					got,
+					want,
+				)
+			}
 		}
-		if got := permissions[2144]; got != tt.wantApprove {
-			t.Errorf("role %d approve permission = %t, want %t", tt.roleID, got, tt.wantApprove)
+	}
+	for roleID, rolePermissions := range byRole {
+		for _, retiredID := range []uint64{2049, 2143, 2144, 2149} {
+			if rolePermissions[retiredID] {
+				t.Errorf("role %d still has retired approval permission %d", roleID, retiredID)
+			}
 		}
+	}
+
+	byCode := make(map[string]bool, len(permissions))
+	for _, permission := range permissions {
+		byCode[permission.Code] = true
+	}
+	for _, retiredCode := range []string{
+		"asset_adjustment:approve",
+		"delivery:force_complete_request",
+		"delivery:force_complete_approve",
+		"wine_ticket_exception:review",
+	} {
+		if byCode[retiredCode] {
+			t.Errorf("retired permission %q remains in active seed catalog", retiredCode)
+		}
+	}
+}
+
+func TestWineTicketPackagePublishPermissionsStayDistinct(t *testing.T) {
+	byCode := make(map[string]permissionSeed, len(permissions))
+	for _, permission := range permissions {
+		byCode[permission.Code] = permission
+	}
+	publish, ok := byCode["wine_ticket_package:publish"]
+	if !ok || publish.ID != 2164 || publish.Action != "publish" {
+		t.Fatalf("publish permission=%+v, want id=2164 action=publish", publish)
+	}
+	unpublish, ok := byCode["wine_ticket_package:unpublish"]
+	if !ok || unpublish.ID != 2186 || unpublish.Action != "unpublish" {
+		t.Fatalf("unpublish permission=%+v, want id=2186 action=unpublish", unpublish)
+	}
+
+	var operationPermissions map[uint64]bool
+	for _, assignment := range rolePermissionAssignments() {
+		if assignment.roleID != roleOperation {
+			continue
+		}
+		operationPermissions = make(map[uint64]bool, len(assignment.permissionIDs))
+		for _, permissionID := range assignment.permissionIDs {
+			operationPermissions[permissionID] = true
+		}
+	}
+	if !operationPermissions[publish.ID] || !operationPermissions[unpublish.ID] {
+		t.Fatalf(
+			"operation role package permissions publish=%t unpublish=%t",
+			operationPermissions[publish.ID],
+			operationPermissions[unpublish.ID],
+		)
 	}
 }
 

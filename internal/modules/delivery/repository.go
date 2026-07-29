@@ -36,13 +36,20 @@ func (r *Repository) List(ctx context.Context, riderID uint64, status string, qu
 			CASE WHEN viewer_runtime.latitude IS NOT NULL AND viewer_runtime.longitude IS NOT NULL AND shops.latitude IS NOT NULL AND shops.longitude IS NOT NULL
 				THEN CAST(ROUND(ST_Distance_Sphere(POINT(viewer_runtime.longitude,viewer_runtime.latitude),POINT(shops.longitude,shops.latitude))) AS UNSIGNED)
 				ELSE NULL END AS pickup_distance_m,
-			dispatch_job.grab_expires_at AS grab_expires_at`).
+			dispatch_job.grab_expires_at AS grab_expires_at,
+			customer_order.order_type AS order_type,
+			customer_order.settlement_mode AS settlement_mode`).
 		Joins("LEFT JOIN shops ON shops.id=delivery_orders.shop_id AND shops.deleted_at IS NULL").
+		Joins("JOIN orders customer_order ON customer_order.id=delivery_orders.order_id AND customer_order.deleted_at IS NULL").
 		Joins("LEFT JOIN dispatch_jobs dispatch_job ON dispatch_job.id=delivery_orders.current_dispatch_job_id").
 		Joins("LEFT JOIN rider_runtime_states viewer_runtime ON viewer_runtime.rider_id=?", riderID).
 		Where("delivery_orders.deleted_at IS NULL").
 		Where(`(
-			delivery_orders.status = 'pending_assign' AND delivery_orders.dispatch_status = 'grab_open' AND delivery_orders.rider_id IS NULL AND EXISTS (
+			delivery_orders.status = 'pending_assign'
+			AND delivery_orders.dispatch_status = 'grab_open'
+			AND delivery_orders.rider_id IS NULL
+			AND (delivery_orders.not_before_at IS NULL OR delivery_orders.not_before_at <= CURRENT_TIMESTAMP(3))
+			AND EXISTS (
 				SELECT 1
 				FROM riders r
 				JOIN accounts a ON a.id = r.account_id AND a.deleted_at IS NULL
@@ -122,8 +129,22 @@ func (r *Repository) Detail(ctx context.Context, riderID uint64, deliveryID uint
 // 相同的强类型履约快照。
 func (r *Repository) AssignedSummary(ctx context.Context, riderID, deliveryID uint64) (DeliveryOrder, error) {
 	var row DeliveryOrder
-	err := r.db.WithContext(ctx).
-		Where("id=? AND rider_id=? AND deleted_at IS NULL", deliveryID, riderID).
+	err := r.db.WithContext(ctx).Model(&DeliveryOrder{}).
+		Select(`
+			delivery_orders.*,
+			customer_order.order_type AS order_type,
+			customer_order.settlement_mode AS settlement_mode
+		`).
+		Joins(`
+			JOIN orders customer_order
+			  ON customer_order.id = delivery_orders.order_id
+			 AND customer_order.deleted_at IS NULL
+		`).
+		Where(
+			"delivery_orders.id=? AND delivery_orders.rider_id=? AND delivery_orders.deleted_at IS NULL",
+			deliveryID,
+			riderID,
+		).
 		Where(`EXISTS (
 			SELECT 1 FROM delivery_assignments current_assignment
 			WHERE current_assignment.delivery_order_id=delivery_orders.id

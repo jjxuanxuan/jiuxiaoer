@@ -16,7 +16,7 @@ import (
 )
 
 func TestOrderActionFailureAuditContainsOnlySafeErrorMetadata(t *testing.T) {
-	dsn := "file:" + strings.ReplaceAll(t.Name(), "/", "_") + "?mode=memory&cache=shared"
+	dsn := uniqueSQLiteMemoryDSN(t)
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		t.Fatal(err)

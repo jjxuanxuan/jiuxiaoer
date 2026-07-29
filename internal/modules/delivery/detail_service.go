@@ -85,7 +85,10 @@ func deliveryDetailDTO(deliveryRow DeliveryOrder, orderRow Order, shopRow Shop, 
 		RecipientContact:  contactFromSnapshot(recipientSnapshot, false),
 		Order: DeliveryDetailOrderDTO{
 			ID: idString(orderRow.ID), OrderNo: orderRow.OrderNo, Status: orderRow.Status,
-			PayStatus: orderRow.PayStatus, DeliveryStatus: orderRow.DeliveryStatus,
+			OrderType:       normalizedDeliveryOrderType(orderRow.OrderType),
+			SettlementMode:  normalizedDeliverySettlementMode(orderRow.SettlementMode),
+			SettlementLabel: deliverySettlementLabel(orderRow.OrderType, orderRow.SettlementMode),
+			PayStatus:       orderRow.PayStatus, DeliveryStatus: orderRow.DeliveryStatus,
 			GoodsAmount: orderRow.GoodsAmount, DiscountAmount: orderRow.DiscountAmount,
 			DeliveryFeeAmount: orderRow.DeliveryFeeAmount, PayableAmount: orderRow.PayableAmount,
 			PaidAmount: orderRow.PaidAmount, Remark: optionalString(orderRow.Remark), Version: orderRow.Version,
@@ -105,6 +108,9 @@ func deliveryDetailDTO(deliveryRow DeliveryOrder, orderRow Order, shopRow Shop, 
 		PickedUpAt: optionalTimeString(deliveryRow.PickedUpAt), PickedUpVerifiedAt: optionalTimeString(deliveryRow.PickedUpVerifiedAt),
 		StartedAt: optionalTimeString(deliveryRow.StartedAt), CompletedAt: optionalTimeString(deliveryRow.CompletedAt),
 		CompletedVerifiedAt: optionalTimeString(deliveryRow.CompletedVerifiedAt), CancelledAt: optionalTimeString(deliveryRow.CancelledAt),
+		ScheduledStartAt: optionalTimeString(deliveryRow.ScheduledStartAt),
+		ScheduledEndAt:   optionalTimeString(deliveryRow.ScheduledEndAt),
+		NotBeforeAt:      optionalTimeString(deliveryRow.NotBeforeAt),
 	}
 }
 

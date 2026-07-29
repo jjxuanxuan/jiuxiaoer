@@ -86,6 +86,9 @@ func (s *Service) Create(ctx context.Context, claims *auth.Claims, method, path,
 		if err != nil {
 			return err
 		}
+		if orderRow.OrderType == "wine_ticket_redemption" || orderRow.SettlementMode == "wine_ticket" {
+			return problem.Conflict("WT_REDEMPTION_AFTER_SALE_REQUIRED", "wine-ticket redemption returns must use the redemption return workflow")
+		}
 		//根据订单状态和支付状态判断售后类型
 		if err := s.eligible(orderRow, req.Type); err != nil {
 			return err
@@ -768,7 +771,7 @@ func (s *Service) createRefundTask(ctx context.Context, tx *gorm.DB, row AfterSa
 		return problem.Conflict("REFUND_AMOUNT_EXCEEDED", "refund exceeds payment amount")
 	}
 	refundID := s.ids.Next()
-	refund := Refund{ID: refundID, RefundNo: "RF" + idString(refundID), AfterSaleID: row.ID, OrderID: row.OrderID, PaymentID: payment.ID, Provider: payment.Provider, Status: "creating", Amount: total, TotalAmount: payment.Amount, Currency: payment.Currency, Reason: "after-sale refund", NotifyURL: optional(s.cfg.WeChat.RefundNotifyURL), RequestedAt: now, NextRetryAt: &now, Version: 1}
+	refund := Refund{ID: refundID, RefundNo: "RF" + idString(refundID), BizType: strPtr("retail_after_sale"), BizID: &row.ID, AfterSaleID: row.ID, OrderID: row.OrderID, PaymentID: payment.ID, Provider: payment.Provider, Status: "creating", Amount: total, TotalAmount: payment.Amount, Currency: payment.Currency, Reason: "after-sale refund", NotifyURL: optional(s.cfg.WeChat.RefundNotifyURL), RequestedAt: now, NextRetryAt: &now, Version: 1}
 	refundItems := make([]RefundItem, 0, len(items))
 	for _, item := range items {
 		if item.ApprovedAmount > 0 {

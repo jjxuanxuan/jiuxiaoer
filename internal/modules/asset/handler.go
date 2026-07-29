@@ -24,8 +24,6 @@ func RegisterAdminRoutes(g *gin.RouterGroup, h *Handler) {
 	g.GET("/asset-transactions", h.AdminTransactions)
 	g.GET("/asset-transactions/:id", h.AdminTransaction)
 	g.POST("/asset-adjustments", h.CreateAdjustment)
-	g.POST("/asset-adjustments/:id/approve", h.ApproveAdjustment)
-	g.POST("/asset-adjustments/:id/reject", h.RejectAdjustment)
 	g.GET("/asset-reconciliations", h.ListReconciliations)
 	g.POST("/asset-reconciliations", h.RunReconciliation)
 	g.POST("/asset-reconciliations/:id/repair", h.RepairReconciliation)
@@ -137,45 +135,6 @@ func (h *Handler) CreateAdjustment(c *gin.Context) {
 		return
 	}
 	v, err := h.service.CreateAdjustment(c.Request.Context(), cl, c.Request.Method, c.FullPath(), c.GetHeader("Idempotency-Key"), req)
-	if err != nil {
-		response.Error(c, err)
-		return
-	}
-	response.OK(c, v)
-}
-
-// ApproveAdjustment 审批通过调整单。
-func (h *Handler) ApproveAdjustment(c *gin.Context) {
-	cl, ok := assetClaims(c)
-	if !ok {
-		return
-	}
-	var req AdjustmentReviewReq
-	if !assetBind(c, &req) {
-		return
-	}
-	v, err := h.service.ApproveAdjustment(c.Request.Context(), cl, c.Param("id"), c.GetHeader("Idempotency-Key"), req)
-	if err != nil {
-		response.Error(c, err)
-		return
-	}
-	response.OK(c, v)
-}
-
-// RejectAdjustment 拒绝调整单。
-func (h *Handler) RejectAdjustment(c *gin.Context) {
-	cl, ok := assetClaims(c)
-	if !ok {
-		return
-	}
-	if !requireAssetIdempotency(c) {
-		return
-	}
-	var req AdjustmentReviewReq
-	if !assetBind(c, &req) {
-		return
-	}
-	v, err := h.service.RejectAdjustment(c.Request.Context(), cl, c.Param("id"), req)
 	if err != nil {
 		response.Error(c, err)
 		return

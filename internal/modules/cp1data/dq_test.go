@@ -224,8 +224,11 @@ func TestVerificationCheckReportsHistoricalOrphanAttempt(t *testing.T) {
 		`CREATE TABLE delivery_verifications (id INTEGER PRIMARY KEY,delivery_order_id INTEGER,stage TEXT,status TEXT,mode_snapshot TEXT,verified_at DATETIME,created_at DATETIME)`,
 		`CREATE TABLE delivery_verification_attempts (id INTEGER PRIMARY KEY,verification_id INTEGER,delivery_order_id INTEGER,mode_snapshot TEXT,created_at DATETIME)`,
 		`CREATE TABLE admin_override_approvals (id INTEGER PRIMARY KEY,action TEXT,resource_type TEXT,resource_id INTEGER,status TEXT,approved_at DATETIME,maker_admin_id INTEGER,checker_admin_id INTEGER)`,
+		`CREATE TABLE audit_logs (id INTEGER PRIMARY KEY,actor_type TEXT,action TEXT,resource_type TEXT,resource_id INTEGER,result TEXT,created_at DATETIME)`,
 	)
 	cutover := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	mustDQExec(t, db, `INSERT INTO delivery_orders VALUES (2,'completed',?,?,?,NULL)`, cutover.Add(time.Minute), cutover.Add(time.Minute), cutover.Add(-time.Hour))
+	mustDQExec(t, db, `INSERT INTO audit_logs VALUES (2,'admin','delivery.force_complete','delivery_order',2,'success',?)`, cutover.Add(time.Minute))
 	mustDQExec(t, db, `INSERT INTO delivery_verification_attempts VALUES (1,999,88,'observe',?)`, cutover.Add(-time.Hour))
 	checker, err := NewChecker(db, DQOptions{CheckIDs: []string{"DQ-007"}, SampleLimit: 10, VerificationCutoverAt: &cutover})
 	if err != nil {

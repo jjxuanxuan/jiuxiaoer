@@ -67,6 +67,7 @@ type Wakeup struct {
 // 订单详情仍只能通过限定范围的门店订单 API 获取。
 type StoreOrderPaidEvent struct {
 	EventID    string    `json:"event_id"`
+	EventType  string    `json:"event_type,omitempty"`
 	OrderID    string    `json:"order_id"`
 	ShopID     string    `json:"shop_id"`
 	SoundKey   string    `json:"sound_key"`

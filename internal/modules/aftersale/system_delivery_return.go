@@ -51,6 +51,9 @@ func (s *Service) CreateSystemDeliveryReturnWithTx(ctx context.Context, tx *gorm
 	if err != nil {
 		return SystemDeliveryReturnResult{}, problem.Conflict("AFTER_SALE_NOT_ELIGIBLE", "delivery return order not found")
 	}
+	if order.OrderType == "wine_ticket_redemption" || order.SettlementMode == "wine_ticket" {
+		return SystemDeliveryReturnResult{}, problem.Conflict("AFTER_SALE_NOT_ELIGIBLE", "wine-ticket redemption return requires wine-ticket settlement")
+	}
 	if order.PayStatus != "succeeded" || order.PaidAmount <= 0 {
 		return SystemDeliveryReturnResult{}, problem.Conflict("AFTER_SALE_NOT_ELIGIBLE", "delivery return order has no successful payment")
 	}

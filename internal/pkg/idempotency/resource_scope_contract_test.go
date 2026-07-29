@@ -33,7 +33,6 @@ func TestPathResourceCommandsUseResourceScopedRequestHash(t *testing.T) {
 		{"internal/modules/notification/service.go", "Retry", `"notification.retry"`, "id"},
 		{"internal/modules/notification/service.go", "UpdateTemplate", `"notification_template.update"`, "id"},
 		{"internal/modules/ops/service.go", "assign", `"delivery." + kind`, "id"},
-		{"internal/modules/ops/service.go", "RequestForceComplete", `"delivery.force_complete.request"`, "id"},
 		{"internal/modules/ops/service.go", "ForceComplete", `"delivery.force_complete"`, "id"},
 		{"internal/modules/order/service.go", "cancel", `"order.cancel"`, "orderID"},
 		{"internal/modules/order/service.go", "MockPay", `"payment.mock"`, "orderID"},

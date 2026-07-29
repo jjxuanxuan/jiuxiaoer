@@ -22,6 +22,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/pkg/idempotency"
 	"jiuxiaoer-admin/backend-go/internal/pkg/metrics"
 	"jiuxiaoer-admin/backend-go/internal/pkg/paygateway"
+	"jiuxiaoer-admin/backend-go/internal/pkg/problem"
 	"jiuxiaoer-admin/backend-go/internal/pkg/snowflake"
 )
 
@@ -222,7 +223,8 @@ func TestBillReconciliationAcceptance(t *testing.T) {
 		cleanupReconciliationDate(t, db, acceptedDate)
 		paymentID := insertReconciliationPayment(t, db, ids, reconciliationDate(1), "PAY-BILL-7", "420000007", 1)
 		refundID := ids.Next()
-		if err := db.Exec("INSERT INTO refunds (id,refund_no,after_sale_id,order_id,payment_id,provider,provider_refund_id,status,amount,total_amount,currency,provider_status,requested_at,provider_accepted_at) VALUES (?,?,?,?,?,'wechat','503000007','succeeded',1,1,'CNY','SUCCESS',?,?)", refundID, "RF-BILL-7", ids.Next(), ids.Next(), paymentID, requestDate.Add(23*time.Hour), acceptedDate.Add(time.Minute)).Error; err != nil {
+		afterSaleID, orderID := ids.Next(), ids.Next()
+		if err := db.Exec("INSERT INTO refunds (id,refund_no,biz_type,biz_id,after_sale_id,order_id,payment_id,provider,provider_refund_id,status,amount,total_amount,currency,provider_status,requested_at,provider_accepted_at) VALUES (?,?,'retail_after_sale',?,?,?,?,'wechat','503000007','succeeded',1,1,'CNY','SUCCESS',?,?)", refundID, "RF-BILL-7", afterSaleID, afterSaleID, orderID, paymentID, requestDate.Add(23*time.Hour), acceptedDate.Add(time.Minute)).Error; err != nil {
 			t.Fatal(err)
 		}
 		defer func() {
@@ -398,6 +400,114 @@ func TestBillReconciliationAcceptance(t *testing.T) {
 		}
 	})
 
+	t.Run("ACC-BILL-013A-manual-reclaim-does-not-cache-running-result", func(t *testing.T) {
+		date := reconciliationDate(29)
+		cleanupReconciliationDate(t, db, date)
+		defer cleanupReconciliationDate(t, db, date)
+
+		service := NewService(cfg, db, ids, &billFixtureProvider{}, log)
+		now := date.AddDate(0, 0, 1).Add(11 * time.Hour)
+		service.now = func() time.Time { return now }
+		run, acquired, err := service.repo.acquireRun(
+			context.Background(),
+			ids.Next(),
+			date,
+			BillTypeTradeAll,
+			now,
+			cfg.Reconciliation.RunningTimeout,
+		)
+		if err != nil || !acquired || run.Status != "running" {
+			t.Fatalf("active run=%+v acquired=%v err=%v", run, acquired, err)
+		}
+
+		claims := &auth.Claims{
+			AccountType: "admin",
+			AdminUserID: "900988",
+			Permissions: []string{"refund:exception"},
+		}
+		const (
+			path = "/api/v1/admin/reconciliation/runs"
+			key  = "acc-bill-manual-running-013a"
+		)
+		requestHash := idempotency.RequestHash(map[string]any{
+			"bill_date": date.Format("2006-01-02"),
+			"bill_type": BillTypeTradeAll,
+		})
+		expired := time.Now().Add(-time.Minute)
+		if err := db.Create(&idempotency.Record{
+			ID:          ids.Next(),
+			ActorType:   "admin",
+			ActorID:     900988,
+			Method:      "POST",
+			Path:        path,
+			KeyHash:     idempotency.KeyHash(key),
+			RequestHash: requestHash,
+			Status:      "processing",
+			LockedUntil: &expired,
+			ExpiredAt:   time.Now().Add(24 * time.Hour),
+		}).Error; err != nil {
+			t.Fatal(err)
+		}
+		defer db.Where(
+			"actor_type=? AND actor_id=? AND path=? AND key_hash=?",
+			"admin",
+			uint64(900988),
+			path,
+			idempotency.KeyHash(key),
+		).Delete(&idempotency.Record{})
+
+		_, err = service.RunBillManual(
+			context.Background(),
+			claims,
+			"POST",
+			path,
+			key,
+			date.Format("2006-01-02"),
+			BillTypeTradeAll,
+		)
+		details := problem.FromError(err)
+		if details == nil || details.ErrorCode != "RECONCILIATION_IN_PROGRESS" {
+			t.Fatalf("running manual result err=%v details=%+v", err, details)
+		}
+		var released idempotency.Record
+		if err := db.Where(
+			"actor_type=? AND actor_id=? AND path=? AND key_hash=?",
+			"admin",
+			uint64(900988),
+			path,
+			idempotency.KeyHash(key),
+		).Take(&released).Error; err != nil {
+			t.Fatal(err)
+		}
+		if released.Status != "failed" || len(released.ResponseBody) != 0 {
+			t.Fatalf("running result was cached: %+v", released)
+		}
+
+		completedAt := now.Add(time.Minute)
+		if err := db.Model(&Run{}).
+			Where("id=? AND status='running'", run.ID).
+			Updates(map[string]any{
+				"status":       "succeeded",
+				"completed_at": completedAt,
+				"version":      gorm.Expr("version+1"),
+			}).Error; err != nil {
+			t.Fatal(err)
+		}
+		completed, err := service.RunBillManual(
+			context.Background(),
+			claims,
+			"POST",
+			path,
+			key,
+			date.Format("2006-01-02"),
+			BillTypeTradeAll,
+		)
+		if err != nil || !completed.AlreadyCompleted ||
+			completed.RunID != run.ID || completed.Status != "succeeded" {
+			t.Fatalf("completed retry=%+v err=%v", completed, err)
+		}
+	})
+
 	t.Run("ACC-BILL-014-provider-id-fallback-cannot-hide-business-id-mismatch", func(t *testing.T) {
 		date := reconciliationDate(27)
 		cleanupReconciliationDate(t, db, date)
@@ -470,7 +580,8 @@ func insertReconciliationPaymentAndRefund(t *testing.T, db *gorm.DB, ids *snowfl
 	t.Helper()
 	paymentID := insertReconciliationPayment(t, db, ids, date, paymentNo, tradeNo, paymentAmount)
 	refundID := ids.Next()
-	err := db.Exec("INSERT INTO refunds (id,refund_no,after_sale_id,order_id,payment_id,provider,provider_refund_id,status,amount,total_amount,currency,provider_status,requested_at) VALUES (?,?,?,?,?,'wechat',?,'succeeded',?,?,'CNY','SUCCESS',?)", refundID, refundNo, ids.Next(), ids.Next(), paymentID, providerRefundNo, refundAmount, paymentAmount, date.Add(12*time.Hour)).Error
+	afterSaleID, orderID := ids.Next(), ids.Next()
+	err := db.Exec("INSERT INTO refunds (id,refund_no,biz_type,biz_id,after_sale_id,order_id,payment_id,provider,provider_refund_id,status,amount,total_amount,currency,provider_status,requested_at) VALUES (?,?,'retail_after_sale',?,?,?,?,'wechat',?,'succeeded',?,?,'CNY','SUCCESS',?)", refundID, refundNo, afterSaleID, afterSaleID, orderID, paymentID, providerRefundNo, refundAmount, paymentAmount, date.Add(12*time.Hour)).Error
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -480,7 +591,8 @@ func insertReconciliationPaymentAndRefund(t *testing.T, db *gorm.DB, ids *snowfl
 func insertReconciliationPayment(t *testing.T, db *gorm.DB, ids *snowflake.Generator, date time.Time, paymentNo, tradeNo string, amount int64) uint64 {
 	t.Helper()
 	paymentID := ids.Next()
-	err := db.Exec("INSERT INTO payments (id,payment_no,order_id,customer_id,channel,provider,provider_trade_no,provider_status,status,amount,currency,paid_at) VALUES (?,?,?,?,'miniapp','wechat',?,'SUCCESS','succeeded',?,'CNY',?)", paymentID, paymentNo, ids.Next(), ids.Next(), tradeNo, amount, date.Add(11*time.Hour)).Error
+	orderID := ids.Next()
+	err := db.Exec("INSERT INTO payments (id,payment_no,biz_type,biz_id,order_id,customer_id,channel,provider,provider_trade_no,provider_status,status,amount,currency,paid_at) VALUES (?,?,'retail_order',?,?,?,'miniapp','wechat',?,'SUCCESS','succeeded',?,'CNY',?)", paymentID, paymentNo, orderID, orderID, ids.Next(), tradeNo, amount, date.Add(11*time.Hour)).Error
 	if err != nil {
 		t.Fatal(err)
 	}

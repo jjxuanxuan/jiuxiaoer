@@ -38,6 +38,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/modules/servicearea"
 	"jiuxiaoer-admin/backend-go/internal/modules/shop"
 	"jiuxiaoer-admin/backend-go/internal/modules/store"
+	"jiuxiaoer-admin/backend-go/internal/modules/wineticket"
 	"jiuxiaoer-admin/backend-go/internal/pkg/auditlog"
 	"jiuxiaoer-admin/backend-go/internal/pkg/metrics"
 	"jiuxiaoer-admin/backend-go/internal/pkg/snowflake"
@@ -86,6 +87,19 @@ func NewRouter(deps Dependencies) *gin.Engine {
 			}}
 		})
 	}
+	wineTicketModule := wineticket.NewModule(
+		deps.DB,
+		idGen,
+		wineticket.ModuleOptions{
+			GiftTokenPepper:  deps.Config.WineTicket.GiftTokenPepper,
+			QuoteTokenSecret: deps.Config.WineTicket.QuoteTokenSecret,
+			WeChatAppID:      deps.Config.WeChat.MiniAppID,
+			InstanceID:       deps.Config.App.InstanceID,
+		},
+	)
+	if deps.Config.WineTicket.Enabled {
+		wineTicketModule.RegisterMetrics(deps.Metrics)
+	}
 	authService := auth.NewService(deps.Config, deps.DB, deps.Redis, idGen, deps.WeChatAuth).WithSMSProvider(deps.SMSProvider)
 	authHandler := auth.NewHandler(authService)
 	auth.RegisterRoutes(api.Group("/auth"), authHandler)
@@ -120,6 +134,12 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	}
 	publicReads := api.Group("")
 	publicReads.Use(authHandler.OptionalAuth())
+	if deps.Config.WineTicket.Enabled && deps.Config.WineTicket.PackageReadEnabled {
+		wineTicketModule.RegisterCatalogRoutes(publicReads)
+	}
+	if deps.Config.WineTicket.Enabled {
+		wineTicketModule.RegisterGiftPublicRoutes(publicReads)
+	}
 	homeService := home.NewService(deps.Config.Service, deps.DB, deps.Redis, serviceAreaService, idGen).WithLocationContexts(deps.Config.CustomerLBS.Mode, customerLocationService)
 	homeHandler := home.NewHandler(homeService)
 	home.RegisterPublicRoutes(publicReads, homeHandler)
@@ -135,6 +155,20 @@ func NewRouter(deps Dependencies) *gin.Engine {
 
 	protected := api.Group("")
 	protected.Use(authHandler.AuthRequired())
+	if deps.Config.WineTicket.Enabled && deps.Config.WineTicket.AdminEnabled {
+		adminWineTicketRoutes := protected.Group("/admin/wine-tickets")
+		wineTicketModule.RegisterAdminRoutes(adminWineTicketRoutes)
+		wineTicketModule.RegisterSlotAdminRoutes(adminWineTicketRoutes)
+	}
+	if deps.Config.WineTicket.Enabled {
+		wineTicketModule.RegisterGiftContinuityRoutes(protected)
+		if deps.Config.WineTicket.GiftEnabled {
+			wineTicketModule.RegisterGiftCreationRoutes(protected)
+		}
+	}
+	if deps.Config.WineTicket.Enabled && deps.Config.WineTicket.ReminderEnabled {
+		wineTicketModule.RegisterReminderRoutes(protected)
+	}
 	search.RegisterCustomerRoutes(protected, searchHandler)
 	customerlocation.RegisterAdminRoutes(protected.Group("/admin"), customerLocationHandler)
 	if deps.Realtime == nil {
@@ -156,14 +190,46 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	memberService := member.NewService(deps.Config, deps.DB, idGen)
 	member.RegisterCustomerRoutes(protected.Group("/member"), member.NewHandler(memberService))
 
-	dispatchService := dispatch.NewService(deps.Config, deps.DB, deps.Redis, idGen, deps.Metrics, deps.Log)
+	wineTicketFulfillmentSettlement := wineTicketModule.FulfillmentSettlement()
+	dispatchService := dispatch.NewService(
+		deps.Config,
+		deps.DB,
+		deps.Redis,
+		idGen,
+		deps.Metrics,
+		deps.Log,
+	).WithAssignmentSettlementHandler(wineTicketFulfillmentSettlement)
 	dispatchHandler := dispatch.NewHandler(dispatchService)
 	incidentService := deliveryincident.NewService(deps.Config, deps.DB, idGen, deps.Metrics, deps.Redis)
 	incidentHandler := deliveryincident.NewHandler(incidentService)
 	orderService := order.NewService(deps.Config, deps.DB, idGen).WithLogger(deps.Log).WithServiceArea(serviceAreaService).WithCustomerLocation(customerLocationService).WithPaymentProvider(deps.PaymentProvider, deps.Metrics).WithDispatch(dispatchService).WithIncidentResolver(incidentService)
+	wineTicketModule.
+		WithDispatchService(dispatchService).
+		WithPaymentService(orderService)
+	orderService.
+		WithPaymentSettlementHandler(wineTicketModule.PurchasePaymentSettlement()).
+		WithPaymentSettlementHandler(wineTicketModule.RenewalPaymentSettlement())
 	orderHandler := order.NewHandler(orderService)
 	order.RegisterCallbackRoute(api, orderHandler)
 	order.RegisterRoutes(protected.Group("/orders"), orderHandler)
+	if deps.Config.WineTicket.Enabled {
+		wineTicketModule.RegisterPurchaseContinuityRoutes(protected)
+		if deps.Config.WineTicket.PurchaseEnabled {
+			wineTicketModule.RegisterPurchaseCreationRoutes(protected)
+		}
+
+		wineTicketModule.RegisterRedemptionContinuityRoutes(protected)
+		if deps.Config.WineTicket.RedemptionEnabled {
+			wineTicketModule.RegisterRedemptionCreationRoutes(protected)
+		}
+
+		wineTicketModule.RegisterRenewalContinuityRoutes(protected)
+		if deps.Config.WineTicket.RenewalEnabled {
+			wineTicketModule.RegisterRenewalCreationRoutes(protected)
+		}
+
+		wineTicketModule.RegisterCabinetRoutes(protected)
+	}
 
 	afterSaleService := aftersale.NewService(deps.Config, deps.DB, idGen)
 	afterSaleHandler := aftersale.NewHandler(afterSaleService)
@@ -171,12 +237,24 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	aftersale.RegisterStoreRoutes(protected.Group("/store/after-sales"), afterSaleHandler)
 	aftersale.RegisterAdminRoutes(protected.Group("/admin/after-sales"), afterSaleHandler)
 
-	refundService := refund.NewService(deps.Config, deps.DB, idGen, deps.RefundProvider)
+	refundService := refund.NewService(deps.Config, deps.DB, idGen, deps.RefundProvider).
+		WithRefundSettlementHandler(
+			wineTicketModule.PurchaseRefundSettlement(),
+		).
+		WithRefundSettlementHandler(
+			wineTicketModule.RenewalRefundSettlement(),
+		)
 	refund.RegisterMetrics(deps.DB, deps.Metrics)
 	refundHandler := refund.NewHandler(refundService)
 	refund.RegisterAdminRoutes(protected.Group("/admin/refunds"), refundHandler)
 	if deps.RefundProvider != nil {
 		refund.RegisterCallbackRoute(api, refundHandler)
+	}
+	if deps.Config.WineTicket.Enabled {
+		wineTicketModule.RegisterRefundContinuityRoutes(protected)
+		if deps.Config.WineTicket.RefundEnabled {
+			wineTicketModule.RegisterRefundCreationRoutes(protected)
+		}
 	}
 	if deps.DB != nil {
 		reconciliationService := reconciliation.NewService(deps.Config, deps.DB, idGen, deps.BillProvider, deps.Log)
@@ -187,10 +265,18 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	store.RegisterRoutes(protected.Group("/store"), store.NewHandler(storeService))
 
 	returnService := deliveryreturn.NewService(deps.Config, deps.DB, deps.Redis, idGen).WithAfterSale(afterSaleService)
+	returnService.WithReturnSettlementHandler(
+		wineTicketModule.ReturnSettlement(afterSaleService),
+	)
 	incidentService.WithReturnOrchestrator(returnService)
 	refundService.WithDeliveryReturnClosure(returnService)
 	returnHandler := deliveryreturn.NewHandler(returnService)
-	deliveryService := delivery.NewService(deps.DB, idGen).WithCP1(deps.Config.CP1).WithDispatch(dispatchService).WithIncidentResolver(incidentService).WithReturnGuard(returnService)
+	deliveryService := delivery.NewService(deps.DB, idGen).
+		WithCP1(deps.Config.CP1).
+		WithDispatch(dispatchService).
+		WithIncidentResolver(incidentService).
+		WithReturnGuard(returnService).
+		WithFulfillmentSettlementHandler(wineTicketFulfillmentSettlement)
 	delivery.RegisterRoutes(protected.Group("/delivery"), delivery.NewHandler(deliveryService))
 	deliveryreturn.RegisterRiderRoutes(protected.Group("/delivery"), returnHandler)
 	deliveryreturn.RegisterStoreRoutes(protected.Group("/store"), returnHandler)

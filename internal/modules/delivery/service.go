@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -23,13 +24,14 @@ import (
 )
 
 type Service struct {
-	repo      *Repository
-	idStore   *idempotency.Store
-	idGen     *snowflake.Generator
-	cp1       config.CP1Config
-	dispatch  *dispatch.Service
-	incidents IncidentResolver
-	returns   ReturnGuard
+	repo        *Repository
+	idStore     *idempotency.Store
+	idGen       *snowflake.Generator
+	cp1         config.CP1Config
+	dispatch    *dispatch.Service
+	incidents   IncidentResolver
+	returns     ReturnGuard
+	settlements *fulfillmentSettlementRegistry
 }
 
 type IncidentResolver interface {
@@ -60,9 +62,10 @@ func (s *Service) WithReturnGuard(guard ReturnGuard) *Service {
 // NewService 负责骑手配送状态流转。
 func NewService(db *gorm.DB, idGen *snowflake.Generator) *Service {
 	return &Service{
-		repo:    NewRepository(db),
-		idStore: idempotency.NewStore(db),
-		idGen:   idGen,
+		repo:        NewRepository(db),
+		idStore:     idempotency.NewStore(db),
+		idGen:       idGen,
+		settlements: newFulfillmentSettlementRegistry(),
 	}
 }
 
@@ -103,8 +106,14 @@ func candidateDeliverySummaryDTO(row DeliveryOrder) CandidateDeliverySummaryDTO 
 	}
 	return CandidateDeliverySummaryDTO{
 		ViewType: "candidate", ID: idString(row.ID), OrderID: idString(row.OrderID), ShopID: idString(row.ShopID),
-		ShopName: row.ShopName, DestinationDistrict: row.DestinationDistrict, ItemCount: row.ItemCount,
+		OrderType:       normalizedDeliveryOrderType(row.OrderType),
+		SettlementMode:  normalizedDeliverySettlementMode(row.SettlementMode),
+		SettlementLabel: deliverySettlementLabel(row.OrderType, row.SettlementMode),
+		ShopName:        row.ShopName, DestinationDistrict: row.DestinationDistrict, ItemCount: row.ItemCount,
 		PickupDistanceM: distance, GrabExpiresAt: optionalTimeString(row.GrabExpiresAt), AssignmentVersion: row.AssignmentVersion,
+		ScheduledStartAt: optionalTimeString(row.ScheduledStartAt),
+		ScheduledEndAt:   optionalTimeString(row.ScheduledEndAt),
+		NotBeforeAt:      optionalTimeString(row.NotBeforeAt),
 	}
 }
 
@@ -119,12 +128,18 @@ func assignedDeliverySummaryDTO(row DeliveryOrder) AssignedDeliverySummaryDTO {
 	}
 	return AssignedDeliverySummaryDTO{
 		ViewType: "assigned", ID: idString(row.ID), OrderID: idString(row.OrderID), ShopID: idString(row.ShopID),
-		RiderID: riderIDString(row.RiderID), Status: row.Status, AssignmentVersion: row.AssignmentVersion,
+		OrderType:       normalizedDeliveryOrderType(row.OrderType),
+		SettlementMode:  normalizedDeliverySettlementMode(row.SettlementMode),
+		SettlementLabel: deliverySettlementLabel(row.OrderType, row.SettlementMode),
+		RiderID:         riderIDString(row.RiderID), Status: row.Status, AssignmentVersion: row.AssignmentVersion,
 		DispatchStatus: row.DispatchStatus, PickupReadyStatus: row.PickupReadyStatus,
 		PickupSnapshot: *pickup, RecipientSnapshot: *recipient,
 		PickupReadyAt: optionalTimeString(row.PickupReadyAt), AcceptedAt: optionalTimeString(row.AcceptedAt),
 		PickedUpAt: optionalTimeString(row.PickedUpAt), StartedAt: optionalTimeString(row.StartedAt),
 		CompletedAt: optionalTimeString(row.CompletedAt), CreatedAt: timeString(row.CreatedAt),
+		ScheduledStartAt: optionalTimeString(row.ScheduledStartAt),
+		ScheduledEndAt:   optionalTimeString(row.ScheduledEndAt),
+		NotBeforeAt:      optionalTimeString(row.NotBeforeAt),
 	}
 }
 
@@ -311,6 +326,29 @@ func (s *Service) transition(ctx context.Context, claims *auth.Claims, method st
 			return err
 		}
 		now := time.Now()
+		switch spec.Action {
+		case "delivery_accept":
+			if err := s.applyFulfillmentSettlement(
+				ctx, tx, FulfillmentAssigned, deliveryRow, orderRow, now,
+				claims.AccountType, riderID,
+			); err != nil {
+				return err
+			}
+		case "delivery_pickup":
+			if err := s.applyFulfillmentSettlement(
+				ctx, tx, FulfillmentPickedUp, deliveryRow, orderRow, now,
+				claims.AccountType, riderID,
+			); err != nil {
+				return err
+			}
+		case "delivery_complete":
+			if err := s.applyFulfillmentSettlement(
+				ctx, tx, FulfillmentDelivered, deliveryRow, orderRow, now,
+				claims.AccountType, riderID,
+			); err != nil {
+				return err
+			}
+		}
 		deliveryValues := spec.DeliveryValues(riderID, now)
 		if spec.Action == "delivery_accept" {
 			beforeVersion := deliveryRow.AssignmentVersion
@@ -497,6 +535,9 @@ func deliveryOrderDTO(row DeliveryOrder) DeliveryOrderDTO {
 		ViewType:            viewType,
 		ID:                  idString(row.ID),
 		OrderID:             idString(row.OrderID),
+		OrderType:           normalizedDeliveryOrderType(row.OrderType),
+		SettlementMode:      normalizedDeliverySettlementMode(row.SettlementMode),
+		SettlementLabel:     deliverySettlementLabel(row.OrderType, row.SettlementMode),
 		ShopID:              idString(row.ShopID),
 		RiderID:             riderIDString(row.RiderID),
 		Status:              row.Status,
@@ -515,7 +556,34 @@ func deliveryOrderDTO(row DeliveryOrder) DeliveryOrderDTO {
 		CompletedVerifiedAt: optionalTimeString(row.CompletedVerifiedAt),
 		ShopName:            row.ShopName, DestinationDistrict: row.DestinationDistrict,
 		ItemCount: row.ItemCount, PickupDistanceM: distance, GrabExpiresAt: optionalTimeString(row.GrabExpiresAt),
+		ScheduledStartAt: optionalTimeString(row.ScheduledStartAt),
+		ScheduledEndAt:   optionalTimeString(row.ScheduledEndAt),
+		NotBeforeAt:      optionalTimeString(row.NotBeforeAt),
 	}
+}
+
+func normalizedDeliveryOrderType(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "retail"
+	}
+	return value
+}
+
+func normalizedDeliverySettlementMode(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "cash"
+	}
+	return value
+}
+
+func deliverySettlementLabel(orderType, settlementMode string) string {
+	if normalizedDeliveryOrderType(orderType) == "wine_ticket_redemption" &&
+		normalizedDeliverySettlementMode(settlementMode) == "wine_ticket" {
+		return "酒票已核销，本单无需收款"
+	}
+	return "现金支付"
 }
 
 // deliveryDTOFromAssignment 根据分配记录构造配送 DTO。

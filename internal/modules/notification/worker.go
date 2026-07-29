@@ -115,6 +115,11 @@ var eventNames = map[string][2]string{
 	"delivery.return_exception":        {"配送退回异常", "配送退回需要人工处理"},
 	"delivery.return_sla_reminder":     {"配送退回即将逾期", "配送退回尚未完成门店签收"},
 	"delivery.return_sla_breached":     {"配送退回已逾期", "配送退回超过签收时限，请立即处理"},
+	"wine_ticket.purchase_issued":      {"酒票已入柜", "您购买的酒票已存入私人酒柜"},
+	"wine_ticket.renewed":              {"酒票续期成功", "酒票有效期已更新，请前往私人酒柜查看"},
+	"wine_ticket.refund_succeeded":     {"酒票退款成功", "退款已原路退回，请前往退款记录查看"},
+	"wine_ticket.gift_claimed":         {"酒票赠礼已领取", "酒票赠礼已完成领取"},
+	"wine_ticket.gift_returned":        {"酒票赠礼已退回", "未领取的酒票已退回私人酒柜"},
 	"account.activation.requested":     {"账号已开通", "您的账号已完成开通"},
 	"account.password_reset.requested": {"密码重置", "您的账号密码已重置"},
 }
@@ -176,6 +181,9 @@ func (w *Worker) materializeForEvent(ctx context.Context, tx *gorm.DB, event out
 	}
 	if strings.HasPrefix(event.EventType, "delivery.incident.") {
 		return w.materializeIncidentEvent(tx, event)
+	}
+	if strings.HasPrefix(event.EventType, "wine_ticket.") {
+		return w.materializeWineTicketEvent(tx, event)
 	}
 	if event.AggregateType == "account" {
 		return w.materializeAccountEvent(tx, event)
@@ -271,6 +279,121 @@ func (w *Worker) materializeForEvent(ctx context.Context, tx *gorm.DB, event out
 		}
 	}
 	return nil
+}
+
+func (w *Worker) materializeWineTicketEvent(tx *gorm.DB, event outboxRow) error {
+	var payload map[string]any
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		return err
+	}
+	recipients := []uint64{}
+	switch event.EventType {
+	case "wine_ticket.purchase_issued":
+		recipients = append(recipients, payloadID(payload, "customer_id"))
+	case "wine_ticket.renewed":
+		customerID, valid, err := validateWineTicketRenewedSource(tx, event, payload)
+		if err != nil {
+			return err
+		}
+		if !valid {
+			return nil
+		}
+		recipients = append(recipients, customerID)
+	case "wine_ticket.refund_succeeded":
+		customerID, valid, err := validateWineTicketRefundSource(tx, event, payload)
+		if err != nil {
+			return err
+		}
+		if !valid {
+			return nil
+		}
+		recipients = append(recipients, customerID)
+	case "wine_ticket.gift_claimed":
+		recipients = append(
+			recipients,
+			payloadID(payload, "giver_customer_id"),
+			payloadID(payload, "receiver_customer_id"),
+		)
+	case "wine_ticket.gift_returned":
+		recipients = append(recipients, payloadID(payload, "giver_customer_id"))
+	default:
+		return nil
+	}
+	text := eventNames[event.EventType]
+	targetType := event.AggregateType
+	seen := make(map[uint64]struct{}, len(recipients))
+	for _, customerID := range recipients {
+		if customerID == 0 {
+			continue
+		}
+		if _, exists := seen[customerID]; exists {
+			continue
+		}
+		seen[customerID] = struct{}{}
+		message := Message{
+			ID: w.ids.Next(), CustomerID: customerID, SourceEventID: event.EventID,
+			Type: event.EventType, Title: text[0], Summary: text[1],
+			TargetType: &targetType, TargetID: &event.AggregateID,
+			CreatedAt: event.CreatedAt,
+		}
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&message).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateWineTicketRenewedSource(
+	tx *gorm.DB,
+	event outboxRow,
+	payload map[string]any,
+) (uint64, bool, error) {
+	if event.AggregateType != "wine_ticket_renewal" {
+		return 0, false, nil
+	}
+	customerID := payloadID(payload, "customer_id")
+	renewalNo, _ := payload["renewal_no"].(string)
+	if customerID == 0 || renewalNo == "" {
+		return 0, false, nil
+	}
+	var matched int64
+	err := tx.Table("wine_ticket_renewals").
+		Where(
+			"id=? AND customer_id=? AND renewal_no=? AND status='completed'",
+			event.AggregateID,
+			customerID,
+			renewalNo,
+		).
+		Count(&matched).Error
+	return customerID, matched == 1, err
+}
+
+func validateWineTicketRefundSource(
+	tx *gorm.DB,
+	event outboxRow,
+	payload map[string]any,
+) (uint64, bool, error) {
+	if event.AggregateType != "wine_ticket_refund" {
+		return 0, false, nil
+	}
+	customerID := payloadID(payload, "customer_id")
+	refundNo, _ := payload["refund_no"].(string)
+	purchaseNo, _ := payload["purchase_no"].(string)
+	if customerID == 0 || refundNo == "" || purchaseNo == "" {
+		return 0, false, nil
+	}
+	var matched int64
+	err := tx.Table("wine_ticket_refunds AS refund").
+		Joins("JOIN wine_ticket_purchases AS purchase ON purchase.id=refund.purchase_id").
+		Where(
+			"refund.id=? AND refund.customer_id=? AND refund.wine_ticket_refund_no=? AND refund.status='succeeded' AND purchase.purchase_no=?",
+			event.AggregateID,
+			customerID,
+			refundNo,
+			purchaseNo,
+		).
+		Count(&matched).Error
+	return customerID, matched == 1, err
 }
 
 func (w *Worker) materializeDeliveryReturnEvent(tx *gorm.DB, event outboxRow) error {

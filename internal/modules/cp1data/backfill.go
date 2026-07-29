@@ -79,6 +79,12 @@ func (b *Backfiller) Run(ctx context.Context) (BackfillReport, error) {
 		err = b.runPrintSettings(ctx, &report, fingerprint)
 	case "verification-history":
 		err = b.runVerificationHistory(ctx, &report, fingerprint)
+	case "wine-ticket-payments":
+		err = b.runWineTicketPayments(ctx, &report, fingerprint)
+	case "wine-ticket-refunds":
+		err = b.runWineTicketRefunds(ctx, &report, fingerprint)
+	case "wine-ticket-returns":
+		err = b.runWineTicketReturns(ctx, &report, fingerprint)
 	}
 	if err != nil {
 		report.FinishedAt = time.Now().UTC()
@@ -95,7 +101,7 @@ func (b *Backfiller) Run(ctx context.Context) (BackfillReport, error) {
 func normalizedRange(value IDRange) IDRange {
 	if value.Max == 0 {
 		// 生成的 ID 保持在 63 位有符号雪花 ID 范围内，
-		// 可兼容不同 MySQL 驱动和 SQLite 验证夹具。
+		// 可兼容不同 MySQL 驱动和测试验证夹具。
 		value.Max = maxBackfillID
 	}
 	return value

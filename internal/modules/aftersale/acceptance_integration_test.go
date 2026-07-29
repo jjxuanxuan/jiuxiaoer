@@ -352,7 +352,7 @@ func insertAcceptanceOrder(t *testing.T, db *gorm.DB, ids *snowflake.Generator, 
 		completed = nil
 	}
 	mustExec(t, db, "INSERT INTO orders (id,order_no,customer_id,merchant_id,shop_id,status,pay_status,delivery_status,goods_amount,payable_amount,paid_amount,address_snapshot,completed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", fx.orderID, "ACC-ORDER-"+idString(fx.orderID), fx.customerID, fx.merchantID, fx.shopID, status, payStatus, "completed", amount*int64(itemCount), amount*int64(itemCount), paidAmount*int64(itemCount), `{"contact_name":"fixture"}`, completed)
-	mustExec(t, db, "INSERT INTO payments (id,payment_no,order_id,customer_id,channel,provider,status,amount,currency) VALUES (?,?,?,?, 'miniapp','wechat',?,?, 'CNY')", fx.paymentID, "ACC-PAY-"+idString(fx.paymentID), fx.orderID, fx.customerID, payStatus, amount*int64(itemCount))
+	mustExec(t, db, "INSERT INTO payments (id,payment_no,biz_type,biz_id,order_id,customer_id,channel,provider,status,amount,currency) VALUES (?,?,'retail_order',?,?,?, 'miniapp','wechat',?,?, 'CNY')", fx.paymentID, "ACC-PAY-"+idString(fx.paymentID), fx.orderID, fx.orderID, fx.customerID, payStatus, amount*int64(itemCount))
 	mustExec(t, db, "INSERT INTO product_stocks (id,shop_product_id,shop_id,product_id,available_qty,reserved_qty) VALUES (?,?,?,?,10,0)", fx.stockID, fx.shopProductID, fx.shopID, ids.Next())
 	for index := 0; index < itemCount; index++ {
 		itemID := ids.Next()

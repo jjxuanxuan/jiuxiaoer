@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	_ "time/tzdata"
 
 	"jiuxiaoer-admin/backend-go/internal/app"
 	"jiuxiaoer-admin/backend-go/internal/config"
@@ -19,7 +20,7 @@ func main() {
 	if defaultRole == "" {
 		defaultRole = "all"
 	}
-	role := flag.String("role", defaultRole, "outbox-publisher|mq-consumer-notification|mq-consumer-print|mq-consumer-cache|mq-consumer-security|mq-consumer-dispatch|mq-dead-sink|search-retention|all")
+	role := flag.String("role", defaultRole, "outbox-publisher|mq-consumer-notification|mq-consumer-print|mq-consumer-cache|mq-consumer-security|mq-consumer-dispatch|mq-dead-sink|search-retention|wine-ticket-maintenance|all")
 	flag.Parse()
 
 	cfg := config.Load()

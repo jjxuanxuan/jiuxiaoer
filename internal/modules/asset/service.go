@@ -66,6 +66,12 @@ func (s *Service) Debit(ctx context.Context, cmd Command) (TransactionDTO, error
 
 // postTransfer 执行转账后的处理。
 func (s *Service) postTransfer(ctx context.Context, cmd Command, direction int64, reversalOf *uint64) (TransactionDTO, error) {
+	return s.postTransferWithDB(ctx, s.db, cmd, direction, reversalOf)
+}
+
+// postTransferWithDB 在指定数据库事务中执行转账。
+// 调整单使用该入口把状态、账本、审计和幂等响应放在同一事务边界内。
+func (s *Service) postTransferWithDB(ctx context.Context, db *gorm.DB, cmd Command, direction int64, reversalOf *uint64) (TransactionDTO, error) {
 	if !s.cfg.Asset.WriteEnabled {
 		return TransactionDTO{}, problem.New(503, "ASSET_WRITE_DISABLED", "Service Unavailable", "asset writes are disabled")
 	}
@@ -83,7 +89,7 @@ func (s *Service) postTransfer(ctx context.Context, cmd Command, direction int64
 		Metadata                                      map[string]any
 	}{cmd.CustomerID, cmd.AssetType, cmd.Unit, cmd.SourceType, cmd.SourceID, cmd.Action, cmd.Amount, cmd.ExpiresAt, cmd.Metadata})
 	var out TransactionDTO
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing Transaction
 		err := tx.Where("source_type=? AND source_id=? AND action=?", cmd.SourceType, cmd.SourceID, cmd.Action).Take(&existing).Error
 		if err == nil {
@@ -182,8 +188,8 @@ func (s *Service) postTransfer(ctx context.Context, cmd Command, direction int64
 	})
 	if err != nil && problem.FromError(err).ErrorCode == "ASSET_IDEMPOTENCY_CONFLICT" {
 		var existing Transaction
-		if lookupErr := s.db.WithContext(ctx).Where("source_type=? AND source_id=? AND action=?", cmd.SourceType, cmd.SourceID, cmd.Action).Take(&existing).Error; lookupErr == nil && existing.RequestHash == reqHash {
-			if recovered, dtoErr := s.transactionDTO(ctx, s.db, existing, cmd.CustomerID, cmd.Metadata); dtoErr == nil {
+		if lookupErr := db.WithContext(ctx).Where("source_type=? AND source_id=? AND action=?", cmd.SourceType, cmd.SourceID, cmd.Action).Take(&existing).Error; lookupErr == nil && existing.RequestHash == reqHash {
+			if recovered, dtoErr := s.transactionDTO(ctx, db, existing, cmd.CustomerID, cmd.Metadata); dtoErr == nil {
 				return recovered, nil
 			}
 		}
@@ -324,7 +330,22 @@ func (s *Service) validateCommand(cmd Command, direction int64) error {
 		if cmd.AssetType != TypeBalance || direction != 1 || cmd.Action != "credit" {
 			return problem.Forbidden("ASSET_SOURCE_NOT_ALLOWED", "compensation may only credit account balance")
 		}
-	case "manual_adjustment", "reconciliation_test":
+	case "manual_adjustment":
+		if direction > 0 && cmd.Action != "credit" ||
+			direction < 0 && cmd.Action != "debit" {
+			return problem.Forbidden(
+				"ASSET_SOURCE_NOT_ALLOWED",
+				"asset source action and direction do not match",
+			)
+		}
+	case "reconciliation_test":
+		if direction > 0 && cmd.Action != "credit" ||
+			direction < 0 && cmd.Action != "debit" && cmd.Action != "freeze" {
+			return problem.Forbidden(
+				"ASSET_SOURCE_NOT_ALLOWED",
+				"asset source action and direction do not match",
+			)
+		}
 	case "expiry":
 		if cmd.Action != "expire" {
 			return problem.Forbidden("ASSET_SOURCE_NOT_ALLOWED", "expiry source action is invalid")

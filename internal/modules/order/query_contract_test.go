@@ -57,7 +57,8 @@ func TestOrderDetailProjectionUsesHistoricalSnapshotsAndSafeSummaries(t *testing
 		SalePriceAmount: 5000, TotalAmount: 10000,
 	}}
 	providerTradeNo := "wx-secret-trade-no"
-	payment := Payment{PaymentNo: "P100", OrderID: 100, Channel: "miniapp", Provider: "wechat", ProviderTradeNo: &providerTradeNo, Status: "succeeded", Amount: 10000, Currency: "CNY", PaidAt: &now, ClientPayload: datatypes.JSON(`{"paySign":"secret"}`)}
+	orderID := uint64(100)
+	payment := Payment{PaymentNo: "P100", OrderID: &orderID, Channel: "miniapp", Provider: "wechat", ProviderTradeNo: &providerTradeNo, Status: "succeeded", Amount: 10000, Currency: "CNY", PaidAt: &now, ClientPayload: datatypes.JSON(`{"paySign":"secret"}`)}
 
 	dto := orderDetailDTO(row, OrderShop{ID: 4201, Name: "南山店"}, items, payment, true)
 	if dto.ItemSummary.Name != "下单时商品名" || dto.Items[0].ImageURL != "https://example.test/old.jpg" || dto.AddressSnapshot.SnapshotQuality != "complete" {

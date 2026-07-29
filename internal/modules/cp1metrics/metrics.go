@@ -24,6 +24,22 @@ type statusCount struct {
 	Count    int64
 }
 
+type adminActionSeries struct {
+	Action string
+	Result string
+}
+
+var adminHighRiskSeries = []adminActionSeries{
+	{Action: "delivery.force_complete", Result: "success"},
+	{Action: "delivery.force_complete", Result: "failed"},
+	{Action: "asset_adjustment.execute", Result: "success"},
+	{Action: "asset_adjustment.execute", Result: "failed"},
+	{Action: "wine_ticket_exception.resolution_executed", Result: "success"},
+	{Action: "wine_ticket_exception.resolution_executed", Result: "failed"},
+	{Action: "wine_ticket.package.publish", Result: "success"},
+	{Action: "wine_ticket.package.publish", Result: "failed"},
+}
+
 // collect 收集Sample列表。
 func collect(db *gorm.DB) []metrics.Sample {
 	samples := []metrics.Sample{}
@@ -44,13 +60,55 @@ func collect(db *gorm.DB) []metrics.Sample {
 	for _, r := range attempts {
 		samples = append(samples, metrics.Sample{Name: "jxe_delivery_verification_total", Help: "Delivery verification attempts by stage and result.", Type: "gauge", Labels: map[string]string{"stage": r.Stage, "result": r.Result}, Value: float64(r.Count)})
 	}
-	var overrides []struct {
+	var overrideCount int64
+	if err := db.Table("audit_logs").
+		Where(
+			"actor_type='admin' AND action='delivery.force_complete' AND result='success'",
+		).
+		Count(&overrideCount).Error; err == nil {
+		samples = append(samples, metrics.Sample{
+			Name:   "jxe_admin_override_total",
+			Help:   "Successful audited admin override operations.",
+			Type:   "gauge",
+			Labels: map[string]string{"action": "delivery.force_complete"},
+			Value:  float64(overrideCount),
+		})
+	}
+	var highRiskActions []struct {
 		Action string
+		Result string
 		Count  int64
 	}
-	_ = db.Table("admin_override_approvals").Select("action,COUNT(*) count").Where("status='approved'").Group("action").Scan(&overrides).Error
-	for _, r := range overrides {
-		samples = append(samples, metrics.Sample{Name: "jxe_admin_override_total", Help: "Approved admin override operations.", Type: "gauge", Labels: map[string]string{"action": r.Action}, Value: float64(r.Count)})
+	if err := db.Table("audit_logs").
+		Select("action,result,COUNT(*) count").
+		Where(
+			"actor_type='admin' AND action IN ? AND result IN ?",
+			[]string{
+				"delivery.force_complete",
+				"asset_adjustment.execute",
+				"wine_ticket_exception.resolution_executed",
+				"wine_ticket.package.publish",
+			},
+			[]string{"success", "failed"},
+		).
+		Group("action,result").
+		Scan(&highRiskActions).Error; err == nil {
+		counts := make(map[adminActionSeries]int64, len(adminHighRiskSeries))
+		for _, row := range highRiskActions {
+			counts[adminActionSeries{Action: row.Action, Result: row.Result}] = row.Count
+		}
+		for _, series := range adminHighRiskSeries {
+			samples = append(samples, metrics.Sample{
+				Name: "jxe_admin_high_risk_action_total",
+				Help: "Audited single-operator high-risk admin actions by action and result.",
+				Type: "gauge",
+				Labels: map[string]string{
+					"action": series.Action,
+					"result": series.Result,
+				},
+				Value: float64(counts[series]),
+			})
+		}
 	}
 	return samples
 }

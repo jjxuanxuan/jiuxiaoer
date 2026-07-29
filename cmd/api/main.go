@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	_ "time/tzdata"
 
 	"jiuxiaoer-admin/backend-go/internal/app"
 	"jiuxiaoer-admin/backend-go/internal/config"

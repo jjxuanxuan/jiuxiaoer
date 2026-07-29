@@ -2,7 +2,7 @@ package order
 
 import (
 	"context"
-	"strings"
+	"errors"
 	"testing"
 	"time"
 
@@ -14,7 +14,7 @@ import (
 )
 
 func TestGetShopProductForOrderCombinesProductAndCategoryRestrictions(t *testing.T) {
-	dsn := "file:" + strings.ReplaceAll(t.Name(), "/", "_") + "?mode=memory&cache=shared"
+	dsn := uniqueSQLiteMemoryDSN(t)
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		t.Fatal(err)
@@ -45,30 +45,72 @@ func TestGetShopProductForOrderCombinesProductAndCategoryRestrictions(t *testing
 }
 
 func TestCustomerOrderKeysetDoesNotSkipWhenEarlierRowsChange(t *testing.T) {
-	dsn := "file:" + strings.ReplaceAll(t.Name(), "/", "_") + "?mode=memory&cache=shared"
+	dsn := uniqueSQLiteMemoryDSN(t)
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Exec(`CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER NOT NULL, status TEXT, created_at DATETIME NOT NULL, deleted_at DATETIME)`).Error; err != nil {
+	if err := db.Exec(`CREATE TABLE orders (
+		id INTEGER PRIMARY KEY,
+		customer_id INTEGER NOT NULL,
+		order_type TEXT NOT NULL,
+		settlement_mode TEXT NOT NULL,
+		status TEXT,
+		created_at DATETIME NOT NULL,
+		deleted_at DATETIME
+	)`).Error; err != nil {
 		t.Fatal(err)
 	}
 	base := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
 	for id, createdAt := range map[uint64]time.Time{1: base, 2: base.Add(time.Minute), 3: base.Add(2 * time.Minute)} {
-		if err := db.Exec(`INSERT INTO orders (id,customer_id,status,created_at) VALUES (?,?,?,?)`, id, 10, "paid", createdAt).Error; err != nil {
+		if err := db.Exec(
+			`INSERT INTO orders (id,customer_id,order_type,settlement_mode,status,created_at)
+			 VALUES (?,?,?,?,?,?)`,
+			id,
+			10,
+			retailOrderType,
+			cashSettlementMode,
+			"paid",
+			createdAt,
+		).Error; err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := db.Exec(
+		`INSERT INTO orders (id,customer_id,order_type,settlement_mode,status,created_at)
+		 VALUES (?,?,?,?,?,?)`,
+		9,
+		10,
+		"wine_ticket_redemption",
+		"wine_ticket",
+		"paid",
+		base.Add(90*time.Second),
+	).Error; err != nil {
+		t.Fatal(err)
 	}
 	repo := NewRepository(db)
 	first, err := repo.ListCustomerOrders(context.Background(), 10, CustomerOrderListFilters{}, pagination.Query{PageSize: 2})
 	if err != nil || len(first) != 3 || first[0].ID != 3 || first[1].ID != 2 {
 		t.Fatalf("unexpected first page rows: %#v err=%v", first, err)
 	}
+	if _, _, err := repo.GetCustomerOrder(context.Background(), 10, 9); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("wine-ticket order leaked through retail detail: %v", err)
+	}
+	if _, err := repo.LockCustomerOrder(context.Background(), db, 10, 9); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("wine-ticket order leaked through retail write lock: %v", err)
+	}
 	cursor := pagination.Query{PageSize: 2, Offset: 2, Cursor: []string{first[1].CreatedAt.UTC().Format(time.RFC3339Nano), idString(first[1].ID)}}
 	if err := db.Exec(`DELETE FROM orders WHERE id=3`).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Exec(`INSERT INTO orders (id,customer_id,status,created_at) VALUES (4,10,'paid',?)`, base.Add(3*time.Minute)).Error; err != nil {
+	if err := db.Exec(
+		`INSERT INTO orders (id,customer_id,order_type,settlement_mode,status,created_at)
+		 VALUES (4,10,?,?,?,?)`,
+		retailOrderType,
+		cashSettlementMode,
+		"paid",
+		base.Add(3*time.Minute),
+	).Error; err != nil {
 		t.Fatal(err)
 	}
 	second, err := repo.ListCustomerOrders(context.Background(), 10, CustomerOrderListFilters{}, cursor)
@@ -78,7 +120,7 @@ func TestCustomerOrderKeysetDoesNotSkipWhenEarlierRowsChange(t *testing.T) {
 }
 
 func TestCustomerPhoneBoundRequiresNonEmptyActiveRow(t *testing.T) {
-	dsn := "file:" + strings.ReplaceAll(t.Name(), "/", "_") + "?mode=memory&cache=shared"
+	dsn := uniqueSQLiteMemoryDSN(t)
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		t.Fatal(err)
@@ -110,3 +152,64 @@ func TestCustomerPhoneBoundRequiresNonEmptyActiveRow(t *testing.T) {
 		t.Fatalf("deleted customer must be unbound: bound=%t err=%v", bound, err)
 	}
 }
+
+func TestClaimNextReconcilablePaymentOnlyRetriesScheduledExceptions(t *testing.T) {
+	dsn := uniqueSQLiteMemoryDSN(t)
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&Order{}, &Payment{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`ALTER TABLE orders ADD COLUMN deleted_at DATETIME`,
+		`ALTER TABLE payments ADD COLUMN deleted_at DATETIME`,
+	} {
+		if err := db.Exec(statement).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	past := now.Add(-time.Minute)
+	bizType := "wine_ticket_purchase"
+	bizID := uint64(101)
+	rows := []Payment{
+		{
+			ID: 1, PaymentNo: "PAY-SCHEDULED", BizType: &bizType, BizID: &bizID,
+			CustomerID: 1, Provider: "wechat", Status: "exception",
+			ProviderStatus: stringPointer("SUCCESS"), Amount: 100, Currency: "CNY",
+			NextReconcileAt: &past, CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour),
+		},
+		{
+			ID: 2, PaymentNo: "PAY-UNSCHEDULED", BizType: &bizType, BizID: &bizID,
+			CustomerID: 1, Provider: "wechat", Status: "exception",
+			ProviderStatus: stringPointer("SUCCESS"), Amount: 100, Currency: "CNY",
+			CreatedAt: now.Add(-2 * time.Hour), UpdatedAt: now.Add(-2 * time.Hour),
+		},
+	}
+	if err := db.Create(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	claimed, err := NewRepository(db).ClaimNextReconcilablePayment(
+		context.Background(), "wechat", now, now.Add(-5*time.Minute),
+	)
+	if err != nil {
+		t.Fatalf("claim scheduled exception: %v", err)
+	}
+	if claimed.ID != 1 || claimed.ReconcileAttempts != 1 ||
+		claimed.NextReconcileAt == nil || !claimed.NextReconcileAt.After(now) {
+		t.Fatalf("unexpected claimed payment: %+v", claimed)
+	}
+
+	_, err = NewRepository(db).ClaimNextReconcilablePayment(
+		context.Background(), "wechat", now, now.Add(-5*time.Minute),
+	)
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("unscheduled exception must not be claimed: %v", err)
+	}
+}
+
+func stringPointer(value string) *string { return &value }

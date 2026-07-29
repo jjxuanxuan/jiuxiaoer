@@ -102,6 +102,58 @@ func TestDeliveryIncidentNotificationNeverTargetsCustomer(t *testing.T) {
 	}
 }
 
+func TestWineTicketGiftClaimNotifiesBothCustomersWithoutOrderLookup(t *testing.T) {
+	t.Parallel()
+	db, err := gorm.Open(
+		sqlite.Open("file:"+strings.ReplaceAll(t.Name(), "/", "_")+"?mode=memory&cache=shared"),
+		&gorm.Config{Logger: logger.Default.LogMode(logger.Silent)},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&Message{}); err != nil {
+		t.Fatal(err)
+	}
+	worker := NewWorker(
+		config.CP1Config{},
+		db,
+		snowflake.New(995),
+		&FakeProvider{},
+		"wine-ticket-notification-test",
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	payload := datatypes.JSON(`{"gift_no":"WTG1","giver_customer_id":"101","receiver_customer_id":"202","product_id":"303","quantity":2}`)
+	if err := worker.MaterializeEvent(
+		t.Context(),
+		db,
+		"wine-gift-claimed-1",
+		"wine_ticket.gift_claimed",
+		"wine_ticket_gift",
+		404,
+		payload,
+		time.Now(),
+	); err != nil {
+		t.Fatal(err)
+	}
+	var messages []Message
+	if err := db.Order("customer_id").Find(&messages).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 2 ||
+		messages[0].CustomerID != 101 ||
+		messages[1].CustomerID != 202 {
+		t.Fatalf("gift claim recipients mismatch: %+v", messages)
+	}
+	for _, message := range messages {
+		if message.TargetType == nil ||
+			*message.TargetType != "wine_ticket_gift" ||
+			message.TargetID == nil ||
+			*message.TargetID != 404 {
+			t.Fatalf("gift inbox target mismatch: %+v", message)
+		}
+	}
+}
+
 func TestDeliveryReturnNotificationUsesExplicitRecipients(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:"+strings.ReplaceAll(t.Name(), "/", "_")+"?mode=memory&cache=shared"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {

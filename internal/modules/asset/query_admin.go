@@ -187,7 +187,7 @@ func (s *Service) AdminTransaction(ctx context.Context, claims *auth.Claims, raw
 	return items[0], nil
 }
 
-// CreateAdjustment 创建调整单。
+// CreateAdjustment 创建调整单并由当前管理员直接执行。
 func (s *Service) CreateAdjustment(ctx context.Context, claims *auth.Claims, method, path, key string, req AdjustmentCreateReq) (AdjustmentDTO, error) {
 	adminID, err := adminIDWithPermission(claims, "asset_adjustment:create")
 	if err != nil {
@@ -201,19 +201,39 @@ func (s *Service) CreateAdjustment(ctx context.Context, claims *auth.Claims, met
 	if err != nil {
 		return AdjustmentDTO{}, err
 	}
+	if req.Direction != "credit" && req.Direction != "debit" {
+		return AdjustmentDTO{}, problem.New(422, "ASSET_AMOUNT_INVALID", "Unprocessable Entity", "manual adjustment direction is invalid")
+	}
 	limit := int64(100000)
 	if req.AssetType == TypeBalance {
 		limit = 50000
 	}
-	if req.Amount > limit {
+	if req.Amount <= 0 || req.Amount > limit {
 		return AdjustmentDTO{}, problem.New(422, "ASSET_AMOUNT_INVALID", "Unprocessable Entity", "manual adjustment exceeds configured limit")
 	}
 	var out AdjustmentDTO
+	var executionErr error
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		allowed, authErr := activeAdminHasPermission(
+			ctx,
+			tx,
+			adminID,
+			"asset_adjustment:create",
+		)
+		if authErr != nil {
+			return authErr
+		}
+		if !allowed {
+			return problem.Forbidden(
+				"PERM_FORBIDDEN",
+				"administrator is no longer active or authorized",
+			)
+		}
 		started, err := s.idem.Start(ctx, tx, s.ids.Next(), "admin", adminID, method, path, key, idempotency.RequestHash(req))
 		if err != nil {
 			return err
 		}
+		var row Adjustment
 		if !started {
 			ok, err := s.idem.CachedResponse(ctx, tx, "admin", adminID, path, key, &out)
 			if err != nil {
@@ -222,113 +242,267 @@ func (s *Service) CreateAdjustment(ctx context.Context, claims *auth.Claims, met
 			if !ok {
 				return problem.Conflict("IDEMPOTENCY_CONFLICT", "idempotent response unavailable")
 			}
-			return nil
+			id, parseErr := parseID(out.ID)
+			if parseErr != nil {
+				return problem.Conflict("IDEMPOTENCY_CONFLICT", "cached adjustment response is invalid")
+			}
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=? AND created_by=?", id, adminID).Take(&row).Error; err != nil {
+				return problem.Conflict("IDEMPOTENCY_CONFLICT", "cached adjustment no longer exists")
+			}
+			out = adjustmentDTO(row)
+			switch row.Status {
+			case "succeeded", "rejected":
+				return s.idem.Succeed(ctx, tx, "admin", adminID, path, key, out)
+			case "failed":
+				executionErr = adjustmentExecutionError(out.FailureCode)
+				return s.idem.Succeed(ctx, tx, "admin", adminID, path, key, out)
+			case "pending", "executing":
+				// 兼容升级前已创建但尚未完成的历史调整单；下面会幂等续办。
+			default:
+				return problem.Conflict("ASSET_ADJUSTMENT_STATE_CONFLICT", "adjustment state is invalid")
+			}
+		} else {
+			if err := s.requireCustomer(ctx, tx, customerID); err != nil {
+				return err
+			}
+			evidence := jsonData(req.EvidenceRefs)
+			row = Adjustment{ID: s.ids.Next(), AdjustmentNo: "AD" + fmt.Sprint(s.ids.Next()), CustomerID: customerID, AssetType: req.AssetType, Unit: unit, Direction: req.Direction, Amount: req.Amount, ReasonCode: req.ReasonCode, Reason: req.Reason, EvidenceRefs: evidence, Status: "pending", CreatedBy: adminID, IdempotencyKeyHash: keyHash(key), Version: 1}
+			if err := tx.Create(&row).Error; err != nil {
+				return err
+			}
+			if err := tx.Create(s.adjustmentAudit(
+				ctx,
+				adminID,
+				"asset_adjustment.create",
+				row,
+				nil,
+				map[string]any{
+					"status":               row.Status,
+					"version":              row.Version,
+					"customer_id":          req.CustomerID,
+					"asset_type":           req.AssetType,
+					"amount":               req.Amount,
+					"direction":            req.Direction,
+					"reason_code":          req.ReasonCode,
+					"reason":               req.Reason,
+					"idempotency_key_hash": row.IdempotencyKeyHash,
+				},
+				"success",
+				nil,
+			)).Error; err != nil {
+				return err
+			}
 		}
-		if err := s.requireCustomer(ctx, tx, customerID); err != nil {
-			return err
+
+		executionBeforeStatus := row.Status
+		executionBeforeVersion := row.Version
+		if row.Status == "pending" {
+			now := s.now().UTC()
+			result := tx.Model(&Adjustment{}).Where("id=? AND status='pending' AND version=?", row.ID, row.Version).Updates(map[string]any{"status": "executing", "reviewed_by": adminID, "reviewed_at": now, "version": gorm.Expr("version+1")})
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return problem.Conflict("ASSET_ADJUSTMENT_STATE_CONFLICT", "adjustment state or version changed")
+			}
+			row.Status = "executing"
+			row.ReviewedBy = &adminID
+			row.ReviewedAt = &now
+			row.Version++
 		}
-		evidence := jsonData(req.EvidenceRefs)
-		row := Adjustment{ID: s.ids.Next(), AdjustmentNo: "AD" + fmt.Sprint(s.ids.Next()), CustomerID: customerID, AssetType: req.AssetType, Unit: unit, Direction: req.Direction, Amount: req.Amount, ReasonCode: req.ReasonCode, Reason: req.Reason, EvidenceRefs: evidence, Status: "pending", CreatedBy: adminID, IdempotencyKeyHash: keyHash(key), Version: 1}
-		if err := tx.Create(&row).Error; err != nil {
-			return err
+
+		// 历史 executing 记录可能仍保留旧 reviewer；本次直执流水和审计必须
+		// 归因于当前已认证、且刚刚通过事务内权限复核的管理员。
+		actorID := adminID
+		action := "credit"
+		direction := int64(1)
+		if row.Direction == "debit" {
+			action = "debit"
+			direction = -1
 		}
-		if err := tx.Create(s.audit(ctx, "admin", adminID, "asset_adjustment.create", row.ID, nil, map[string]any{"customer_id": req.CustomerID, "asset_type": req.AssetType, "amount": req.Amount, "direction": req.Direction})).Error; err != nil {
+		cmd := Command{CustomerID: row.CustomerID, AssetType: row.AssetType, Unit: row.Unit, Amount: row.Amount, SourceType: "manual_adjustment", SourceID: idString(row.ID), Action: action, IdempotencyKey: key, ActorType: "admin", ActorID: actorID, Metadata: map[string]any{"adjustment_no": row.AdjustmentNo, "reason_code": row.ReasonCode}}
+		var txDTO TransactionDTO
+		txDTO, executionErr = s.postTransferWithDB(ctx, tx, cmd, direction, nil)
+		if executionErr != nil {
+			code := problem.FromError(executionErr).ErrorCode
+			if !isTerminalAdjustmentFailure(code) {
+				return executionErr
+			}
+			result := tx.Model(&Adjustment{}).Where("id=? AND status='executing'", row.ID).Updates(map[string]any{"status": "failed", "failure_code": code, "version": gorm.Expr("version+1")})
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return problem.Conflict("ASSET_ADJUSTMENT_STATE_CONFLICT", "adjustment state changed while execution failed")
+			}
+		} else {
+			txID, parseErr := parseID(txDTO.ID)
+			if parseErr != nil {
+				return problem.Internal("asset transaction id is invalid")
+			}
+			result := tx.Model(&Adjustment{}).Where("id=? AND status='executing'", row.ID).Updates(map[string]any{"status": "succeeded", "asset_transaction_id": txID, "failure_code": nil, "version": gorm.Expr("version+1")})
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return problem.Conflict("ASSET_ADJUSTMENT_STATE_CONFLICT", "adjustment state changed while execution succeeded")
+			}
+		}
+		if err := tx.Where("id=?", row.ID).Take(&row).Error; err != nil {
 			return err
 		}
 		out = adjustmentDTO(row)
-		return s.idem.Succeed(ctx, tx, "admin", adminID, path, key, out)
-	})
-	return out, err
-}
-
-// ApproveAdjustment 审批通过调整单。
-func (s *Service) ApproveAdjustment(ctx context.Context, claims *auth.Claims, rawID, key string, req AdjustmentReviewReq) (AdjustmentDTO, error) {
-	checker, err := adminIDWithPermission(claims, "asset_adjustment:approve")
-	if err != nil {
-		return AdjustmentDTO{}, err
-	}
-	id, err := parseID(rawID)
-	if err != nil {
-		return AdjustmentDTO{}, problem.NotFound("ASSET_ADJUSTMENT_NOT_FOUND", "asset adjustment not found")
-	}
-	var row Adjustment
-	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=?", id).Take(&row).Error; err != nil {
-			return problem.NotFound("ASSET_ADJUSTMENT_NOT_FOUND", "asset adjustment not found")
+		result := "success"
+		var errorCode *string
+		if executionErr != nil {
+			result = "failed"
+			code := out.FailureCode
+			errorCode = &code
 		}
-		if row.CreatedBy == checker {
-			return problem.Forbidden("ADJUSTMENT_SELF_APPROVAL_FORBIDDEN", "adjustment creator cannot approve it")
-		}
-		if row.Status == "succeeded" {
-			return nil
-		}
-		if row.Status != "pending" || row.Version != req.Version {
-			return problem.Conflict("ASSET_ADJUSTMENT_STATE_CONFLICT", "adjustment state or version changed")
-		}
-		now := s.now().UTC()
-		return tx.Model(&Adjustment{}).Where("id=? AND status='pending' AND version=?", id, req.Version).Updates(map[string]any{"status": "executing", "reviewed_by": checker, "reviewed_at": now, "version": gorm.Expr("version+1")}).Error
-	})
-	if err != nil {
-		return AdjustmentDTO{}, err
-	}
-	if row.Status == "succeeded" {
-		return adjustmentDTO(row), nil
-	}
-	cmd := Command{CustomerID: row.CustomerID, AssetType: row.AssetType, Unit: row.Unit, Amount: row.Amount, SourceType: "manual_adjustment", SourceID: idString(row.ID), IdempotencyKey: key, ActorType: "admin", ActorID: checker, Metadata: map[string]any{"adjustment_no": row.AdjustmentNo, "reason_code": row.ReasonCode}}
-	var txDTO TransactionDTO
-	if row.Direction == "credit" {
-		txDTO, err = s.Credit(ctx, cmd)
-	} else {
-		txDTO, err = s.Debit(ctx, cmd)
-	}
-	if err != nil {
-		code := problem.FromError(err).ErrorCode
-		_ = s.db.Model(&Adjustment{}).Where("id=? AND status='executing'", row.ID).Updates(map[string]any{"status": "failed", "failure_code": code, "version": gorm.Expr("version+1")}).Error
-		return AdjustmentDTO{}, err
-	}
-	txID, _ := parseID(txDTO.ID)
-	now := s.now().UTC()
-	if err = s.db.Model(&Adjustment{}).Where("id=? AND status='executing'", row.ID).Updates(map[string]any{"status": "succeeded", "asset_transaction_id": txID, "reviewed_by": checker, "reviewed_at": now, "version": gorm.Expr("version+1")}).Error; err != nil {
-		return AdjustmentDTO{}, err
-	}
-	if err = s.db.Where("id=?", row.ID).Take(&row).Error; err != nil {
-		return AdjustmentDTO{}, err
-	}
-	return adjustmentDTO(row), nil
-}
-
-// RejectAdjustment 拒绝调整单。
-func (s *Service) RejectAdjustment(ctx context.Context, claims *auth.Claims, rawID string, req AdjustmentReviewReq) (AdjustmentDTO, error) {
-	checker, err := adminIDWithPermission(claims, "asset_adjustment:approve")
-	if err != nil {
-		return AdjustmentDTO{}, err
-	}
-	id, err := parseID(rawID)
-	if err != nil {
-		return AdjustmentDTO{}, problem.NotFound("ASSET_ADJUSTMENT_NOT_FOUND", "asset adjustment not found")
-	}
-	var row Adjustment
-	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=?", id).Take(&row).Error; err != nil {
-			return problem.NotFound("ASSET_ADJUSTMENT_NOT_FOUND", "asset adjustment not found")
-		}
-		if row.CreatedBy == checker {
-			return problem.Forbidden("ADJUSTMENT_SELF_APPROVAL_FORBIDDEN", "adjustment creator cannot reject it")
-		}
-		if row.Status != "pending" || row.Version != req.Version {
-			return problem.Conflict("ASSET_ADJUSTMENT_STATE_CONFLICT", "adjustment state or version changed")
-		}
-		now := s.now().UTC()
-		if err := tx.Model(&Adjustment{}).Where("id=?", id).Updates(map[string]any{"status": "rejected", "reviewed_by": checker, "reviewed_at": now, "version": gorm.Expr("version+1")}).Error; err != nil {
+		if err := tx.Create(s.adjustmentAudit(
+			ctx,
+			actorID,
+			"asset_adjustment.execute",
+			row,
+			map[string]any{
+				"status":  executionBeforeStatus,
+				"version": executionBeforeVersion,
+			},
+			map[string]any{
+				"status":               out.Status,
+				"version":              out.Version,
+				"asset_transaction_id": out.AssetTransactionID,
+				"transaction_action":   action,
+				"failure_code":         out.FailureCode,
+				"reason_code":          row.ReasonCode,
+				"reason":               row.Reason,
+				"idempotency_key_hash": row.IdempotencyKeyHash,
+			},
+			result,
+			errorCode,
+		)).Error; err != nil {
 			return err
 		}
-		row.Status = "rejected"
-		row.ReviewedBy = &checker
-		row.ReviewedAt = &now
-		row.Version++
-		return tx.Create(s.audit(ctx, "admin", checker, "asset_adjustment.reject", row.ID, nil, map[string]any{"remark": req.Remark})).Error
+		return s.idem.Succeed(ctx, tx, "admin", adminID, path, key, out)
 	})
-	return adjustmentDTO(row), err
+	if err != nil {
+		return AdjustmentDTO{}, err
+	}
+	return out, executionErr
+}
+
+// activeAdminHasPermission 在高风险资产写事务内复核当前授权链，
+// 避免只依赖令牌中的旧权限快照。
+func activeAdminHasPermission(
+	ctx context.Context,
+	tx *gorm.DB,
+	adminID uint64,
+	permissionCode string,
+) (bool, error) {
+	var row struct {
+		ID uint64
+	}
+	err := tx.WithContext(ctx).
+		Table("admin_users au").
+		Select("au.id").
+		Joins("JOIN accounts a ON a.id = au.account_id").
+		Joins("JOIN roles r ON r.id = au.role_id").
+		Joins("JOIN role_permissions rp ON rp.role_id = r.id").
+		Joins("JOIN permissions p ON p.id = rp.permission_id").
+		Where(`au.id = ?
+			AND au.status = 'active' AND au.deleted_at IS NULL
+			AND a.account_type = 'admin' AND a.status = 'active' AND a.deleted_at IS NULL
+			AND r.status = 'active' AND r.deleted_at IS NULL
+			AND rp.deleted_at IS NULL
+			AND p.code = ? AND p.status = 'active' AND p.deleted_at IS NULL`,
+			adminID,
+			permissionCode,
+		).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (s *Service) adjustmentAudit(
+	ctx context.Context,
+	actorID uint64,
+	action string,
+	row Adjustment,
+	before map[string]any,
+	after map[string]any,
+	result string,
+	errorCode *string,
+) *AuditLog {
+	if after == nil {
+		after = map[string]any{}
+	}
+	requestID := requestctx.RequestID(ctx)
+	after["permission"] = "asset_adjustment:create"
+	after["request_id"] = requestID
+	// 当前 HTTP 链路以 request ID 作为缺省 correlation ID；这样即使调用方
+	// 未单独提供链路 ID，审计仍能跨日志、Outbox 和幂等事实稳定关联。
+	after["correlation_id"] = requestID
+	after["service_instance"] = defaultString(
+		strings.TrimSpace(s.cfg.App.InstanceID),
+		"unknown",
+	)
+	after["idempotency_key_hash"] = row.IdempotencyKeyHash
+	after["reason_code"] = row.ReasonCode
+	after["status"] = row.Status
+	after["version"] = row.Version
+	evidenceRefs := make([]string, 0)
+	if len(row.EvidenceRefs) > 0 {
+		_ = json.Unmarshal(row.EvidenceRefs, &evidenceRefs)
+	}
+	after["evidence_count"] = len(evidenceRefs)
+	if len(evidenceRefs) > 0 {
+		// 证据引用由请求方提供，可能包含路径或 URL；审计仅保留数量和稳定
+		// 摘要，避免复制潜在敏感内容。
+		after["evidence_refs_hash"] = idempotency.RequestHash(evidenceRefs)
+	}
+
+	version := uint64(row.Version)
+	var beforeStatus *string
+	if value, ok := before["status"].(string); ok && value != "" {
+		beforeStatus = &value
+	}
+	afterStatus := row.Status
+	reasonCode := row.ReasonCode
+	return &AuditLog{
+		ID:           s.ids.Next(),
+		ActorType:    "admin",
+		ActorID:      actorID,
+		Action:       action,
+		ResourceType: "asset_adjustment",
+		ResourceID:   row.ID,
+		BeforeData:   jsonData(before),
+		AfterData:    jsonData(after),
+		Result:       result,
+		Version:      &version,
+		ErrorCode:    errorCode,
+		ReasonCode:   &reasonCode,
+		BeforeStatus: beforeStatus,
+		AfterStatus:  &afterStatus,
+		RequestID:    requestctx.RequestIDPtr(ctx),
+		IPHash:       requestctx.IPHashPtr(ctx),
+		UserAgent:    requestctx.UserAgentPtr(ctx),
+	}
+}
+
+func isTerminalAdjustmentFailure(code string) bool {
+	switch code {
+	case "ASSET_INSUFFICIENT_AVAILABLE",
+		"ASSET_AMOUNT_INVALID",
+		"ASSET_TYPE_INVALID",
+		"ASSET_SOURCE_NOT_ALLOWED",
+		"MEMBER_NOT_FOUND":
+		return true
+	default:
+		return false
+	}
 }
 
 // adjustmentDTO 返回调整单DTO。
@@ -340,7 +514,32 @@ func adjustmentDTO(row Adjustment) AdjustmentDTO {
 	if row.AssetTransactionID != nil {
 		dto.AssetTransactionID = idString(*row.AssetTransactionID)
 	}
+	if row.FailureCode != nil {
+		dto.FailureCode = *row.FailureCode
+	}
 	return dto
+}
+
+// adjustmentExecutionError 根据持久化失败码重建可重放的业务错误。
+func adjustmentExecutionError(code string) error {
+	switch code {
+	case "ASSET_INSUFFICIENT_AVAILABLE":
+		return problem.Conflict(code, "available asset balance is insufficient")
+	case "ASSET_WRITE_DISABLED":
+		return problem.New(503, code, "Service Unavailable", "asset writes are disabled")
+	case "ASSET_AMOUNT_INVALID":
+		return problem.New(422, code, "Unprocessable Entity", "asset amount is invalid")
+	case "ASSET_TYPE_INVALID":
+		return problem.New(422, code, "Unprocessable Entity", "asset type is invalid")
+	case "ASSET_SOURCE_NOT_ALLOWED":
+		return problem.Forbidden(code, "asset source is not allowed")
+	case "MEMBER_NOT_FOUND":
+		return problem.NotFound(code, "member not found")
+	case "":
+		return problem.Internal("asset adjustment execution failed")
+	default:
+		return problem.New(500, code, "Internal Error", "asset adjustment execution failed")
+	}
 }
 
 // RunReconciliation 运行对账处理流程。

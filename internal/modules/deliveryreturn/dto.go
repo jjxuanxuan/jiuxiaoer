@@ -55,6 +55,10 @@ type DTO struct {
 	RiderID              string       `json:"rider_id"`
 	IncidentID           string       `json:"incident_id,omitempty"`
 	AfterSaleID          string       `json:"after_sale_id,omitempty"`
+	SettlementType       string       `json:"settlement_type"`
+	SettlementBizID      string       `json:"settlement_biz_id,omitempty"`
+	SettlementStatus     string       `json:"settlement_status"`
+	SettledAt            string       `json:"settled_at,omitempty"`
 	ReasonCode           string       `json:"reason_code"`
 	Status               string       `json:"status"`
 	InitiatorType        string       `json:"initiator_type"`

@@ -9,7 +9,6 @@ import (
 	"os"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,59 +21,6 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/pkg/problem"
 	"jiuxiaoer-admin/backend-go/internal/pkg/snowflake"
 )
-
-type refundAcceptanceFixture struct {
-	orderID, paymentID, afterSaleID, itemID, refundID uint64
-	orderNo, paymentNo, afterSaleNo, refundNo         string
-	amount, total                                     int64
-}
-
-type acceptanceProvider struct {
-	refundState, queryState, callbackState State
-	refundErr, queryErr                    error
-	refundCalls, queryCalls                atomic.Int64
-	delay                                  time.Duration
-	mu                                     sync.Mutex
-	queryStarted                           chan struct{}
-	queryRelease                           chan struct{}
-	queryStartOnce                         sync.Once
-	refundInputs                           []Input
-}
-
-// Code 返回代码。
-func (p *acceptanceProvider) Code() string { return "wechat" }
-
-// Refund 返回退款。
-func (p *acceptanceProvider) Refund(_ context.Context, input Input) (State, error) {
-	p.refundCalls.Add(1)
-	p.mu.Lock()
-	p.refundInputs = append(p.refundInputs, input)
-	p.mu.Unlock()
-	if p.delay > 0 {
-		time.Sleep(p.delay)
-	}
-	return p.refundState, p.refundErr
-}
-
-// QueryRefund 查询退款。
-func (p *acceptanceProvider) QueryRefund(_ context.Context, _ string) (State, error) {
-	p.queryCalls.Add(1)
-	if p.queryStarted != nil {
-		p.queryStartOnce.Do(func() { close(p.queryStarted) })
-	}
-	if p.queryRelease != nil {
-		<-p.queryRelease
-	}
-	if p.delay > 0 {
-		time.Sleep(p.delay)
-	}
-	return p.queryState, p.queryErr
-}
-
-// ParseRefundCallback 解析退款回调。
-func (p *acceptanceProvider) ParseRefundCallback(_ context.Context, request *http.Request) (CallbackEvent, error) {
-	return CallbackEvent{EventID: request.Header.Get("X-Event-ID"), MchID: "local-mch", State: p.callbackState}, nil
-}
 
 // TestL3RefundAcceptance 验证L 3 退款验收的预期行为。
 func TestL3RefundAcceptance(t *testing.T) {
@@ -126,7 +72,10 @@ func TestL3RefundAcceptance(t *testing.T) {
 		provider.mu.Lock()
 		inputs := append([]Input(nil), provider.refundInputs...)
 		provider.mu.Unlock()
-		if len(inputs) != 2 || inputs[0] != inputs[1] || inputs[0].RefundNo != fx.refundNo {
+		if len(inputs) != 2 ||
+			inputs[0] != inputs[1] ||
+			inputs[0].RefundNo != fx.refundNo ||
+			inputs[0].BusinessType != RetailAfterSaleRefundBusiness {
 			t.Fatalf("refund resubmission changed immutable input: %+v", inputs)
 		}
 		assertRefundLedger(t, db, fx, "succeeded", 400)
@@ -215,7 +164,7 @@ func TestL3RefundAcceptance(t *testing.T) {
 		}
 		admin := refundAdmin(ids.Next())
 		competingID := ids.Next()
-		refundMustExec(t, db, "INSERT INTO refunds (id,refund_no,after_sale_id,order_id,payment_id,provider,status,amount,total_amount,currency,requested_at,next_retry_at) VALUES (?,?,?,?,?,'wechat','pending',700,1000,'CNY',?,?)", competingID, "RF-COMPETING-"+refundID(competingID), fx.afterSaleID, fx.orderID, fx.paymentID, time.Now(), time.Now().Add(time.Hour))
+		refundMustExec(t, db, "INSERT INTO refunds (id,refund_no,biz_type,biz_id,after_sale_id,order_id,payment_id,provider,status,amount,total_amount,currency,requested_at,next_retry_at) VALUES (?,?,'retail_after_sale',?,?,?,?,'wechat','pending',700,1000,'CNY',?,?)", competingID, "RF-COMPETING-"+refundID(competingID), fx.afterSaleID, fx.afterSaleID, fx.orderID, fx.paymentID, time.Now(), time.Now().Add(time.Hour))
 		if err := service.Retry(context.Background(), &admin, "POST", "/api/v1/admin/refunds/:id/retry", "retry-capacity-acceptance", fx.refundNo); refundErrorCode(err) != "REFUND_AMOUNT_EXCEEDED" {
 			t.Fatalf("ACC-024 capacity recheck got %v", err)
 		}
@@ -741,10 +690,10 @@ func insertRefundAcceptanceFixture(t *testing.T, db *gorm.DB, ids *snowflake.Gen
 	fx.refundNo = "RF-ACC-" + refundID(fx.refundID)
 	now := time.Now().UTC()
 	refundMustExec(t, db, "INSERT INTO orders (id,order_no,customer_id,merchant_id,shop_id,status,pay_status,delivery_status,goods_amount,payable_amount,paid_amount,refunded_amount,after_sale_status) VALUES (?,?,?,?,?,'completed','succeeded','completed',?,?,?,0,'processing')", fx.orderID, fx.orderNo, ids.Next(), ids.Next(), ids.Next(), total, total, total)
-	refundMustExec(t, db, "INSERT INTO payments (id,payment_no,order_id,customer_id,channel,provider,status,amount,refunded_amount,currency) VALUES (?,?,?,?,'miniapp','wechat','succeeded',?,0,'CNY')", fx.paymentID, fx.paymentNo, fx.orderID, ids.Next(), total)
+	refundMustExec(t, db, "INSERT INTO payments (id,payment_no,biz_type,biz_id,order_id,customer_id,channel,provider,status,amount,refunded_amount,currency) VALUES (?,?,'retail_order',?,?,?,'miniapp','wechat','succeeded',?,0,'CNY')", fx.paymentID, fx.paymentNo, fx.orderID, fx.orderID, ids.Next(), total)
 	refundMustExec(t, db, "INSERT INTO after_sales (id,after_sale_no,order_id,customer_id,merchant_id,shop_id,type,requested_resolution,approved_resolution,status,requested_amount,approved_amount,description,submitted_at) VALUES (?,?,?,1,1,1,'damaged','refund_only','refund_only','refund_processing',?,?,'refund acceptance',?)", fx.afterSaleID, fx.afterSaleNo, fx.orderID, amount, amount, now)
 	refundMustExec(t, db, "INSERT INTO after_sale_items (id,after_sale_id,order_id,order_item_id,shop_product_id,product_id,requested_quantity,approved_quantity,requested_amount,approved_amount) VALUES (?,?,?,?,?,?,1,1,?,?)", fx.itemID, fx.afterSaleID, fx.orderID, ids.Next(), ids.Next(), ids.Next(), amount, amount)
-	refundMustExec(t, db, "INSERT INTO refunds (id,refund_no,after_sale_id,order_id,payment_id,provider,status,amount,total_amount,currency,requested_at,next_retry_at) VALUES (?,?,?,?,?,'wechat',?,?,?,'CNY',?,?)", fx.refundID, fx.refundNo, fx.afterSaleID, fx.orderID, fx.paymentID, status, amount, total, now, now.Add(-time.Second))
+	refundMustExec(t, db, "INSERT INTO refunds (id,refund_no,biz_type,biz_id,after_sale_id,order_id,payment_id,provider,status,amount,total_amount,currency,requested_at,next_retry_at) VALUES (?,?,'retail_after_sale',?,?,?,?,'wechat',?,?,?,'CNY',?,?)", fx.refundID, fx.refundNo, fx.afterSaleID, fx.afterSaleID, fx.orderID, fx.paymentID, status, amount, total, now, now.Add(-time.Second))
 	refundMustExec(t, db, "INSERT INTO refund_items (id,refund_id,after_sale_item_id,amount,quantity) VALUES (?,?,?,?,1)", ids.Next(), fx.refundID, fx.itemID, amount)
 	return fx
 }

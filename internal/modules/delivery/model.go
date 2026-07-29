@@ -19,6 +19,9 @@ type DeliveryOrder struct {
 	PickupReadyAt        *time.Time
 	PickupSnapshot       datatypes.JSON
 	RecipientSnapshot    datatypes.JSON
+	ScheduledStartAt     *time.Time
+	ScheduledEndAt       *time.Time
+	NotBeforeAt          *time.Time
 	AcceptedAt           *time.Time
 	PickedUpAt           *time.Time
 	PickedUpVerifiedAt   *time.Time
@@ -33,6 +36,8 @@ type DeliveryOrder struct {
 	ItemCount            int        `gorm:"->;column:item_count"`
 	PickupDistanceM      *uint      `gorm:"->;column:pickup_distance_m"`
 	GrabExpiresAt        *time.Time `gorm:"->;column:grab_expires_at"`
+	OrderType            string     `gorm:"->;column:order_type"`
+	SettlementMode       string     `gorm:"->;column:settlement_mode"`
 }
 
 // TableName 返回当前数据模型对应的数据库表名。
@@ -41,6 +46,8 @@ func (DeliveryOrder) TableName() string { return "delivery_orders" }
 type Order struct {
 	ID                uint64
 	OrderNo           string
+	OrderType         string
+	SettlementMode    string
 	CustomerID        uint64
 	MerchantID        uint64
 	ShopID            uint64

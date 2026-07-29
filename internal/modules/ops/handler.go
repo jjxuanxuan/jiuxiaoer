@@ -17,7 +17,6 @@ func RegisterRoutes(g *gin.RouterGroup, h *Handler) {
 	g.POST("/orders/:id/cancel", h.Cancel)
 	g.POST("/deliveries/:id/assign", h.Assign)
 	g.POST("/deliveries/:id/reassign", h.Reassign)
-	g.POST("/deliveries/:id/force-complete-requests", h.RequestForceComplete)
 	g.POST("/deliveries/:id/force-complete", h.ForceComplete)
 	g.GET("/deliveries/:id/assignments", h.Assignments)
 }
@@ -79,20 +78,6 @@ func (h *Handler) Reassign(c *gin.Context) {
 		return
 	}
 	x, e := h.service.Reassign(c.Request.Context(), v, c.Request.Method, c.FullPath(), c.GetHeader("Idempotency-Key"), c.Param("id"), r)
-	finish(c, x, e)
-}
-
-// RequestForceComplete 处理请求强制操作 Complete相关逻辑。
-func (h *Handler) RequestForceComplete(c *gin.Context) {
-	v, ok := oc(c)
-	if !ok {
-		return
-	}
-	var r ForceCompleteRequestReq
-	if !bind(c, &r) {
-		return
-	}
-	x, e := h.service.RequestForceComplete(c.Request.Context(), v, c.Request.Method, c.FullPath(), c.GetHeader("Idempotency-Key"), c.Param("id"), r)
 	finish(c, x, e)
 }
 

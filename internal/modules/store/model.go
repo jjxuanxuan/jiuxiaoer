@@ -7,33 +7,38 @@ import (
 )
 
 type Order struct {
-	ID                      uint64
-	OrderNo                 string
-	CustomerID              uint64
-	MerchantID              uint64
-	ShopID                  uint64
-	Status                  string
-	PayStatus               string
-	DeliveryStatus          string
-	GoodsAmount             int64
-	DiscountAmount          int64
-	DeliveryFeeAmount       int64
-	PayableAmount           int64
-	PaidAmount              int64
-	Remark                  *string
-	AddressSnapshot         datatypes.JSON
-	DeliveryPromiseSnapshot datatypes.JSON
-	ComplianceSnapshot      datatypes.JSON
-	ExpiresAt               *time.Time
-	CancelSource            *string
-	CancelReasonCode        *string
-	Version                 int
-	PaidAt                  *time.Time
-	CancelledAt             *time.Time
-	CompletedAt             *time.Time
-	CreatedAt               time.Time
-	UpdatedAt               time.Time
-	DeletedAt               *time.Time
+	ID                       uint64
+	OrderNo                  string
+	OrderType                string
+	SettlementMode           string
+	CustomerID               uint64
+	MerchantID               uint64
+	ShopID                   uint64
+	Status                   string
+	PayStatus                string
+	DeliveryStatus           string
+	GoodsAmount              int64
+	DiscountAmount           int64
+	DeliveryFeeAmount        int64
+	PayableAmount            int64
+	PaidAmount               int64
+	Remark                   *string
+	AddressSnapshot          datatypes.JSON
+	DeliveryPromiseSnapshot  datatypes.JSON
+	ComplianceSnapshot       datatypes.JSON
+	ExpiresAt                *time.Time
+	CancelSource             *string
+	CancelReasonCode         *string
+	Version                  int
+	PaidAt                   *time.Time
+	CancelledAt              *time.Time
+	CompletedAt              *time.Time
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
+	DeletedAt                *time.Time
+	DeliveryScheduledStartAt *time.Time `gorm:"->;column:delivery_scheduled_start_at"`
+	DeliveryScheduledEndAt   *time.Time `gorm:"->;column:delivery_scheduled_end_at"`
+	DeliveryNotBeforeAt      *time.Time `gorm:"->;column:delivery_not_before_at"`
 }
 
 // TableName 返回当前数据模型对应的数据库表名。
@@ -83,6 +88,9 @@ type DeliveryOrder struct {
 	PickupReadyAt     *time.Time
 	PickupSnapshot    datatypes.JSON
 	RecipientSnapshot datatypes.JSON
+	ScheduledStartAt  *time.Time
+	ScheduledEndAt    *time.Time
+	NotBeforeAt       *time.Time
 	DeletedAt         *time.Time
 }
 

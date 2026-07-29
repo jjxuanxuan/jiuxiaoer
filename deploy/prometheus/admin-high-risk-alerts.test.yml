@@ -1,0 +1,73 @@
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  - name: delivery global DB gauge survives API replica rollout
+    interval: 1m
+    input_series:
+      - series: 'jxe_admin_override_total{action="delivery.force_complete",instance="api-old"}'
+        values: '0x3 3x5 stale _x6'
+      - series: 'jxe_admin_override_total{action="delivery.force_complete",instance="api-new"}'
+        values: '_x9 3x4 6x2'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: JiuxiaoerAdminOverrideSpike
+        exp_alerts:
+          - exp_labels:
+              action: delivery.force_complete
+              severity: critical
+            exp_annotations:
+              summary: Unusually many admin force-complete overrides occurred
+              runbook: docs/runbooks/cp1-launch-closure.md#force-completion
+
+  - name: high-risk global DB gauge survives API replica rollout
+    interval: 1m
+    input_series:
+      - series: 'jxe_admin_high_risk_action_total{action="asset_adjustment.execute",result="success",instance="api-old"}'
+        values: '0x3 6x5 stale _x7'
+      - series: 'jxe_admin_high_risk_action_total{action="asset_adjustment.execute",result="success",instance="api-new"}'
+        values: '_x9 6x4 12x3'
+    alert_rule_test:
+      - eval_time: 17m
+        alertname: JiuxiaoerAdminHighRiskActionSpike
+        exp_alerts:
+          - exp_labels:
+              action: asset_adjustment.execute
+              result: success
+              severity: warning
+            exp_annotations:
+              summary: Single-operator high-risk admin action asset_adjustment.execute has abnormal success volume
+              runbook: docs/runbooks/admin-high-risk-actions.md#high-risk-admin-action-spike
+
+  - name: stable zero baseline detects first high-risk burst
+    interval: 1m
+    input_series:
+      - series: 'jxe_admin_high_risk_action_total{action="asset_adjustment.execute",result="success",instance="api-a"}'
+        values: '0x4 12x4'
+      - series: 'jxe_admin_high_risk_action_total{action="asset_adjustment.execute",result="success",instance="api-b"}'
+        values: '0x4 12x4'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: JiuxiaoerAdminHighRiskActionSpike
+        exp_alerts:
+          - exp_labels:
+              action: asset_adjustment.execute
+              result: success
+              severity: warning
+            exp_annotations:
+              summary: Single-operator high-risk admin action asset_adjustment.execute has abnormal success volume
+              runbook: docs/runbooks/admin-high-risk-actions.md#high-risk-admin-action-spike
+
+  - name: replicas exposing the same global count are not summed
+    interval: 1m
+    input_series:
+      - series: 'jxe_admin_high_risk_action_total{action="asset_adjustment.execute",result="success",instance="api-a"}'
+        values: '0x4 6x4'
+      - series: 'jxe_admin_high_risk_action_total{action="asset_adjustment.execute",result="success",instance="api-b"}'
+        values: '0x4 6x4'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: JiuxiaoerAdminHighRiskActionSpike
+        exp_alerts: []

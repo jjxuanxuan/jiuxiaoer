@@ -337,6 +337,78 @@ groups:
           summary: "A WeChat bill discrepancy has remained open for more than 24 hours"
           runbook: "docs/runbooks/wechat-bill-reconciliation.md#discrepancy-sla"
 
+      - alert: JiuxiaoerWineTicketSettlementLag
+        expr: max(jxe_wine_ticket_settlement_lag_seconds) > 60
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A provider-confirmed wine-ticket payment has not settled within 60 seconds"
+          runbook: "docs/runbooks/wine-ticket-rolling-release.md#payment-settlement-lag"
+
+      - alert: JiuxiaoerWineTicketRefundSettlementLag
+        expr: max(jxe_wine_ticket_refund_hold_age_seconds{provider_status="SUCCESS"}) > 60
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A successful wine-ticket refund has not released its entitlement hold within 60 seconds"
+          runbook: "docs/runbooks/wine-ticket-rolling-release.md#refund-settlement-lag"
+
+      - alert: JiuxiaoerWineTicketRenewalGuardStalled
+        expr: max(jxe_wine_ticket_renewal_guard_age_seconds) > 960
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A wine-ticket renewal guard outlived the payment TTL and settlement SLA"
+          runbook: "docs/runbooks/wine-ticket-rolling-release.md#renewal-guard-stalled"
+
+      - alert: JiuxiaoerWineTicketLotInvariantViolation
+        expr: max(jxe_wine_ticket_lot_invariant_violation_total) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A wine-ticket lot ledger or allocation invariant is violated"
+          runbook: "docs/runbooks/wine-ticket-rolling-release.md#lot-or-reconciliation-invariant"
+
+      - alert: JiuxiaoerWineTicketReconciliationDifference
+        expr: sum(jxe_wine_ticket_reconcile_diff_total) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Wine-ticket reconciliation found an unresolved business difference"
+          runbook: "docs/runbooks/wine-ticket-rolling-release.md#lot-or-reconciliation-invariant"
+
+      - alert: JiuxiaoerWineTicketReconciliationDeadlineMissed
+        expr: max(jxe_wine_ticket_reconciliation_deadline_missed) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Prior-day wine-ticket reconciliation did not complete by 06:00 Asia/Shanghai"
+          runbook: "docs/runbooks/wine-ticket-rolling-release.md#reconciliation-deadline"
+
+      - alert: JiuxiaoerWineTicketReminderLag
+        expr: max(jxe_wine_ticket_reminder_lag_seconds) > 900
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A wine-ticket expiry reminder is more than fifteen minutes late"
+          runbook: "docs/runbooks/wine-ticket-rolling-release.md#reminder-lag"
+
+      - alert: JiuxiaoerWineTicketReminderLagCritical
+        expr: max(jxe_wine_ticket_reminder_lag_seconds) > 3600
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A wine-ticket expiry reminder is more than one hour late"
+          runbook: "docs/runbooks/wine-ticket-rolling-release.md#reminder-lag"
+
       - alert: JiuxiaoerAfterSaleReviewBacklog
         expr: jxe_after_sale_review_oldest_seconds > 7200
         for: 10m
@@ -572,10 +644,44 @@ groups:
           runbook: "docs/runbooks/cp1-launch-closure.md#rollback"
 
       - alert: JiuxiaoerAdminOverrideSpike
-        expr: sum(delta(jxe_admin_override_total[15m])) > 5
+        expr: |
+          clamp_min(
+            delta((
+              max by (action) (
+                jxe_admin_override_total{action="delivery.force_complete"}
+              )
+            )[15m:1m]),
+            0
+          ) > 5
         for: 1m
         labels:
           severity: critical
         annotations:
           summary: "Unusually many admin force-complete overrides occurred"
           runbook: "docs/runbooks/cp1-launch-closure.md#force-completion"
+
+      - alert: JiuxiaoerAdminHighRiskActionSpike
+        expr: |
+          clamp_min(
+            delta((
+              max by (action, result) (
+                jxe_admin_high_risk_action_total{action=~"asset_adjustment.execute|wine_ticket_exception.resolution_executed|wine_ticket.package.publish",result="success"}
+              )
+            )[15m:1m]),
+            0
+          ) > 10
+          or
+          clamp_min(
+            delta((
+              max by (action, result) (
+                jxe_admin_high_risk_action_total{action="asset_adjustment.execute",result="failed"}
+              )
+            )[15m:1m]),
+            0
+          ) > 3
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Single-operator high-risk admin action {{ $labels.action }} has abnormal {{ $labels.result }} volume"
+          runbook: "docs/runbooks/admin-high-risk-actions.md#high-risk-admin-action-spike"

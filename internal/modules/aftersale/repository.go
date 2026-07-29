@@ -73,6 +73,22 @@ func (r *Repository) RefundByAfterSale(ctx context.Context, tx *gorm.DB, afterSa
 	return row, err
 }
 
+func (r *Repository) RefundCountByAfterSale(ctx context.Context, tx *gorm.DB, afterSaleID uint64) (int64, error) {
+	var count int64
+	err := tx.WithContext(ctx).Table("refunds").
+		Where("after_sale_id=? AND deleted_at IS NULL", afterSaleID).
+		Count(&count).Error
+	return count, err
+}
+
+func (r *Repository) PaymentCountByOrder(ctx context.Context, tx *gorm.DB, orderID uint64) (int64, error) {
+	var count int64
+	err := tx.WithContext(ctx).Table("payments").
+		Where("order_id=? AND deleted_at IS NULL", orderID).
+		Count(&count).Error
+	return count, err
+}
+
 func repositoryNotFound(err error) bool { return errors.Is(err, gorm.ErrRecordNotFound) }
 
 // ActiveRequested 统计所有未释放售后记录曾经申请占用的数量和金额

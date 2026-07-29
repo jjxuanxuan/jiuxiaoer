@@ -56,6 +56,7 @@ func (History) TableName() string { return "after_sale_history" }
 type OrderRow struct {
 	ID, CustomerID, MerchantID, ShopID            uint64
 	Status, PayStatus                             string
+	OrderType, SettlementMode                     string
 	PaidAmount, DeliveryFeeAmount, RefundedAmount int64
 	AfterSaleStatus                               string
 	CompletedAt                                   *time.Time
@@ -81,6 +82,8 @@ type PaymentRow struct {
 type Refund struct {
 	ID, AfterSaleID, OrderID, PaymentID  uint64
 	RefundNo, Provider, Status, Currency string
+	BizType                              *string
+	BizID                                *uint64
 	Reason                               string
 	NotifyURL                            *string
 	Amount, TotalAmount                  int64

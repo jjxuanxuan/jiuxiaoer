@@ -25,33 +25,47 @@ import (
 )
 
 type Service struct {
-	cfg     config.Config
-	db      *gorm.DB
-	redis   *redis.Client
-	ids     *snowflake.Generator
-	idem    *idempotency.Store
-	metrics *metrics.Registry
-	log     *slog.Logger
+	cfg                   config.Config
+	db                    *gorm.DB
+	redis                 *redis.Client
+	ids                   *snowflake.Generator
+	idem                  *idempotency.Store
+	metrics               *metrics.Registry
+	log                   *slog.Logger
+	assignmentSettlements *assignmentSettlementRegistry
 }
 
 // NewService 创建并初始化服务。
 func NewService(cfg config.Config, db *gorm.DB, redisClient *redis.Client, ids *snowflake.Generator, registry *metrics.Registry, log *slog.Logger) *Service {
-	return &Service{cfg: cfg, db: db, redis: redisClient, ids: ids, idem: idempotency.NewStore(db), metrics: registry, log: log}
+	return &Service{
+		cfg: cfg, db: db, redis: redisClient, ids: ids,
+		idem: idempotency.NewStore(db), metrics: registry, log: log,
+		assignmentSettlements: newAssignmentSettlementRegistry(),
+	}
 }
 
 type PaidOrderInput struct {
-	OrderID         uint64
-	ShopID          uint64
-	AddressSnapshot datatypes.JSON
+	OrderID          uint64
+	ShopID           uint64
+	AddressSnapshot  datatypes.JSON
+	ScheduledStartAt *time.Time
+	ScheduledEndAt   *time.Time
+	NotBeforeAt      *time.Time
 }
 
 // EnsurePaidOrderTask 确保已支付订单的派单任务存在且可用。
 // EnsurePaidOrderTask 在支付成功事务内调用。它同步创建持久的配送和派单事实；
 // RabbitMQ 只在提交后唤醒工作进程。
 func (s *Service) EnsurePaidOrderTask(ctx context.Context, tx *gorm.DB, input PaidOrderInput) (DeliveryOrder, Job, error) {
+	if err := validateDeliverySchedule(input); err != nil {
+		return DeliveryOrder{}, Job{}, err
+	}
 	var existing DeliveryOrder
 	err := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).Where("order_id=?", input.OrderID).First(&existing).Error
 	if err == nil {
+		if err := validateExistingDeliverySchedule(existing, input); err != nil {
+			return DeliveryOrder{}, Job{}, err
+		}
 		var job Job
 		jobErr := tx.WithContext(ctx).Where("delivery_order_id=? AND status IN ?", existing.ID, activeJobStatuses()).Order("dispatch_seq DESC").First(&job).Error
 		if jobErr == nil {
@@ -85,6 +99,8 @@ func (s *Service) EnsurePaidOrderTask(ctx context.Context, tx *gorm.DB, input Pa
 		ID: s.ids.Next(), OrderID: input.OrderID, ShopID: input.ShopID, Status: "pending_assign",
 		AssignmentVersion: 1, DispatchStatus: "pending", PickupReadyStatus: "waiting_store",
 		PickupSnapshot: pickup, RecipientSnapshot: input.AddressSnapshot,
+		ScheduledStartAt: input.ScheduledStartAt, ScheduledEndAt: input.ScheduledEndAt,
+		NotBeforeAt: input.NotBeforeAt,
 	}
 	if err := tx.WithContext(ctx).Create(&delivery).Error; err != nil {
 		if isDuplicate(err) {
@@ -113,11 +129,15 @@ func (s *Service) createJobForDelivery(ctx context.Context, tx *gorm.DB, deliver
 	}
 	policyJSON := jsonData(snapshot)
 	now := time.Now()
+	nextActionAt := now
+	if delivery.NotBeforeAt != nil && delivery.NotBeforeAt.After(nextActionAt) {
+		nextActionAt = *delivery.NotBeforeAt
+	}
 	jobID := s.ids.Next()
 	job := Job{
 		ID: jobID, JobNo: fmt.Sprintf("DJ%d", jobID), DeliveryOrderID: delivery.ID, OrderID: orderID,
 		ShopID: shopID, DispatchSeq: seq, PolicyVersion: version, PolicySnapshot: policyJSON,
-		Mode: snapshot.Mode, Status: "pending", NextActionAt: now, Version: 1,
+		Mode: snapshot.Mode, Status: "pending", NextActionAt: nextActionAt, Version: 1,
 	}
 	if policy != nil {
 		job.PolicyID = &policy.ID
@@ -147,6 +167,51 @@ func (s *Service) createJobForDelivery(ctx context.Context, tx *gorm.DB, deliver
 	delivery.DispatchModeSnapshot = &snapshot.Mode
 	delivery.DispatchPolicyVersion = &version
 	return delivery, job, nil
+}
+
+func validateDeliverySchedule(input PaidOrderInput) error {
+	present := 0
+	for _, value := range []*time.Time{
+		input.ScheduledStartAt,
+		input.ScheduledEndAt,
+		input.NotBeforeAt,
+	} {
+		if value != nil {
+			present++
+		}
+	}
+	if present == 0 {
+		return nil
+	}
+	if present != 3 ||
+		!input.ScheduledStartAt.Before(*input.ScheduledEndAt) ||
+		input.NotBeforeAt.After(*input.ScheduledStartAt) {
+		return fmt.Errorf("invalid scheduled delivery window")
+	}
+	return nil
+}
+
+func validateExistingDeliverySchedule(
+	existing DeliveryOrder,
+	input PaidOrderInput,
+) error {
+	if input.ScheduledStartAt == nil {
+		if existing.ScheduledStartAt != nil ||
+			existing.ScheduledEndAt != nil ||
+			existing.NotBeforeAt != nil {
+			return fmt.Errorf("existing delivery schedule differs from request")
+		}
+		return nil
+	}
+	if existing.ScheduledStartAt == nil ||
+		existing.ScheduledEndAt == nil ||
+		existing.NotBeforeAt == nil ||
+		!existing.ScheduledStartAt.Equal(*input.ScheduledStartAt) ||
+		!existing.ScheduledEndAt.Equal(*input.ScheduledEndAt) ||
+		!existing.NotBeforeAt.Equal(*input.NotBeforeAt) {
+		return fmt.Errorf("existing delivery schedule differs from request")
+	}
+	return nil
 }
 
 // resolvePolicy 解析并返回派单策略。

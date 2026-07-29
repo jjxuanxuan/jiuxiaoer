@@ -67,6 +67,7 @@ func Error(c *gin.Context, err error) {
 	details.Instance = c.Request.URL.Path
 	details.RequestID = RequestID(c)
 	c.Set(ErrorCodeKey, details.ErrorCode)
+	c.Header("Content-Type", "application/problem+json")
 	c.JSON(details.Status, details)
 }
 

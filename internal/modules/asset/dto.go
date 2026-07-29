@@ -96,11 +96,6 @@ type AdjustmentCreateReq struct {
 	EvidenceRefs []string `json:"evidence_refs" binding:"max=9,dive,max=512"`
 }
 
-type AdjustmentReviewReq struct {
-	Version uint32 `json:"version" binding:"required,min=1"`
-	Remark  string `json:"remark" binding:"max=500"`
-}
-
 type AdjustmentDTO struct {
 	ID                 string `json:"id"`
 	AdjustmentNo       string `json:"adjustment_no"`
@@ -115,6 +110,7 @@ type AdjustmentDTO struct {
 	CreatedBy          string `json:"created_by"`
 	ReviewedBy         string `json:"reviewed_by,omitempty"`
 	AssetTransactionID string `json:"asset_transaction_id,omitempty"`
+	FailureCode        string `json:"failure_code,omitempty"`
 	Version            uint32 `json:"version"`
 	CreatedAt          string `json:"created_at"`
 	UpdatedAt          string `json:"updated_at"`

@@ -78,8 +78,9 @@ func (s *Service) RunBillManual(ctx context.Context, claims *auth.Claims, method
 	requestHash := idempotency.RequestHash(map[string]any{"bill_date": billDate.Format("2006-01-02"), "bill_type": billType})
 	var cached RunResult
 	execute := false
+	claimID := s.ids.Next()
 	err = s.repo.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		started, startErr := s.idem.Start(ctx, tx, s.ids.Next(), claims.AccountType, actorID, method, path, key, requestHash)
+		started, startErr := s.idem.Start(ctx, tx, claimID, claims.AccountType, actorID, method, path, key, requestHash)
 		if startErr != nil {
 			return startErr
 		}
@@ -102,12 +103,36 @@ func (s *Service) RunBillManual(ctx context.Context, claims *auth.Claims, method
 	result, runErr := s.RunBill(ctx, billDate, billType)
 	if runErr != nil {
 		_ = s.repo.db.WithContext(context.Background()).Transaction(func(tx *gorm.DB) error {
-			return s.idem.Fail(context.Background(), tx, claims.AccountType, actorID, path, key)
+			return s.idem.FailOwned(context.Background(), tx, claimID, claims.AccountType, actorID, path, key)
 		})
 		return RunResult{}, runErr
 	}
+	if result.Status == "running" && !result.AlreadyCompleted {
+		// 对账任务拥有独立且更长的租约。
+		// 原任务仍在处理账单时，重新认领短 HTTP 幂等租约的请求
+		// 不得永久缓存该中间状态。
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		defer cancel()
+		if err := s.repo.db.WithContext(cleanupCtx).Transaction(func(tx *gorm.DB) error {
+			return s.idem.FailOwned(
+				cleanupCtx,
+				tx,
+				claimID,
+				claims.AccountType,
+				actorID,
+				path,
+				key,
+			)
+		}); err != nil {
+			return RunResult{}, err
+		}
+		return RunResult{}, problem.Conflict(
+			"RECONCILIATION_IN_PROGRESS",
+			"bill reconciliation is still running; retry with the same idempotency key",
+		)
+	}
 	err = s.repo.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		return s.idem.Succeed(ctx, tx, claims.AccountType, actorID, path, key, result)
+		return s.idem.SucceedOwned(ctx, tx, claimID, claims.AccountType, actorID, path, key, result)
 	})
 	return result, err
 }

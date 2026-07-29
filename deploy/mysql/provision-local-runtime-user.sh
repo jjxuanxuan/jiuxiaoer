@@ -15,7 +15,7 @@ ALTER USER '${runtime_user}'@'%' IDENTIFIED BY '${runtime_password}';
 REVOKE ALL PRIVILEGES, GRANT OPTION FROM '${runtime_user}'@'%';
 SQL
 
-tables=$("${mysql_root[@]}" -e "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA='${database}' AND TABLE_TYPE='BASE TABLE' AND TABLE_NAME NOT IN ('asset_entries','delivery_incidents','delivery_incident_items','delivery_incident_evidence','delivery_incident_history','delivery_returns','delivery_return_history','return_receipt_items','wechat_bill_reconciliation_runs','wechat_bill_observations','wechat_bill_discrepancies')")
+tables=$("${mysql_root[@]}" -e "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA='${database}' AND TABLE_TYPE='BASE TABLE' AND TABLE_NAME NOT IN ('asset_entries','wine_ticket_transactions','delivery_incidents','delivery_incident_items','delivery_incident_evidence','delivery_incident_history','delivery_returns','delivery_return_history','return_receipt_items','wechat_bill_reconciliation_runs','wechat_bill_observations','wechat_bill_discrepancies')")
 grant_sql=""
 while IFS= read -r table; do
 	[[ -z "${table}" ]] && continue
@@ -28,6 +28,7 @@ fi
 
 "${mysql_root[@]}" <<SQL
 GRANT SELECT, INSERT ON \`${database}\`.\`asset_entries\` TO '${runtime_user}'@'%';
+GRANT SELECT, INSERT ON \`${database}\`.\`wine_ticket_transactions\` TO '${runtime_user}'@'%';
 GRANT SELECT, INSERT, UPDATE ON \`${database}\`.\`delivery_incidents\` TO '${runtime_user}'@'%';
 GRANT SELECT, INSERT ON \`${database}\`.\`delivery_incident_items\` TO '${runtime_user}'@'%';
 GRANT SELECT, INSERT ON \`${database}\`.\`delivery_incident_evidence\` TO '${runtime_user}'@'%';
@@ -41,4 +42,4 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON \`${database}\`.\`wechat_bill_discrepanc
 FLUSH PRIVILEGES;
 SQL
 
-echo "provisioned ${runtime_user} with least-privilege asset, incident, delivery-return, and reconciliation permissions"
+echo "provisioned ${runtime_user} with least-privilege asset, wine-ticket, incident, delivery-return, and reconciliation permissions"

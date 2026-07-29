@@ -42,14 +42,12 @@ type deliveryIncidentE2EFixture struct {
 	otherShopID        uint64
 	merchantID         uint64
 	adminID            uint64
-	checkerAdminID     uint64
 	shopProductID      uint64
 	productID          uint64
 	riderToken         string
 	merchantToken      string
 	otherMerchantToken string
 	adminToken         string
-	checkerToken       string
 	close              func()
 }
 
@@ -129,7 +127,6 @@ func newDeliveryIncidentE2EFixture(t *testing.T) *deliveryIncidentE2EFixture {
 	fixture.merchantToken = tokenFromLogin(t, fixture.router, "/api/v1/auth/merchant/login", map[string]any{"username": "merchant_demo", "password": "merchant123"})
 	fixture.otherMerchantToken = tokenFromLogin(t, fixture.router, "/api/v1/auth/merchant/login", map[string]any{"username": "incident_other_merchant", "password": "merchant123"})
 	fixture.adminToken = tokenFromLogin(t, fixture.router, "/api/v1/auth/admin/login", map[string]any{"username": "admin", "password": fixture.cfg.Security.AdminBootstrapPassword})
-	fixture.checkerToken = tokenFromLogin(t, fixture.router, "/api/v1/auth/admin/login", map[string]any{"username": "incident_checker", "password": "checker123"})
 	return fixture
 }
 
@@ -175,18 +172,15 @@ func (f *deliveryIncidentE2EFixture) installAdminPermissions(t *testing.T) {
 	codes := []string{
 		"delivery_incident:list_all", "delivery_incident:view_all", "delivery_incident:acknowledge",
 		"delivery_incident:resolve", "delivery_incident:reject", "delivery_incident:audit",
-		"order:cancel_all", "delivery:force_complete_request", "delivery:force_complete_approve",
+		"order:cancel_all", "delivery:force_complete",
 	}
 	for index, code := range codes {
 		permissionID := uint64(2115 + index)
 		if code == "order:cancel_all" {
 			permissionID = 2078
 		}
-		if code == "delivery:force_complete_request" {
-			permissionID = 2143
-		}
-		if code == "delivery:force_complete_approve" {
-			permissionID = 2144
+		if code == "delivery:force_complete" {
+			permissionID = 2068
 		}
 		parts := strings.SplitN(code, ":", 2)
 		if err := f.db.Exec(`INSERT INTO permissions (id,code,resource,action,description,status)
@@ -205,20 +199,6 @@ func (f *deliveryIncidentE2EFixture) installAdminPermissions(t *testing.T) {
 
 func (f *deliveryIncidentE2EFixture) createSecondaryIdentities(t *testing.T) {
 	t.Helper()
-	var roleID uint64
-	if err := f.db.Table("admin_users").Select("role_id").Where("id=?", f.adminID).Scan(&roleID).Error; err != nil || roleID == 0 {
-		t.Fatalf("load role for checker: %v", err)
-	}
-	checkerHash, _ := bcrypt.GenerateFromPassword([]byte("checker123"), bcrypt.MinCost)
-	checkerAccountID := f.ids.Next()
-	f.checkerAdminID = f.ids.Next()
-	if err := f.db.Table("accounts").Create(map[string]any{"id": checkerAccountID, "account_type": "admin", "username": "incident_checker", "password_hash": string(checkerHash), "status": "active"}).Error; err != nil {
-		t.Fatalf("create checker account: %v", err)
-	}
-	if err := f.db.Table("admin_users").Create(map[string]any{"id": f.checkerAdminID, "account_id": checkerAccountID, "role_id": roleID, "admin_sub_role": "operations", "name": "Incident checker", "status": "active"}).Error; err != nil {
-		t.Fatalf("create checker admin: %v", err)
-	}
-
 	merchantHash, _ := bcrypt.GenerateFromPassword([]byte("merchant123"), bcrypt.MinCost)
 	otherAccountID, otherMerchantID, otherUserID := f.ids.Next(), f.ids.Next(), f.ids.Next()
 	f.otherShopID = f.ids.Next()
@@ -457,11 +437,9 @@ func (f *deliveryIncidentE2EFixture) testNaturalClosureEntrypoints(t *testing.T)
 	forceFulfillment := f.createFulfillment(t, "delivering")
 	forceIncident := f.createIncident(t, forceFulfillment, "customer_refused", "NO_CONTACT")
 	forceIncidentID := stringValue(t, forceIncident["id"])
-	approval := performOK(t, f.router, http.MethodPost, fmt.Sprintf("/api/v1/admin/deliveries/%d/force-complete-requests", forceFulfillment.DeliveryID), f.adminToken, fmt.Sprintf("force-request-%d", forceFulfillment.DeliveryID), map[string]any{
-		"checker_admin_id": strconv.FormatUint(f.checkerAdminID, 10), "reason_code": "CUSTOMER_CONFIRMED", "reason": "customer confirmed receipt", "expected_version": 1,
+	forced := performOK(t, f.router, http.MethodPost, fmt.Sprintf("/api/v1/admin/deliveries/%d/force-complete", forceFulfillment.DeliveryID), f.adminToken, fmt.Sprintf("force-complete-%d", forceFulfillment.DeliveryID), map[string]any{
+		"reason_code": "CUSTOMER_CONFIRMED", "reason": "customer confirmed receipt", "expected_version": 1,
 	})
-	approvalID := stringValue(t, object(t, approval["data"])["id"])
-	forced := performOK(t, f.router, http.MethodPost, fmt.Sprintf("/api/v1/admin/deliveries/%d/force-complete", forceFulfillment.DeliveryID), f.checkerToken, fmt.Sprintf("force-approve-%d", forceFulfillment.DeliveryID), map[string]any{"approval_id": approvalID, "expected_version": 1})
 	if object(t, forced["data"])["status"] != "completed" {
 		t.Fatalf("force complete did not advance delivery: %#v", forced)
 	}

@@ -71,12 +71,12 @@ func DefaultTopology() Topology {
 		bindings []string
 		retries  []time.Duration
 	}{
-		{name: "notification", queue: notificationQueueName, bindings: []string{"order.paid", "payment.succeeded", "store.order.*", "delivery.*", "delivery.incident.*", "dispatch.offer.created", "dispatch.grab.opened", "dispatch.manual_required", "order.cancelled", "refund.succeeded", "account.*.requested"}, retries: []time.Duration{10 * time.Second, time.Minute, 10 * time.Minute}},
+		{name: "notification", queue: notificationQueueName, bindings: []string{"order.paid", "payment.succeeded", "store.order.*", "delivery.*", "delivery.incident.*", "dispatch.offer.created", "dispatch.grab.opened", "dispatch.manual_required", "order.cancelled", "refund.succeeded", "account.*.requested", "wine_ticket.purchase_issued", "wine_ticket.renewed", "wine_ticket.refund_succeeded", "wine_ticket.gift_claimed", "wine_ticket.gift_returned"}, retries: []time.Duration{10 * time.Second, time.Minute, 10 * time.Minute}},
 		{name: "print", queue: printQueueName, bindings: []string{"print.task.ready", "print.task.retry_requested"}, retries: []time.Duration{10 * time.Second, time.Minute, 10 * time.Minute}},
 		{name: "cache", queue: cacheQueueName, bindings: []string{"cache.invalidate"}, retries: []time.Duration{5 * time.Second, 30 * time.Second, 5 * time.Minute}},
 		{name: "security", queue: securityQueueName, bindings: []string{"delivery.verification.*", "delivery.reassigned", "delivery.force_completed", "dispatch.policy.published", "identity.verification.*", "account.status_changed", "account.password_reset.requested"}, retries: []time.Duration{time.Minute, 10 * time.Minute}},
 		{name: "dispatch", queue: dispatchQueueName, bindings: []string{"dispatch.job.ready", "dispatch.job.retry_requested", "dispatch.policy.published"}, retries: []time.Duration{time.Second, 5 * time.Second, 30 * time.Second}},
-		{name: "realtime", queue: realtimeQueueName, bindings: []string{"order.paid", "dispatch.offer.created", "dispatch.offer.rejected", "dispatch.offer.expired", "dispatch.grab.opened", "dispatch.manual_required", "delivery.assigned", "delivery.reassigned", "order.cancelled"}, retries: []time.Duration{time.Second, 5 * time.Second, 30 * time.Second}},
+		{name: "realtime", queue: realtimeQueueName, bindings: []string{"order.paid", "wine_ticket.redemption_created", "dispatch.offer.created", "dispatch.offer.rejected", "dispatch.offer.expired", "dispatch.grab.opened", "dispatch.manual_required", "delivery.assigned", "delivery.reassigned", "order.cancelled"}, retries: []time.Duration{time.Second, 5 * time.Second, 30 * time.Second}},
 	}
 	for _, consumer := range consumers {
 		topology.Queues = append(topology.Queues, QueueSpec{Name: consumer.queue, Consumer: consumer.name})

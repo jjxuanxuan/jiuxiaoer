@@ -30,31 +30,53 @@ func (r *Repository) DB() *gorm.DB {
 func (r *Repository) ListOrders(ctx context.Context, merchantID uint64, shopIDs []uint64, filters StoreOrderListFilters, query pagination.Query) ([]Order, error) {
 	// 必须同时校验 merchant_id 和授权 shop_id；只校验 merchant_id 对员工账号来说范围过大。
 	db := r.db.WithContext(ctx).
-		Where("merchant_id = ? AND shop_id IN ? AND deleted_at IS NULL", merchantID, shopIDs)
+		Table("orders").
+		Select(`
+			orders.*,
+			delivery.scheduled_start_at AS delivery_scheduled_start_at,
+			delivery.scheduled_end_at AS delivery_scheduled_end_at,
+			delivery.not_before_at AS delivery_not_before_at
+		`).
+		Joins(`
+			LEFT JOIN delivery_orders delivery
+			  ON delivery.order_id = orders.id
+			 AND delivery.deleted_at IS NULL
+		`).
+		Where(
+			"orders.merchant_id = ? AND orders.shop_id IN ? AND orders.deleted_at IS NULL",
+			merchantID,
+			shopIDs,
+		)
 	if filters.ShopID != 0 {
-		db = db.Where("shop_id = ?", filters.ShopID)
+		db = db.Where("orders.shop_id = ?", filters.ShopID)
 	}
 	if filters.Status != "" {
-		db = db.Where("status = ?", filters.Status)
+		db = db.Where("orders.status = ?", filters.Status)
 	}
 	if filters.OrderNo != "" {
-		db = db.Where("order_no = ?", filters.OrderNo)
+		db = db.Where("orders.order_no = ?", filters.OrderNo)
 	}
 	if filters.Keyword != "" {
-		db = db.Where("order_no LIKE ?", escapeLike(filters.Keyword)+"%")
+		db = db.Where("orders.order_no LIKE ?", escapeLike(filters.Keyword)+"%")
 	}
 	if filters.PaidFrom != nil {
-		db = db.Where("paid_at >= ?", *filters.PaidFrom)
+		db = db.Where("orders.paid_at >= ?", *filters.PaidFrom)
 	}
 	if filters.PaidTo != nil {
-		db = db.Where("paid_at <= ?", *filters.PaidTo)
+		db = db.Where("orders.paid_at <= ?", *filters.PaidTo)
 	}
 	db, err := pagination.ApplyOrder(db, query.OrderBy, storeOrderOrderColumns, "created_at DESC, id DESC")
 	if err != nil {
 		return nil, err
 	}
 	if storeOrderUsesKeyset(query.OrderBy) {
-		db, err = pagination.ApplyTimeIDCursor(db, query, "created_at", "id", "desc")
+		db, err = pagination.ApplyTimeIDCursor(
+			db,
+			query,
+			"orders.created_at",
+			"orders.id",
+			"desc",
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -191,6 +213,36 @@ func (r *Repository) CreateDeliveryOrder(ctx context.Context, tx *gorm.DB, row D
 func (r *Repository) LockDeliveryByOrder(ctx context.Context, tx *gorm.DB, orderID uint64) (DeliveryOrder, error) {
 	var row DeliveryOrder
 	err := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).Where("order_id=? AND deleted_at IS NULL", orderID).First(&row).Error
+	return row, err
+}
+
+// DeliveryIDByOrder 是无锁探测，只用于确定配送优先的锁目标。
+// 调用方在 LockDeliveryByID 后必须重新读取并校验关系。
+func (r *Repository) DeliveryIDByOrder(
+	ctx context.Context,
+	db *gorm.DB,
+	orderID uint64,
+) (uint64, error) {
+	var row struct {
+		ID uint64
+	}
+	err := db.WithContext(ctx).Table("delivery_orders").
+		Select("id").
+		Where("order_id = ? AND deleted_at IS NULL", orderID).
+		Take(&row).Error
+	return row.ID, err
+}
+
+func (r *Repository) LockDeliveryByID(
+	ctx context.Context,
+	tx *gorm.DB,
+	deliveryID uint64,
+) (DeliveryOrder, error) {
+	var row DeliveryOrder
+	err := tx.WithContext(ctx).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ? AND deleted_at IS NULL", deliveryID).
+		Take(&row).Error
 	return row, err
 }
 
@@ -377,12 +429,12 @@ func (r *Repository) CreateOutbox(ctx context.Context, tx *gorm.DB, row OutboxEv
 }
 
 var storeOrderOrderColumns = map[string]string{
-	"id":              "id",
-	"created_at":      "created_at",
-	"updated_at":      "updated_at",
-	"status":          "status",
-	"pay_status":      "pay_status",
-	"delivery_status": "delivery_status",
+	"id":              "orders.id",
+	"created_at":      "orders.created_at",
+	"updated_at":      "orders.updated_at",
+	"status":          "orders.status",
+	"pay_status":      "orders.pay_status",
+	"delivery_status": "orders.delivery_status",
 }
 
 var storeOrderFilterColumns = map[string]string{

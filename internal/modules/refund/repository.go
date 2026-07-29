@@ -41,10 +41,26 @@ func (r *Repository) Lock(ctx context.Context, tx *gorm.DB, id uint64) (Row, err
 	return v, e
 }
 
+// Lookup 返回无锁路由快照。
+// 外部结算处理器必须按业务特有锁计划重新锁定并校验。
+func (r *Repository) Lookup(ctx context.Context, tx *gorm.DB, id uint64) (Row, error) {
+	var v Row
+	e := tx.WithContext(ctx).Where("id=? AND deleted_at IS NULL", id).Take(&v).Error
+	return v, e
+}
+
 // ByNo 返回By 无。
 func (r *Repository) ByNo(ctx context.Context, no string) (Row, error) {
 	var v Row
 	e := r.db.WithContext(ctx).Where("refund_no=? AND deleted_at IS NULL", no).Take(&v).Error
+	return v, e
+}
+
+// LookupByNo 在现有事务内返回无锁路由快照。
+// 后续锁计划由选定的业务处理器负责。
+func (r *Repository) LookupByNo(ctx context.Context, tx *gorm.DB, no string) (Row, error) {
+	var v Row
+	e := tx.WithContext(ctx).Where("refund_no=? AND deleted_at IS NULL", no).Take(&v).Error
 	return v, e
 }
 
@@ -142,6 +158,13 @@ func (r *Repository) CreateCallbackIfAbsent(ctx context.Context, tx *gorm.DB, v 
 	return result.RowsAffected == 1, result.Error
 }
 
+// CallbackByEvent 保留支付机构重复通知的处理结果。
+func (r *Repository) CallbackByEvent(ctx context.Context, tx *gorm.DB, provider, eventID string) (Callback, error) {
+	var row Callback
+	err := tx.WithContext(ctx).Where("provider=? AND provider_event_id=?", provider, eventID).Take(&row).Error
+	return row, err
+}
+
 // UpdateCallback 更新回调。
 func (r *Repository) UpdateCallback(ctx context.Context, tx *gorm.DB, id uint64, values map[string]any) error {
 	return tx.WithContext(ctx).Model(&Callback{}).Where("id=?", id).Updates(values).Error
@@ -154,7 +177,12 @@ func (r *Repository) CreateOutbox(ctx context.Context, tx *gorm.DB, v Outbox) er
 
 // List 查询Row列表列表。
 func (r *Repository) List(ctx context.Context, status string, offset, size int) ([]Row, error) {
-	q := r.db.WithContext(ctx).Where("deleted_at IS NULL")
+	q := r.db.WithContext(ctx).
+		Where("deleted_at IS NULL").
+		Where(
+			"(biz_type = ? OR (biz_type IS NULL AND after_sale_id IS NOT NULL))",
+			RetailAfterSaleRefundBusiness,
+		)
 	if status != "" {
 		q = q.Where("status=?", status)
 	}
@@ -169,6 +197,10 @@ func (r *Repository) RepairCandidates(ctx context.Context, afterID uint64, size 
 	var rows []Row
 	err := r.db.WithContext(ctx).
 		Where("provider=? AND status IN ? AND id>? AND deleted_at IS NULL", "wechat", []string{"creating", "pending", "exception"}, afterID).
+		Where(
+			"(biz_type = ? OR (biz_type IS NULL AND after_sale_id IS NOT NULL))",
+			RetailAfterSaleRefundBusiness,
+		).
 		Order("id").
 		Limit(size + 1).
 		Find(&rows).Error

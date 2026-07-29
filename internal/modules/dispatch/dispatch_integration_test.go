@@ -36,15 +36,17 @@ func TestConcurrentGrabCreatesOneActiveAssignmentIntegration(t *testing.T) {
 	t.Cleanup(func() { _ = sqlDB.Close() })
 
 	ids := snowflake.New(988)
-	var shop struct {
+	merchantID, shopID := ids.Next(), ids.Next()
+	shop := struct {
 		ID         uint64
 		MerchantID uint64
 		Latitude   float64
 		Longitude  float64
-	}
-	if err := db.Table("shops").Select("id,merchant_id,latitude,longitude").
-		Where("status='active' AND deleted_at IS NULL AND latitude IS NOT NULL AND longitude IS NOT NULL").First(&shop).Error; err != nil {
-		t.Fatalf("find shop fixture: %v", err)
+	}{
+		ID:         shopID,
+		MerchantID: merchantID,
+		Latitude:   31.2304,
+		Longitude:  121.4737,
 	}
 
 	const contenders = 100
@@ -53,7 +55,18 @@ func TestConcurrentGrabCreatesOneActiveAssignmentIntegration(t *testing.T) {
 	serviceIDs := make([]uint64, 0, contenders)
 	orderID, deliveryID, jobID := ids.Next(), ids.Next(), ids.Next()
 	t.Cleanup(func() {
-		cleanupDispatchConcurrencyFixture(db, orderID, deliveryID, jobID, accountIDs, riderIDs, serviceIDs)
+		cleanupDispatchConcurrencyFixture(
+			t,
+			db,
+			merchantID,
+			shop.ID,
+			orderID,
+			deliveryID,
+			jobID,
+			accountIDs,
+			riderIDs,
+			serviceIDs,
+		)
 	})
 
 	now := time.Now()
@@ -84,6 +97,23 @@ func TestConcurrentGrabCreatesOneActiveAssignmentIntegration(t *testing.T) {
 		})
 	}
 	if err := db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Table("merchants").Create(map[string]any{
+			"id": merchantID, "code": fmt.Sprintf("DSP-MERCHANT-%d", merchantID),
+			"name":   "Dispatch concurrency fixture merchant",
+			"status": "active", "review_status": "approved",
+		}).Error; err != nil {
+			return err
+		}
+		if err := tx.Table("shops").Create(map[string]any{
+			"id": shop.ID, "merchant_id": shop.MerchantID,
+			"name": "Dispatch concurrency fixture shop",
+			"city": "上海市", "city_code": "310100", "district": "浦东新区",
+			"address": "并发测试路 1 号", "latitude": shop.Latitude,
+			"longitude": shop.Longitude, "status": "active",
+			"business_status": "open",
+		}).Error; err != nil {
+			return err
+		}
 		if err := tx.Table("accounts").Create(&accounts).Error; err != nil {
 			return err
 		}
@@ -167,23 +197,53 @@ func TestConcurrentGrabCreatesOneActiveAssignmentIntegration(t *testing.T) {
 }
 
 // cleanupDispatchConcurrencyFixture 清理调度 Concurrency 测试夹具。
-func cleanupDispatchConcurrencyFixture(db *gorm.DB, orderID, deliveryID, jobID uint64, accountIDs, riderIDs, serviceIDs []uint64) {
-	_ = db.Transaction(func(tx *gorm.DB) error {
-		tx.Exec("DELETE FROM notification_deliveries WHERE event_id IN (SELECT event_id FROM outbox_events WHERE aggregate_id IN ?)", []uint64{deliveryID, jobID})
-		tx.Exec("DELETE FROM audit_logs WHERE resource_id IN ?", []uint64{deliveryID, jobID})
-		tx.Exec("DELETE FROM order_logs WHERE order_id=?", orderID)
-		tx.Exec("DELETE FROM outbox_events WHERE aggregate_id IN ?", []uint64{deliveryID, jobID})
-		tx.Exec("DELETE FROM idempotency_keys WHERE path='/integration/dispatch/concurrent-grab' AND actor_id IN ?", riderIDs)
-		tx.Exec("DELETE FROM delivery_assignments WHERE delivery_order_id=?", deliveryID)
-		tx.Exec("DELETE FROM dispatch_offers WHERE job_id=?", jobID)
-		tx.Exec("DELETE FROM dispatch_candidates WHERE job_id=?", jobID)
-		tx.Exec("DELETE FROM dispatch_jobs WHERE id=?", jobID)
-		tx.Exec("DELETE FROM delivery_orders WHERE id=?", deliveryID)
-		tx.Exec("DELETE FROM orders WHERE id=?", orderID)
-		tx.Exec("DELETE FROM rider_runtime_states WHERE rider_id IN ?", riderIDs)
-		tx.Exec("DELETE FROM rider_service_shops WHERE id IN ?", serviceIDs)
-		tx.Exec("DELETE FROM riders WHERE id IN ?", riderIDs)
-		tx.Exec("DELETE FROM accounts WHERE id IN ?", accountIDs)
+func cleanupDispatchConcurrencyFixture(
+	t *testing.T,
+	db *gorm.DB,
+	merchantID,
+	shopID,
+	orderID,
+	deliveryID,
+	jobID uint64,
+	accountIDs,
+	riderIDs,
+	serviceIDs []uint64,
+) {
+	t.Helper()
+	err := db.Transaction(func(tx *gorm.DB) error {
+		statements := []struct {
+			query string
+			args  []any
+		}{
+			{
+				query: "DELETE FROM notification_deliveries WHERE event_id IN (SELECT event_id FROM outbox_events WHERE aggregate_id IN ?)",
+				args:  []any{[]uint64{deliveryID, jobID}},
+			},
+			{query: "DELETE FROM audit_logs WHERE resource_id IN ?", args: []any{[]uint64{deliveryID, jobID}}},
+			{query: "DELETE FROM order_logs WHERE order_id=?", args: []any{orderID}},
+			{query: "DELETE FROM outbox_events WHERE aggregate_id IN ?", args: []any{[]uint64{deliveryID, jobID}}},
+			{query: "DELETE FROM idempotency_keys WHERE path='/integration/dispatch/concurrent-grab' AND actor_id IN ?", args: []any{riderIDs}},
+			{query: "DELETE FROM delivery_assignments WHERE delivery_order_id=?", args: []any{deliveryID}},
+			{query: "DELETE FROM dispatch_offers WHERE job_id=?", args: []any{jobID}},
+			{query: "DELETE FROM dispatch_candidates WHERE job_id=?", args: []any{jobID}},
+			{query: "DELETE FROM dispatch_jobs WHERE id=?", args: []any{jobID}},
+			{query: "DELETE FROM delivery_orders WHERE id=?", args: []any{deliveryID}},
+			{query: "DELETE FROM orders WHERE id=?", args: []any{orderID}},
+			{query: "DELETE FROM rider_runtime_states WHERE rider_id IN ?", args: []any{riderIDs}},
+			{query: "DELETE FROM rider_service_shops WHERE id IN ?", args: []any{serviceIDs}},
+			{query: "DELETE FROM riders WHERE id IN ?", args: []any{riderIDs}},
+			{query: "DELETE FROM accounts WHERE id IN ?", args: []any{accountIDs}},
+			{query: "DELETE FROM shops WHERE id=?", args: []any{shopID}},
+			{query: "DELETE FROM merchants WHERE id=?", args: []any{merchantID}},
+		}
+		for _, statement := range statements {
+			if err := tx.Exec(statement.query, statement.args...).Error; err != nil {
+				return err
+			}
+		}
 		return nil
 	})
+	if err != nil {
+		t.Errorf("cleanup dispatch concurrency fixture: %v", err)
+	}
 }

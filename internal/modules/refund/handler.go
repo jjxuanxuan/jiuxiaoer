@@ -99,10 +99,22 @@ func (h *Handler) Callback(c *gin.Context) {
 		return
 	}
 	if err := h.service.ProcessCallback(c.Request.Context(), c.Param("provider"), c.Request, body); err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"code": "FAIL", "message": "callback rejected"})
+		c.JSON(refundCallbackFailureStatus(err), gin.H{"code": "FAIL", "message": "callback rejected"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"code": "SUCCESS", "message": "成功"})
+}
+
+func refundCallbackFailureStatus(err error) int {
+	details := problem.FromError(err)
+	switch details.Status {
+	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusRequestEntityTooLarge:
+		return details.Status
+	case http.StatusNotFound:
+		return http.StatusBadRequest
+	default:
+		return http.StatusInternalServerError
+	}
 }
 
 // List 查询退款列表。

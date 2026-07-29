@@ -23,6 +23,7 @@ import (
 	"jiuxiaoer-admin/backend-go/internal/infra/mysql"
 	"jiuxiaoer-admin/backend-go/internal/modules/auth"
 	"jiuxiaoer-admin/backend-go/internal/modules/order"
+	"jiuxiaoer-admin/backend-go/internal/pkg/idempotency"
 	"jiuxiaoer-admin/backend-go/internal/pkg/metrics"
 	"jiuxiaoer-admin/backend-go/internal/pkg/paygateway"
 	"jiuxiaoer-admin/backend-go/internal/pkg/problem"
@@ -30,9 +31,9 @@ import (
 )
 
 type paymentAcceptanceFixture struct {
-	orderID, paymentID, shopProductID, stockID, customerID uint64
-	paymentNo                                              string
-	amount                                                 int64
+	orderID, paymentID, productID, shopProductID, stockID, customerID uint64
+	paymentNo                                                         string
+	amount                                                            int64
 }
 
 type paymentAcceptanceProvider struct {
@@ -42,11 +43,26 @@ type paymentAcceptanceProvider struct {
 	delay      time.Duration
 	queryCalls atomic.Int64
 	closeCalls atomic.Int64
+
+	createStarted chan struct{}
+	createRelease chan struct{}
+	createResult  order.ProviderPaymentResult
+	createErr     error
 }
 
 func (p *paymentAcceptanceProvider) Code() string { return "wechat" }
-func (p *paymentAcceptanceProvider) Create(context.Context, order.CreateProviderPaymentInput) (order.ProviderPaymentResult, error) {
-	return order.ProviderPaymentResult{}, nil
+func (p *paymentAcceptanceProvider) Create(ctx context.Context, _ order.CreateProviderPaymentInput) (order.ProviderPaymentResult, error) {
+	if p.createStarted != nil {
+		close(p.createStarted)
+	}
+	if p.createRelease != nil {
+		select {
+		case <-p.createRelease:
+		case <-ctx.Done():
+			return order.ProviderPaymentResult{}, ctx.Err()
+		}
+	}
+	return p.createResult, p.createErr
 }
 func (p *paymentAcceptanceProvider) Query(context.Context, string) (order.ProviderPaymentState, error) {
 	p.queryCalls.Add(1)
@@ -76,7 +92,6 @@ func TestPaymentConfirmationAcceptance(t *testing.T) {
 
 	t.Run("ACC-PAY-001-success-and-repeat-do-not-double-apply", func(t *testing.T) {
 		fx := insertPaymentAcceptanceFixture(t, db, ids, "pending", time.Now().Add(10*time.Minute))
-		defer cleanupRaceFixture(db, fx.orderID, fx.paymentID, fx.shopProductID, fx.stockID)
 		state := paymentSuccessState(fx)
 		state.RequestID = "wechat-confirm-success-request-id"
 		provider := &paymentAcceptanceProvider{state: state}
@@ -96,8 +111,7 @@ func TestPaymentConfirmationAcceptance(t *testing.T) {
 
 	t.Run("ACC-PAY-001A-confirm-command-replays-cached-response-without-provider", func(t *testing.T) {
 		fx := insertPaymentAcceptanceFixture(t, db, ids, "pending", time.Now().Add(10*time.Minute))
-		defer cleanupRaceFixture(db, fx.orderID, fx.paymentID, fx.shopProductID, fx.stockID)
-		defer cleanupPaymentConfirmIdempotency(db, fx.customerID)
+		registerPaymentConfirmIdempotencyCleanup(t, db, fx.customerID)
 		state := paymentSuccessState(fx)
 		state.Status = "NOTPAY"
 		state.PaidAt = nil
@@ -123,8 +137,7 @@ func TestPaymentConfirmationAcceptance(t *testing.T) {
 
 	t.Run("ACC-PAY-001B-provider-failure-releases-command-for-immediate-retry", func(t *testing.T) {
 		fx := insertPaymentAcceptanceFixture(t, db, ids, "pending", time.Now().Add(10*time.Minute))
-		defer cleanupRaceFixture(db, fx.orderID, fx.paymentID, fx.shopProductID, fx.stockID)
-		defer cleanupPaymentConfirmIdempotency(db, fx.customerID)
+		registerPaymentConfirmIdempotencyCleanup(t, db, fx.customerID)
 		provider := &paymentAcceptanceProvider{queryErr: &paygateway.ProviderError{Operation: "payment.query", HTTPStatus: http.StatusInternalServerError, Code: "SYSTEM_ERROR", Retryable: true}}
 		service := order.NewService(cfg, db, ids).WithPaymentProvider(provider, metrics.New("confirm-idempotent-retry", ""))
 		claims := paymentCustomer(fx.customerID)
@@ -149,7 +162,6 @@ func TestPaymentConfirmationAcceptance(t *testing.T) {
 
 	t.Run("ACC-PAY-001C-confirm-command-requires-valid-idempotency-key", func(t *testing.T) {
 		fx := insertPaymentAcceptanceFixture(t, db, ids, "pending", time.Now().Add(10*time.Minute))
-		defer cleanupRaceFixture(db, fx.orderID, fx.paymentID, fx.shopProductID, fx.stockID)
 		provider := &paymentAcceptanceProvider{state: paymentSuccessState(fx)}
 		service := order.NewService(cfg, db, ids).WithPaymentProvider(provider, metrics.New("confirm-idempotent-key", ""))
 		claims := paymentCustomer(fx.customerID)
@@ -172,6 +184,138 @@ func TestPaymentConfirmationAcceptance(t *testing.T) {
 		}
 	})
 
+	t.Run("ACC-PAY-001D-stale-create-owner-cannot-complete-or-close-new-owner-payment", func(t *testing.T) {
+		fx := insertPaymentAcceptanceFixture(t, db, ids, "pending", time.Now().Add(10*time.Minute))
+		if err := db.Delete(&order.Payment{}, fx.paymentID).Error; err != nil {
+			t.Fatal(err)
+		}
+		path := "/api/v1/orders/:id/payments"
+		key := "create-owner-fence-" + strconv.FormatUint(fx.orderID, 10)
+		registerPaymentIdempotencyCleanup(t, db, fx.customerID, path)
+
+		appID := "wx-create-owner-fence"
+		if err := db.Create(&auth.Customer{
+			ID: fx.customerID, Phone: "13800000000", Status: "active",
+		}).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Create(&auth.CustomerIdentity{
+			ID: ids.Next(), CustomerID: fx.customerID, Provider: "wechat_miniapp",
+			AppID: appID, ProviderSubject: "openid-create-owner-fence", Status: "active",
+		}).Error; err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_ = db.Where("customer_id = ?", fx.customerID).Delete(&auth.CustomerIdentity{}).Error
+			_ = db.Delete(&auth.Customer{}, fx.customerID).Error
+		})
+
+		fencedCfg := cfg
+		fencedCfg.WeChat.MiniAppID = appID
+		provider := &paymentAcceptanceProvider{
+			createStarted: make(chan struct{}),
+			createRelease: make(chan struct{}),
+			createResult: order.ProviderPaymentResult{
+				Status:           "NOTPAY",
+				ProviderPrepayID: "prepay-owner-fence",
+				RequestID:        "create-owner-fence-request",
+				ClientPayload:    map[string]any{"package": "prepay_id=prepay-owner-fence"},
+			},
+		}
+		service := order.NewService(fencedCfg, db, ids).
+			WithPaymentProvider(provider, metrics.New("create-owner-fence", ""))
+		claims := auth.Claims{
+			AccountType: "customer",
+			CustomerID:  strconv.FormatUint(fx.customerID, 10),
+			Permissions: []string{"payment:create"},
+		}
+		req := order.PaymentCreateReq{Provider: "wechat", ClientType: "miniapp"}
+		type createResult struct {
+			payment order.PaymentDTO
+			err     error
+		}
+		resultCh := make(chan createResult, 1)
+		go func() {
+			payment, err := service.CreatePayment(
+				context.Background(),
+				&claims,
+				http.MethodPost,
+				path,
+				key,
+				strconv.FormatUint(fx.orderID, 10),
+				req,
+			)
+			resultCh <- createResult{payment: payment, err: err}
+		}()
+		select {
+		case <-provider.createStarted:
+		case <-time.After(3 * time.Second):
+			t.Fatal("provider create was not reached")
+		}
+
+		var ownerA idempotency.Record
+		if err := db.Where(
+			"actor_type = ? AND actor_id = ? AND path = ? AND key_hash = ?",
+			"customer", fx.customerID, path, idempotency.KeyHash(key),
+		).First(&ownerA).Error; err != nil {
+			t.Fatalf("load owner A claim: %v", err)
+		}
+		expired := time.Now().Add(-time.Second)
+		if err := db.Model(&idempotency.Record{}).
+			Where("id = ?", ownerA.ID).
+			Update("locked_until", expired).Error; err != nil {
+			t.Fatalf("expire owner A claim: %v", err)
+		}
+		ownerB := snowflake.New(988).Next()
+		requestHash := idempotency.ResourceRequestHash("payment.create", fx.orderID, req)
+		if err := db.Transaction(func(tx *gorm.DB) error {
+			started, err := idempotency.NewStore(db).Start(
+				context.Background(), tx, ownerB, "customer", fx.customerID,
+				http.MethodPost, path, key, requestHash,
+			)
+			if err != nil {
+				return err
+			}
+			if !started {
+				return errors.New("owner B did not reclaim idempotency key")
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("owner B reclaim: %v", err)
+		}
+		close(provider.createRelease)
+
+		select {
+		case got := <-resultCh:
+			if !idempotency.IsClaimLost(got.err) {
+				t.Fatalf("owner A result=%+v err=%v, want claim lost", got.payment, got.err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("stale owner A did not return")
+		}
+		if provider.closeCalls.Load() != 0 {
+			t.Fatalf("stale owner closed provider payment %d times", provider.closeCalls.Load())
+		}
+		var current idempotency.Record
+		if err := db.Where(
+			"actor_type = ? AND actor_id = ? AND path = ? AND key_hash = ?",
+			"customer", fx.customerID, path, idempotency.KeyHash(key),
+		).First(&current).Error; err != nil {
+			t.Fatal(err)
+		}
+		if current.ID != ownerB || current.Status != "processing" || current.LockedUntil == nil {
+			t.Fatalf("stale owner modified B claim: %+v", current)
+		}
+		var payment order.Payment
+		if err := db.Where("order_id = ? AND provider = ?", fx.orderID, "wechat").
+			First(&payment).Error; err != nil {
+			t.Fatal(err)
+		}
+		if payment.Status != "creating" {
+			t.Fatalf("stale owner changed payment status to %q", payment.Status)
+		}
+	})
+
 	for _, tc := range []struct {
 		providerStatus string
 		localStatus    string
@@ -182,7 +326,6 @@ func TestPaymentConfirmationAcceptance(t *testing.T) {
 	} {
 		t.Run("ACC-PAY-002-map-"+tc.providerStatus, func(t *testing.T) {
 			fx := insertPaymentAcceptanceFixture(t, db, ids, "pending", time.Now().Add(10*time.Minute))
-			defer cleanupRaceFixture(db, fx.orderID, fx.paymentID, fx.shopProductID, fx.stockID)
 			state := paymentSuccessState(fx)
 			state.Status = tc.providerStatus
 			state.PaidAt = nil
@@ -199,7 +342,6 @@ func TestPaymentConfirmationAcceptance(t *testing.T) {
 
 	t.Run("ACC-PAY-003-query-timeout-preserves-local-state", func(t *testing.T) {
 		fx := insertPaymentAcceptanceFixture(t, db, ids, "pending", time.Now().Add(10*time.Minute))
-		defer cleanupRaceFixture(db, fx.orderID, fx.paymentID, fx.shopProductID, fx.stockID)
 		provider := &paymentAcceptanceProvider{queryErr: &paygateway.ProviderError{Operation: "payment.query", HTTPStatus: http.StatusInternalServerError, Code: "SYSTEM_ERROR", RequestID: "wechat-timeout-request-id", Retryable: true}}
 		service := order.NewService(cfg, db, ids).WithPaymentProvider(provider, metrics.New("confirm-timeout", ""))
 		claims := paymentCustomer(fx.customerID)
@@ -212,7 +354,6 @@ func TestPaymentConfirmationAcceptance(t *testing.T) {
 
 	t.Run("ACC-PAY-004-provider-mismatch-enters-exception", func(t *testing.T) {
 		fx := insertPaymentAcceptanceFixture(t, db, ids, "pending", time.Now().Add(10*time.Minute))
-		defer cleanupRaceFixture(db, fx.orderID, fx.paymentID, fx.shopProductID, fx.stockID)
 		state := paymentSuccessState(fx)
 		state.Amount++
 		state.RequestID = "wechat-mismatch-request-id"
@@ -233,7 +374,6 @@ func TestPaymentConfirmationAcceptance(t *testing.T) {
 
 	t.Run("ACC-PAY-005-non-owner-is-rejected-before-provider-call", func(t *testing.T) {
 		fx := insertPaymentAcceptanceFixture(t, db, ids, "pending", time.Now().Add(10*time.Minute))
-		defer cleanupRaceFixture(db, fx.orderID, fx.paymentID, fx.shopProductID, fx.stockID)
 		provider := &paymentAcceptanceProvider{state: paymentSuccessState(fx)}
 		service := order.NewService(cfg, db, ids).WithPaymentProvider(provider, metrics.New("confirm-owner", ""))
 		other := paymentCustomer(ids.Next())
@@ -245,7 +385,6 @@ func TestPaymentConfirmationAcceptance(t *testing.T) {
 
 	t.Run("ACC-PAY-006-confirm-and-callback-concurrency-apply-once", func(t *testing.T) {
 		fx := insertPaymentAcceptanceFixture(t, db, ids, "pending", time.Now().Add(10*time.Minute))
-		defer cleanupRaceFixture(db, fx.orderID, fx.paymentID, fx.shopProductID, fx.stockID)
 		state := paymentSuccessState(fx)
 		provider := &paymentAcceptanceProvider{state: state, delay: 2 * time.Millisecond, callback: order.PaymentCallbackEvent{EventID: "confirm-callback-race-" + fx.paymentNo, ProviderTradeNo: state.ProviderTradeNo, PaymentNo: state.PaymentNo, Status: state.Status, Amount: state.Amount, Currency: state.Currency, PaidAt: state.PaidAt}}
 		service := order.NewService(cfg, db, ids).WithPaymentProvider(provider, metrics.New("confirm-callback-race", ""))
@@ -284,7 +423,6 @@ func TestPaymentConfirmationAcceptance(t *testing.T) {
 
 	t.Run("ACC-PAY-007-confirm-and-expiry-concurrency-do-not-close-paid", func(t *testing.T) {
 		fx := insertPaymentAcceptanceFixture(t, db, ids, "pending", time.Now().Add(-time.Second))
-		defer cleanupRaceFixture(db, fx.orderID, fx.paymentID, fx.shopProductID, fx.stockID)
 		provider := &paymentAcceptanceProvider{state: paymentSuccessState(fx), delay: time.Millisecond}
 		registry := metrics.New("confirm-expiry-race", "")
 		service := order.NewService(cfg, db, ids).WithPaymentProvider(provider, registry)
@@ -320,7 +458,6 @@ func TestPaymentConfirmationAcceptance(t *testing.T) {
 
 	t.Run("ACC-PAY-008-callback-body-boundaries", func(t *testing.T) {
 		fx := insertPaymentAcceptanceFixture(t, db, ids, "pending", time.Now().Add(10*time.Minute))
-		defer cleanupRaceFixture(db, fx.orderID, fx.paymentID, fx.shopProductID, fx.stockID)
 		state := paymentSuccessState(fx)
 		provider := &paymentAcceptanceProvider{callback: order.PaymentCallbackEvent{EventID: "callback-boundary-" + fx.paymentNo, ProviderTradeNo: state.ProviderTradeNo, PaymentNo: state.PaymentNo, Status: state.Status, Amount: state.Amount, Currency: state.Currency, PaidAt: state.PaidAt}}
 		service := order.NewService(cfg, db, ids).WithPaymentProvider(provider, metrics.New("callback-boundary", ""))
@@ -353,7 +490,6 @@ func TestPaymentConfirmationAcceptance(t *testing.T) {
 
 	t.Run("ACC-PAY-009-pending-worker-uses-explicit-reconcile-schedule", func(t *testing.T) {
 		fx := insertPaymentAcceptanceFixture(t, db, ids, "pending", time.Now().Add(10*time.Minute))
-		defer cleanupRaceFixture(db, fx.orderID, fx.paymentID, fx.shopProductID, fx.stockID)
 		state := paymentSuccessState(fx)
 		state.Status = "NOTPAY"
 		state.PaidAt = nil
@@ -384,7 +520,6 @@ func TestPaymentConfirmationAcceptance(t *testing.T) {
 
 	t.Run("ACC-PAY-010-two-workers-claim-pending-payment-once", func(t *testing.T) {
 		fx := insertPaymentAcceptanceFixture(t, db, ids, "pending", time.Now().Add(10*time.Minute))
-		defer cleanupRaceFixture(db, fx.orderID, fx.paymentID, fx.shopProductID, fx.stockID)
 		provider := &paymentAcceptanceProvider{state: paymentSuccessState(fx), delay: 50 * time.Millisecond}
 		first := order.NewExpiryWorker(cfg, db, ids, metrics.New("pending-worker-a", ""), slog.New(slog.NewTextHandler(io.Discard, nil)), provider)
 		second := order.NewExpiryWorker(cfg, db, ids, metrics.New("pending-worker-b", ""), slog.New(slog.NewTextHandler(io.Discard, nil)), provider)
@@ -416,7 +551,6 @@ func TestPaymentConfirmationAcceptance(t *testing.T) {
 
 	t.Run("ACC-PAY-011-notpay-without-optional-amount-remains-pending", func(t *testing.T) {
 		fx := insertPaymentAcceptanceFixture(t, db, ids, "pending", time.Now().Add(10*time.Minute))
-		defer cleanupRaceFixture(db, fx.orderID, fx.paymentID, fx.shopProductID, fx.stockID)
 		provider := &paymentAcceptanceProvider{state: order.ProviderPaymentState{PaymentNo: fx.paymentNo, Status: "NOTPAY"}}
 		service := order.NewService(cfg, db, ids).WithPaymentProvider(provider, metrics.New("confirm-optional-amount", ""))
 		claims := paymentCustomer(fx.customerID)
@@ -429,7 +563,6 @@ func TestPaymentConfirmationAcceptance(t *testing.T) {
 
 	t.Run("ACC-PAY-012-success-without-amount-is-rejected", func(t *testing.T) {
 		fx := insertPaymentAcceptanceFixture(t, db, ids, "pending", time.Now().Add(10*time.Minute))
-		defer cleanupRaceFixture(db, fx.orderID, fx.paymentID, fx.shopProductID, fx.stockID)
 		provider := &paymentAcceptanceProvider{state: order.ProviderPaymentState{ProviderTradeNo: "wx-" + fx.paymentNo, PaymentNo: fx.paymentNo, Status: "SUCCESS"}}
 		service := order.NewService(cfg, db, ids).WithPaymentProvider(provider, metrics.New("confirm-missing-success-amount", ""))
 		claims := paymentCustomer(fx.customerID)
@@ -448,7 +581,6 @@ func TestPaymentConfirmationAcceptance(t *testing.T) {
 	} {
 		t.Run("ACC-PAY-013-query-"+tc.name+"-mismatch-is-rejected", func(t *testing.T) {
 			fx := insertPaymentAcceptanceFixture(t, db, ids, "pending", time.Now().Add(10*time.Minute))
-			defer cleanupRaceFixture(db, fx.orderID, fx.paymentID, fx.shopProductID, fx.stockID)
 			strictCfg := cfg
 			strictCfg.WeChat.PayMockEnabled = false
 			strictCfg.WeChat.MiniAppID = "wx-expected"
@@ -472,7 +604,6 @@ func TestPaymentConfirmationAcceptance(t *testing.T) {
 
 	t.Run("ACC-PAY-014-stale-notpay-cannot-regress-succeeded-evidence", func(t *testing.T) {
 		fx := insertPaymentAcceptanceFixture(t, db, ids, "pending", time.Now().Add(10*time.Minute))
-		defer cleanupRaceFixture(db, fx.orderID, fx.paymentID, fx.shopProductID, fx.stockID)
 		service := order.NewService(cfg, db, ids).WithPaymentProvider(&paymentAcceptanceProvider{}, metrics.New("confirm-success-terminal", ""))
 
 		result, err := service.ApplyProviderPaymentState(context.Background(), fx.paymentNo, "wechat", paymentSuccessState(fx), "system", 0, "success:"+fx.paymentNo)
@@ -514,18 +645,28 @@ func openPaymentAcceptanceDB(t *testing.T) *gorm.DB {
 
 func insertPaymentAcceptanceFixture(t *testing.T, db *gorm.DB, ids *snowflake.Generator, paymentStatus string, expiresAt time.Time) paymentAcceptanceFixture {
 	t.Helper()
-	fx := paymentAcceptanceFixture{orderID: ids.Next(), paymentID: ids.Next(), shopProductID: ids.Next(), stockID: ids.Next(), customerID: ids.Next(), amount: 100}
+	fx := paymentAcceptanceFixture{
+		orderID: ids.Next(), paymentID: ids.Next(), productID: ids.Next(),
+		shopProductID: ids.Next(), stockID: ids.Next(), customerID: ids.Next(), amount: 100,
+	}
 	fx.paymentNo = "PAY-CONFIRM-" + strconv.FormatUint(fx.paymentID, 10)
-	if err := db.Create(&order.ProductStock{ID: fx.stockID, ShopProductID: fx.shopProductID, ShopID: 4201, ProductID: 5004, AvailableQty: 9, ReservedQty: 1}).Error; err != nil {
+	registerRaceFixtureCleanup(t, db, fx.orderID, fx.paymentID, fx.shopProductID, fx.stockID)
+	if err := db.Create(&order.ProductStock{ID: fx.stockID, ShopProductID: fx.shopProductID, ShopID: 4201, ProductID: fx.productID, AvailableQty: 9, ReservedQty: 1}).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Create(&order.Order{ID: fx.orderID, OrderNo: "ORDER-CONFIRM-" + strconv.FormatUint(fx.orderID, 10), CustomerID: fx.customerID, MerchantID: 4001, ShopID: 4201, Status: "pending_payment", PayStatus: "pending", DeliveryStatus: "pending", GoodsAmount: fx.amount, PayableAmount: fx.amount, ExpiresAt: &expiresAt}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&order.OrderItem{ID: ids.Next(), OrderID: fx.orderID, ShopProductID: fx.shopProductID, ProductID: 5004, ProductSnapshot: []byte(`{"name":"confirmation"}`), Quantity: 1, SalePriceAmount: fx.amount, TotalAmount: fx.amount}).Error; err != nil {
+	if err := db.Create(&order.OrderItem{ID: ids.Next(), OrderID: fx.orderID, ShopProductID: fx.shopProductID, ProductID: fx.productID, ProductSnapshot: []byte(`{"name":"confirmation"}`), Quantity: 1, SalePriceAmount: fx.amount, TotalAmount: fx.amount}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&order.Payment{ID: fx.paymentID, PaymentNo: fx.paymentNo, OrderID: fx.orderID, CustomerID: fx.customerID, Channel: "miniapp", Provider: "wechat", Status: paymentStatus, ProviderStatus: stringPointer("NOTPAY"), Amount: fx.amount, Currency: "CNY", ExpiresAt: &expiresAt}).Error; err != nil {
+	payment := retailOrderPaymentFixture(t, fx.orderID, order.Payment{
+		ID: fx.paymentID, PaymentNo: fx.paymentNo, CustomerID: fx.customerID,
+		Channel: "miniapp", Provider: "wechat", Status: paymentStatus,
+		ProviderStatus: stringPointer("NOTPAY"), Amount: fx.amount,
+		Currency: "CNY", ExpiresAt: &expiresAt,
+	})
+	if err := db.Create(&payment).Error; err != nil {
 		t.Fatal(err)
 	}
 	return fx
@@ -540,8 +681,22 @@ func paymentCustomer(customerID uint64) auth.Claims {
 	return auth.Claims{AccountType: "customer", CustomerID: strconv.FormatUint(customerID, 10), Permissions: []string{"payment:view"}}
 }
 
-func cleanupPaymentConfirmIdempotency(db *gorm.DB, customerID uint64) {
-	db.Exec("DELETE FROM idempotency_keys WHERE actor_type = 'customer' AND actor_id = ? AND path = ?", customerID, "/api/v1/orders/:id/payment/confirm")
+func registerPaymentConfirmIdempotencyCleanup(t *testing.T, db *gorm.DB, customerID uint64) {
+	t.Helper()
+	registerPaymentIdempotencyCleanup(t, db, customerID, "/api/v1/orders/:id/payment/confirm")
+}
+
+func registerPaymentIdempotencyCleanup(t *testing.T, db *gorm.DB, customerID uint64, path string) {
+	t.Helper()
+	t.Cleanup(func() {
+		if err := db.Exec(
+			"DELETE FROM idempotency_keys WHERE actor_type = 'customer' AND actor_id = ? AND path = ?",
+			customerID,
+			path,
+		).Error; err != nil {
+			t.Errorf("cleanup payment confirmation idempotency fixture: %v", err)
+		}
+	})
 }
 
 func assertPaymentAcceptanceLedger(t *testing.T, db *gorm.DB, fx paymentAcceptanceFixture, orderStatus, paymentStatus string, reserved int) {

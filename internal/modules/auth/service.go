@@ -569,7 +569,7 @@ return 0
 func (s *Service) identityForAccount(ctx context.Context, account Account) (Identity, error) {
 	switch account.AccountType {
 	case "admin":
-		admin, roleCode, permissions, err := s.repo.AdminProfile(ctx, account.ID)
+		admin, roleCode, shopIDs, permissions, err := s.repo.AdminProfile(ctx, account.ID)
 		if err != nil {
 			return Identity{}, err
 		}
@@ -581,14 +581,16 @@ func (s *Service) identityForAccount(ctx context.Context, account Account) (Iden
 			AccountID:         account.ID,
 			CredentialVersion: account.CredentialVersion,
 			AdminUserID:       admin.ID,
+			AuthorizedShopIDs: shopIDs,
 			RoleCode:          roleCode,
 			Permissions:       permissions,
 			Profile: map[string]any{
-				"admin_user_id":  idString(admin.ID),
-				"admin_sub_role": admin.AdminSubRole,
-				"role_code":      roleCode,
-				"name":           admin.Name,
-				"permissions":    permissions,
+				"admin_user_id":       idString(admin.ID),
+				"admin_sub_role":      admin.AdminSubRole,
+				"authorized_shop_ids": uint64Strings(shopIDs),
+				"role_code":           roleCode,
+				"name":                admin.Name,
+				"permissions":         permissions,
 			},
 		}, nil
 	case "merchant":
@@ -666,7 +668,23 @@ func (s *Service) identityForAccount(ctx context.Context, account Account) (Iden
 }
 
 func customerPermissions() []string {
-	return []string{"customer:login", "product:list", "cart:view", "cart:update", "order:create", "order:list", "order:view", "order:cancel", "payment:create", "payment:view", "delivery_verification:view_customer"}
+	return []string{
+		"customer:login", "product:list", "cart:view", "cart:update",
+		"order:create", "order:list", "order:view", "order:cancel",
+		"payment:create", "payment:view", "delivery_verification:view_customer",
+		"wine_ticket_cabinet:view",
+		"wine_ticket_gift:cancel", "wine_ticket_gift:claim", "wine_ticket_gift:create",
+		"wine_ticket_gift:list", "wine_ticket_gift:share", "wine_ticket_gift:view",
+		"wine_ticket_lot:list", "wine_ticket_lot:view",
+		"wine_ticket_notification_consent:create", "wine_ticket_notification_consent:view",
+		"wine_ticket_payment:confirm",
+		"wine_ticket_purchase:create", "wine_ticket_purchase:list", "wine_ticket_purchase:view",
+		"wine_ticket_redemption:cancel", "wine_ticket_redemption:create",
+		"wine_ticket_redemption:list", "wine_ticket_redemption:view",
+		"wine_ticket_refund:create", "wine_ticket_refund:quote", "wine_ticket_refund:view",
+		"wine_ticket_renewal:create", "wine_ticket_renewal:quote", "wine_ticket_renewal:view",
+		"wine_ticket_slot:list", "wine_ticket_transaction:list",
+	}
 }
 
 // issueResponse 签发并返回认证响应。
