@@ -20,6 +20,7 @@ type Config struct {
 	MQ               MQConfig
 	JWT              JWTConfig
 	Order            OrderConfig
+	Repurchase       RepurchaseConfig
 	Reconciliation   ReconciliationConfig
 	AfterSale        AfterSaleConfig
 	DeliveryIncident DeliveryIncidentConfig
@@ -237,6 +238,13 @@ type OrderConfig struct {
 	ExpiryWorkerEnabled  bool
 	ExpiryScanInterval   time.Duration
 	ExpiryBatchSize      int
+}
+
+// RepurchaseConfig 控制 C 端常购清单的历史窗口和单次返回上限。
+type RepurchaseConfig struct {
+	Enabled      bool
+	LookbackDays int
+	MaxItems     int
 }
 
 // ReconciliationConfig 控制 T+1 微信交易账单和资金账单闭环。
@@ -524,6 +532,11 @@ func Load() Config {
 			ExpiryWorkerEnabled:  boolEnv("JXE_ORDER_EXPIRY_WORKER_ENABLED", true),
 			ExpiryScanInterval:   durationEnv("JXE_ORDER_EXPIRY_SCAN_INTERVAL", 10*time.Second),
 			ExpiryBatchSize:      intEnv("JXE_ORDER_EXPIRY_BATCH_SIZE", 100),
+		},
+		Repurchase: RepurchaseConfig{
+			Enabled:      boolEnv("JXE_REPURCHASE_ENABLED", true),
+			LookbackDays: intEnv("JXE_REPURCHASE_LOOKBACK_DAYS", 180),
+			MaxItems:     intEnv("JXE_REPURCHASE_MAX_ITEMS", 20),
 		},
 		Reconciliation: ReconciliationConfig{
 			Enabled:              boolEnv("JXE_WECHAT_BILL_RECONCILIATION_ENABLED", false),
@@ -874,6 +887,9 @@ func (c Config) Validate() error {
 	}
 	if c.Order.PaymentTTL < time.Minute || c.Order.CreatingReconcileAge <= 0 || c.Order.ExpiryScanInterval <= 0 || c.Order.ExpiryBatchSize <= 0 || c.Order.ExpiryBatchSize > 1000 {
 		problems = append(problems, "invalid order payment expiry configuration")
+	}
+	if c.Repurchase.LookbackDays < 1 || c.Repurchase.LookbackDays > 3650 || c.Repurchase.MaxItems < 1 || c.Repurchase.MaxItems > 20 {
+		problems = append(problems, "invalid repurchase lookback or item limit configuration")
 	}
 	if c.Reconciliation.WorkerInterval <= 0 || c.Reconciliation.RunHour < 10 || c.Reconciliation.RunHour > 23 || c.Reconciliation.LagDays < 1 || c.Reconciliation.LagDays > 90 || c.Reconciliation.BackfillDaysPerCycle < 1 || c.Reconciliation.BackfillDaysPerCycle > 30 || c.Reconciliation.RequestTimeout <= 0 || c.Reconciliation.InsertBatchSize < 1 || c.Reconciliation.InsertBatchSize > 1000 || c.Reconciliation.RunningTimeout <= c.Reconciliation.RequestTimeout {
 		problems = append(problems, "invalid WeChat bill reconciliation configuration")

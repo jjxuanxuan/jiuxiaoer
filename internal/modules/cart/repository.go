@@ -3,6 +3,7 @@ package cart
 import (
 	"context"
 	"errors"
+	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -83,14 +84,23 @@ func (r *Repository) SaleableShopProduct(ctx context.Context, tx *gorm.DB, shopP
 // CartItemQuantity 锁定当前购物车明细，使增量请求可以校验结果数量，
 // 而不是悄然将其截断为 99。
 func (r *Repository) CartItemQuantity(ctx context.Context, tx *gorm.DB, cartID, shopProductID uint64) (int, error) {
+	item, found, err := r.LockCartItem(ctx, tx, cartID, shopProductID)
+	if err != nil || !found {
+		return 0, err
+	}
+	return item.Quantity, nil
+}
+
+// LockCartItem 返回购物车商品的数量和选中状态，供批量复购计算最终状态。
+func (r *Repository) LockCartItem(ctx context.Context, tx *gorm.DB, cartID, shopProductID uint64) (CartItem, bool, error) {
 	var item CartItem
 	err := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).
 		Where("cart_id=? AND shop_product_id=? AND deleted_at IS NULL", cartID, shopProductID).
 		First(&item).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return 0, nil
+		return CartItem{}, false, nil
 	}
-	return item.Quantity, err
+	return item, err == nil, err
 }
 
 // LockCustomerCartItem 在更新数量前于 SQL 内解析所有权。
@@ -221,4 +231,136 @@ func (r *Repository) ListItems(ctx context.Context, db *gorm.DB, customerID uint
 		Order("ci.updated_at DESC, ci.id DESC").
 		Scan(&rows).Error
 	return rows, err
+}
+
+// ListFrequentPurchases 聚合指定客户最近已完成订单中的商品，并将其映射到
+// 当前服务门店。已经从当前商品主数据中删除的商品不会重新暴露。
+func (r *Repository) ListFrequentPurchases(ctx context.Context, customerID, shopID uint64, since time.Time, limit int) ([]FrequentPurchaseRow, error) {
+	var rows []FrequentPurchaseRow
+	err := r.db.WithContext(ctx).Raw(`
+		WITH ranked_history AS (
+			SELECT
+				oi.product_id,
+				oi.order_id,
+				oi.quantity,
+				oi.sale_price_amount,
+				o.completed_at,
+				ROW_NUMBER() OVER (
+					PARTITION BY oi.product_id
+					ORDER BY o.completed_at DESC, o.id DESC, oi.id DESC
+				) AS history_rank
+			FROM orders o
+			JOIN order_items oi ON oi.order_id = o.id AND oi.deleted_at IS NULL
+			WHERE o.customer_id = ?
+			  AND o.status = 'completed'
+			  AND o.completed_at >= ?
+			  AND o.deleted_at IS NULL
+		),
+		history AS (
+			SELECT
+				product_id,
+				COUNT(DISTINCT order_id) AS purchase_count,
+				SUM(quantity) AS purchased_quantity,
+				MAX(completed_at) AS last_purchased_at,
+				MAX(CASE WHEN history_rank = 1 THEN quantity END) AS last_quantity,
+				MAX(CASE WHEN history_rank = 1 THEN sale_price_amount END) AS last_sale_price_amount
+			FROM ranked_history
+			GROUP BY product_id
+		)
+		SELECT
+			h.product_id,
+			COALESCE(sp.id, 0) AS shop_product_id,
+			? AS shop_id,
+			p.name,
+			p.brand_name,
+			p.spec,
+			p.image_url,
+			h.purchase_count,
+			h.purchased_quantity,
+			h.last_quantity,
+			h.last_sale_price_amount,
+			h.last_purchased_at,
+			COALESCE(sp.sale_price_amount, 0) AS sale_price_amount,
+			p.status AS product_status,
+			COALESCE(c.status, '') AS category_status,
+			COALESCE(sp.status, '') AS shop_product_status,
+			COALESCE(s.status, '') AS shop_status,
+			COALESCE(s.business_status, '') AS business_status,
+			COALESCE(ps.available_qty, 0) AS available_qty
+		FROM history h
+		JOIN products p ON p.id = h.product_id AND p.deleted_at IS NULL
+		LEFT JOIN categories c ON c.id = p.category_id AND c.deleted_at IS NULL
+		LEFT JOIN shop_products sp
+			ON sp.shop_id = ? AND sp.product_id = h.product_id AND sp.deleted_at IS NULL
+		LEFT JOIN shops s ON s.id = ? AND s.deleted_at IS NULL
+		LEFT JOIN product_stocks ps ON ps.shop_product_id = sp.id AND ps.deleted_at IS NULL
+		ORDER BY h.purchase_count DESC, h.last_purchased_at DESC, h.product_id DESC
+		LIMIT ?
+	`, customerID, since, shopID, shopID, shopID, limit).Scan(&rows).Error
+	return rows, err
+}
+
+// ShopProductsByProductIDs 返回当前门店内与商品主键对应的门店商品和实时库存。
+func (r *Repository) ShopProductsByProductIDs(ctx context.Context, tx *gorm.DB, shopID uint64, productIDs []uint64) ([]ShopProductRow, error) {
+	if len(productIDs) == 0 {
+		return []ShopProductRow{}, nil
+	}
+	var rows []ShopProductRow
+	err := tx.WithContext(ctx).
+		Table("shop_products sp").
+		Select(`
+			sp.id AS shop_product_id,
+			sp.shop_id,
+			sp.product_id,
+			p.name,
+			p.brand_name,
+			p.spec,
+			p.image_url,
+			sp.sale_price_amount,
+			p.status AS product_status,
+			c.status AS category_status,
+			sp.status AS shop_product_status,
+			s.status AS shop_status,
+			s.business_status,
+			COALESCE(ps.available_qty, 0) AS available_qty
+		`).
+		Joins("JOIN products p ON p.id = sp.product_id AND p.deleted_at IS NULL").
+		Joins("JOIN categories c ON c.id = p.category_id AND c.deleted_at IS NULL").
+		Joins("JOIN shops s ON s.id = sp.shop_id AND s.deleted_at IS NULL").
+		Joins("LEFT JOIN product_stocks ps ON ps.shop_product_id = sp.id AND ps.deleted_at IS NULL").
+		Where("sp.shop_id = ? AND sp.product_id IN ? AND sp.deleted_at IS NULL", shopID, productIDs).
+		Scan(&rows).Error
+	return rows, err
+}
+
+// DeselectOtherShops 在用户明确允许替换选中门店时取消其他门店商品的选中状态。
+func (r *Repository) DeselectOtherShops(ctx context.Context, tx *gorm.DB, cartID, shopID uint64) error {
+	return tx.WithContext(ctx).Model(&CartItem{}).
+		Where("cart_id = ? AND shop_id <> ? AND selected = 1 AND deleted_at IS NULL", cartID, shopID).
+		Updates(map[string]any{"selected": false}).Error
+}
+
+// SetTargetItemQuantity 将一键复购商品设置为目标数量并选中。
+// EnsureCart 对购物车行的锁保证同一客户的批量变更串行执行。
+func (r *Repository) SetTargetItemQuantity(ctx context.Context, tx *gorm.DB, cartID uint64, product ShopProductRow, quantity int, nextID func() uint64) error {
+	var item CartItem
+	err := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("cart_id = ? AND shop_product_id = ? AND deleted_at IS NULL", cartID, product.ShopProductID).
+		Take(&item).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return tx.WithContext(ctx).Create(&CartItem{
+			ID:            nextID(),
+			CartID:        cartID,
+			ShopProductID: product.ShopProductID,
+			ShopID:        product.ShopID,
+			ProductID:     product.ProductID,
+			Quantity:      quantity,
+			Selected:      true,
+		}).Error
+	}
+	if err != nil {
+		return err
+	}
+	return tx.WithContext(ctx).Model(&CartItem{}).Where("id = ?", item.ID).
+		Updates(map[string]any{"quantity": quantity, "selected": true}).Error
 }

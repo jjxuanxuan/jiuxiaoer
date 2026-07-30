@@ -29,6 +29,22 @@ func TestProductionConfigAcceptsExplicitSafeValues(t *testing.T) {
 	}
 }
 
+func TestRepurchaseConfigRejectsUnsafeBounds(t *testing.T) {
+	for _, mutate := range []func(*Config){
+		func(cfg *Config) { cfg.Repurchase.LookbackDays = 0 },
+		func(cfg *Config) { cfg.Repurchase.LookbackDays = 3651 },
+		func(cfg *Config) { cfg.Repurchase.MaxItems = 0 },
+		func(cfg *Config) { cfg.Repurchase.MaxItems = 21 },
+	} {
+		cfg := Load()
+		mutate(&cfg)
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "invalid repurchase lookback or item limit configuration") {
+			t.Fatalf("expected invalid repurchase configuration to fail, got %v", err)
+		}
+	}
+}
+
 func TestCP1ReleaseProfileRequiresEnforcedDeliveryVerification(t *testing.T) {
 	for _, mode := range []string{"off", "observe"} {
 		t.Run("pickup-"+mode, func(t *testing.T) {

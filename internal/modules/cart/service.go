@@ -7,6 +7,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"jiuxiaoer-admin/backend-go/internal/config"
 	"jiuxiaoer-admin/backend-go/internal/modules/auth"
 	"jiuxiaoer-admin/backend-go/internal/pkg/idempotency"
 	"jiuxiaoer-admin/backend-go/internal/pkg/problem"
@@ -14,9 +15,11 @@ import (
 )
 
 type Service struct {
-	repo    *Repository
-	idStore *idempotency.Store
-	idGen   *snowflake.Generator
+	repo       *Repository
+	idStore    *idempotency.Store
+	idGen      *snowflake.Generator
+	repurchase config.RepurchaseConfig
+	locations  repurchaseLocationResolver
 }
 
 // NewService 负责 C 端购物车写操作，并提供幂等保护。
@@ -25,6 +28,11 @@ func NewService(db *gorm.DB, idGen *snowflake.Generator) *Service {
 		repo:    NewRepository(db),
 		idStore: idempotency.NewStore(db),
 		idGen:   idGen,
+		repurchase: config.RepurchaseConfig{
+			Enabled:      true,
+			LookbackDays: 180,
+			MaxItems:     20,
+		},
 	}
 }
 

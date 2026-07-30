@@ -1524,6 +1524,21 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/Success" }
         default: { $ref: "#/components/responses/Problem" }
+  /frequent-purchases:
+    get:
+      summary: 查询本人常购清单
+      description: 聚合最近已完成订单中的商品，并按 X-Location-Context 对应的当前服务门店返回实时价格、库存和可购状态。
+      x-permission: order:list
+      x-object-scope: customer.self_orders
+      parameters:
+        - $ref: "#/components/parameters/RequiredLocationContext"
+      responses:
+        "200":
+          description: 当前服务门店下的本人常购清单
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FrequentPurchaseEnvelope" }
+        default: { $ref: "#/components/responses/Problem" }
   /cart/items:
     get:
       summary: 购物车列表
@@ -1633,6 +1648,27 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/CartEnvelope" }
+        default: { $ref: "#/components/responses/Problem" }
+  /cart/repurchase:
+    post:
+      summary: 常购清单一键复购
+      description: 按当前服务门店重新映射商品并批量放入购物车。下架、缺货和当前门店未销售的商品逐项跳过；认证、位置、幂等和购物车门店冲突整体失败。
+      x-permission: cart:update
+      x-object-scope: customer.self_cart
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/RequiredLocationContext"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RepurchaseReq" }
+      responses:
+        "200":
+          description: 逐项复购结果和更新后的本人购物车
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RepurchaseEnvelope" }
         default: { $ref: "#/components/responses/Problem" }
   /addresses:
     get:
@@ -3762,6 +3798,11 @@ components:
       name: X-Location-Context
       in: header
       schema: { type: string, pattern: "^loc_[A-Za-z0-9_-]{32}$" }
+    RequiredLocationContext:
+      name: X-Location-Context
+      in: header
+      required: true
+      schema: { type: string, pattern: "^loc_[A-Za-z0-9_-]{32}$" }
     AnonymousSession:
       name: X-Session-ID
       in: header
@@ -5835,6 +5876,110 @@ components:
         code: { type: integer, enum: [0] }
         message: { type: string, example: ok }
         data: { $ref: "#/components/schemas/ProductDetail" }
+        request_id: { type: string }
+    FrequentPurchaseItem:
+      type: object
+      additionalProperties: false
+      required: [product_id, shop_id, name, purchase_count, purchased_quantity, last_quantity, recommended_quantity, last_sale_price_amount, sale_price_amount, last_purchased_at, available_qty, availability_status, available, unavailable_reason]
+      properties:
+        product_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        shop_product_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        shop_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        name: { type: string }
+        brand_name: { type: string }
+        spec: { type: string }
+        image_url: { type: string }
+        purchase_count: { type: integer, minimum: 1 }
+        purchased_quantity: { type: integer, minimum: 1 }
+        last_quantity: { type: integer, minimum: 1 }
+        recommended_quantity: { type: integer, minimum: 1, maximum: 99 }
+        last_sale_price_amount: { type: integer, format: int64, minimum: 0, description: 最近一次购买单价，单位人民币分 }
+        sale_price_amount: { type: integer, format: int64, minimum: 0, description: 当前服务门店销售单价，当前门店未销售时为 0 }
+        last_purchased_at: { type: string, format: date-time }
+        available_qty: { type: integer, minimum: 0 }
+        availability_status:
+          type: string
+          enum: [available, not_sold_by_shop, not_on_sale, out_of_stock, shop_closed]
+        available: { type: boolean }
+        unavailable_reason:
+          type: string
+          nullable: true
+          enum: [not_sold_by_shop, not_on_sale, out_of_stock, shop_closed]
+    FrequentPurchase:
+      type: object
+      additionalProperties: false
+      required: [shop_id, lookback_days, items]
+      properties:
+        shop_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        lookback_days: { type: integer, minimum: 1 }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/FrequentPurchaseItem" }
+    FrequentPurchaseEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, enum: [0] }
+        message: { type: string, example: ok }
+        data: { $ref: "#/components/schemas/FrequentPurchase" }
+        request_id: { type: string }
+    RepurchaseItemReq:
+      type: object
+      additionalProperties: false
+      required: [product_id, quantity]
+      properties:
+        product_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        quantity: { type: integer, minimum: 1, maximum: 99 }
+    RepurchaseReq:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items: { $ref: "#/components/schemas/RepurchaseItemReq" }
+        replace_selection:
+          type: boolean
+          default: false
+          description: 为 true 时，在至少一个商品可加入后取消其他门店商品的选中状态
+    RepurchaseItemResult:
+      type: object
+      additionalProperties: false
+      required: [product_id, requested_quantity, status]
+      properties:
+        product_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        shop_product_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        requested_quantity: { type: integer, minimum: 1, maximum: 99 }
+        cart_quantity: { type: integer, minimum: 1, maximum: 99 }
+        status: { type: string, enum: [added, updated, unchanged, skipped] }
+        error_code:
+          type: string
+          enum: [PRODUCT_NOT_AVAILABLE_IN_SHOP, PRODUCT_NOT_ON_SALE, SHOP_CLOSED, STOCK_NOT_ENOUGH]
+    Repurchase:
+      type: object
+      additionalProperties: false
+      required: [shop_id, results, succeeded_count, failed_count, cart]
+      properties:
+        shop_id: { type: string, pattern: "^[1-9][0-9]{0,19}$" }
+        results:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items: { $ref: "#/components/schemas/RepurchaseItemResult" }
+        succeeded_count: { type: integer, minimum: 0 }
+        failed_count: { type: integer, minimum: 0 }
+        cart: { $ref: "#/components/schemas/Cart" }
+    RepurchaseEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, request_id]
+      properties:
+        code: { type: integer, enum: [0] }
+        message: { type: string, example: ok }
+        data: { $ref: "#/components/schemas/Repurchase" }
         request_id: { type: string }
     CartItem:
       type: object

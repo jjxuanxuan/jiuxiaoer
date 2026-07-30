@@ -21,11 +21,60 @@ func NewHandler(service *Service) *Handler {
 func RegisterRoutes(router *gin.RouterGroup, handler *Handler) {
 	router.GET("/items", handler.GetCart)
 	router.POST("/items", handler.AddItem)
+	router.POST("/repurchase", handler.Repurchase)
 	router.PUT("/items/:id", handler.UpdateItem)
 	router.DELETE("/items/:id", handler.DeleteItem)
 	router.PATCH("/items/:id/selection", handler.SetItemSelection)
 	router.POST("/selection", handler.SetShopSelection)
 	router.DELETE("/items", handler.ClearItems)
+}
+
+// RegisterFrequentPurchaseRoutes 注册位于购物车资源之外的常购清单读取接口。
+func RegisterFrequentPurchaseRoutes(router *gin.RouterGroup, handler *Handler) {
+	router.GET("/frequent-purchases", handler.ListFrequentPurchases)
+}
+
+// ListFrequentPurchases 查询本人常购清单。
+func (h *Handler) ListFrequentPurchases(c *gin.Context) {
+	claims, ok := auth.ClaimsFromContext(c)
+	if !ok {
+		response.Error(c, problem.Unauthorized("AUTH_UNAUTHORIZED", "unauthorized"))
+		return
+	}
+	resp, err := h.service.ListFrequentPurchases(c.Request.Context(), claims, c.GetHeader("X-Location-Context"))
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.OK(c, resp)
+}
+
+// Repurchase 将常购商品批量放入本人购物车。
+func (h *Handler) Repurchase(c *gin.Context) {
+	claims, ok := auth.ClaimsFromContext(c)
+	if !ok {
+		response.Error(c, problem.Unauthorized("AUTH_UNAUTHORIZED", "unauthorized"))
+		return
+	}
+	var req RepurchaseReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, problem.InvalidArgument("VALIDATION_FAILED", err.Error()))
+		return
+	}
+	resp, err := h.service.Repurchase(
+		c.Request.Context(),
+		claims,
+		c.Request.Method,
+		c.FullPath(),
+		c.GetHeader("Idempotency-Key"),
+		c.GetHeader("X-Location-Context"),
+		req,
+	)
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.OK(c, resp)
 }
 
 // SetItemSelection 设置明细选中状态。
