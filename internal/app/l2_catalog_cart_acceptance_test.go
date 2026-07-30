@@ -3,7 +3,9 @@ package app
 import (
 	"fmt"
 	"net/http"
+	"reflect"
 	"testing"
+	"time"
 )
 
 type acceptanceCatalog struct {
@@ -170,5 +172,162 @@ func TestL2CatalogAndCartMissingAcceptanceScenarios(t *testing.T) {
 				t.Fatalf("cart was not cleared: %#v", cart)
 			}
 		})
+	})
+}
+
+// TestL2FrequentPurchaseRepurchaseAcceptance 验证常购历史只使用当前客户的已完成订单，
+// 并覆盖部分成功、目标数量语义、幂等重放和跨门店选中替换。
+func TestL2FrequentPurchaseRepurchaseAcceptance(t *testing.T) {
+	f := newL2AcceptanceFixture(t)
+	defer f.close()
+
+	f.subtest(t, func(t *testing.T) {
+		cfg := f.cfg
+		cfg.CustomerLBS.Mode = "enforce"
+		cfg.CustomerLBS.Provider = "fake"
+		cfg.CustomerLBS.RegeocodeEnabled = true
+		cfg.CustomerLBS.RouteRefineEnabled = true
+		cfg.CustomerLBS.CacheHMACSecret = "repurchase-acceptance-lbs-secret-123456789"
+		router := f.routerWithConfig(cfg)
+
+		catalog := f.createCatalog(t, 10, 10)
+		historicalOnlyProductID := f.idGen.Next()
+		if err := f.db.Exec(`INSERT INTO products (id, category_id, name, sale_price_amount, original_price_amount, status)
+			VALUES (?, 6001, ?, 800, 800, 'on_sale')`, historicalOnlyProductID, uniqueName("history-only")).Error; err != nil {
+			t.Fatalf("insert historical-only product: %v", err)
+		}
+		olderOrderID, latestOrderID := f.idGen.Next(), f.idGen.Next()
+		if err := f.db.Exec(`INSERT INTO orders
+			(id, order_no, customer_id, merchant_id, shop_id, status, pay_status, delivery_status, goods_amount, payable_amount, paid_amount, address_snapshot, completed_at)
+			VALUES
+			(?, ?, ?, 4001, 4201, 'completed', 'paid', 'completed', 2000, 2000, 2000, '{}', ?),
+			(?, ?, ?, 4001, 4201, 'completed', 'paid', 'completed', 4400, 4400, 4400, '{}', ?)`,
+			olderOrderID, fmt.Sprintf("REP-%d", olderOrderID), f.customerID, time.Now().Add(-20*24*time.Hour),
+			latestOrderID, fmt.Sprintf("REP-%d", latestOrderID), f.customerID, time.Now().Add(-2*24*time.Hour),
+		).Error; err != nil {
+			t.Fatalf("insert completed repurchase orders: %v", err)
+		}
+		if err := f.db.Exec(`INSERT INTO order_items
+			(id, order_id, shop_product_id, product_id, product_snapshot, quantity, sale_price_amount, total_amount)
+			VALUES
+			(?, ?, ?, ?, '{}', 2, 1000, 2000),
+			(?, ?, ?, ?, '{}', 3, 1200, 3600),
+			(?, ?, 0, ?, '{}', 1, 800, 800)`,
+			f.idGen.Next(), olderOrderID, catalog.shopProductA, catalog.productID,
+			f.idGen.Next(), latestOrderID, catalog.shopProductA, catalog.productID,
+			f.idGen.Next(), latestOrderID, historicalOnlyProductID,
+		).Error; err != nil {
+			t.Fatalf("insert completed repurchase items: %v", err)
+		}
+
+		resolved := lbsHTTP(t, router, http.MethodPost, "/api/v1/location-contexts", map[string]string{
+			"Authorization": "Bearer " + f.customerToken,
+		}, map[string]any{
+			"source": "device_location", "latitude": 22.54, "longitude": 113.93,
+			"coordinate_system": "gcj02", "accuracy_m": 20, "captured_at": time.Now().Format(time.RFC3339Nano),
+		})
+		if resolved.status != http.StatusOK {
+			t.Fatalf("resolve customer location: status=%d body=%#v", resolved.status, resolved.body)
+		}
+		contextID := stringValue(t, object(t, resolved.body["data"])["location_context_id"])
+		commonHeaders := map[string]string{
+			"Authorization":      "Bearer " + f.customerToken,
+			"X-Location-Context": contextID,
+		}
+		frequent := lbsHTTP(t, router, http.MethodGet, "/api/v1/frequent-purchases", commonHeaders, nil)
+		if frequent.status != http.StatusOK {
+			t.Fatalf("list frequent purchases: status=%d body=%#v", frequent.status, frequent.body)
+		}
+		frequentItems := array(t, object(t, frequent.body["data"])["items"])
+		if len(frequentItems) != 2 {
+			t.Fatalf("unexpected frequent purchase items: %#v", frequentItems)
+		}
+		first := object(t, frequentItems[0])
+		if first["product_id"] != fmt.Sprint(catalog.productID) || int(l2Number(t, first["purchase_count"])) != 2 ||
+			int(l2Number(t, first["recommended_quantity"])) != 3 || first["sale_price_amount"] != float64(1000) {
+			t.Fatalf("frequent aggregation mismatch: %#v", first)
+		}
+
+		body := map[string]any{"items": []map[string]any{
+			{"product_id": fmt.Sprint(catalog.productID), "quantity": 4},
+			{"product_id": fmt.Sprint(historicalOnlyProductID), "quantity": 1},
+		}}
+		key := f.key("repurchase-partial")
+		headers := map[string]string{
+			"Authorization":      "Bearer " + f.customerToken,
+			"X-Location-Context": contextID,
+			"Idempotency-Key":    key,
+		}
+		firstRepurchase := lbsHTTP(t, router, http.MethodPost, "/api/v1/cart/repurchase", headers, body)
+		replayed := lbsHTTP(t, router, http.MethodPost, "/api/v1/cart/repurchase", headers, body)
+		if firstRepurchase.status != http.StatusOK || replayed.status != http.StatusOK ||
+			!reflect.DeepEqual(firstRepurchase.body["data"], replayed.body["data"]) {
+			t.Fatalf("repurchase replay mismatch: first=%d %#v replay=%d %#v", firstRepurchase.status, firstRepurchase.body, replayed.status, replayed.body)
+		}
+		data := object(t, firstRepurchase.body["data"])
+		if int(l2Number(t, data["succeeded_count"])) != 1 || int(l2Number(t, data["failed_count"])) != 1 {
+			t.Fatalf("partial repurchase counts mismatch: %#v", data)
+		}
+		results := array(t, data["results"])
+		if object(t, results[0])["status"] != "added" || object(t, results[1])["error_code"] != "PRODUCT_NOT_AVAILABLE_IN_SHOP" {
+			t.Fatalf("partial repurchase results mismatch: %#v", results)
+		}
+		cartItems := array(t, object(t, data["cart"])["items"])
+		if len(cartItems) != 1 || int(l2Number(t, object(t, cartItems[0])["quantity"])) != 4 {
+			t.Fatalf("repurchase cart quantity mismatch: %#v", cartItems)
+		}
+
+		unchangedHeaders := map[string]string{
+			"Authorization":      "Bearer " + f.customerToken,
+			"X-Location-Context": contextID,
+			"Idempotency-Key":    f.key("repurchase-max-target"),
+		}
+		unchanged := lbsHTTP(t, router, http.MethodPost, "/api/v1/cart/repurchase", unchangedHeaders, map[string]any{
+			"items": []map[string]any{{"product_id": fmt.Sprint(catalog.productID), "quantity": 2}},
+		})
+		if unchanged.status != http.StatusOK || object(t, array(t, object(t, unchanged.body["data"])["results"])[0])["status"] != "unchanged" {
+			t.Fatalf("repurchase target quantity was not stable: status=%d body=%#v", unchanged.status, unchanged.body)
+		}
+
+		performOK(t, router, http.MethodDelete, "/api/v1/cart/items", f.customerToken, f.key("repurchase-clear"), nil)
+		performOK(t, router, http.MethodPost, "/api/v1/cart/items", f.customerToken, f.key("repurchase-other-shop"), map[string]any{
+			"shop_product_id": fmt.Sprint(catalog.shopProductB), "quantity": 1,
+		})
+		conflictHeaders := map[string]string{
+			"Authorization":      "Bearer " + f.customerToken,
+			"X-Location-Context": contextID,
+			"Idempotency-Key":    f.key("repurchase-shop-conflict"),
+		}
+		conflict := lbsHTTP(t, router, http.MethodPost, "/api/v1/cart/repurchase", conflictHeaders, map[string]any{
+			"items": []map[string]any{{"product_id": fmt.Sprint(catalog.productID), "quantity": 1}},
+		})
+		if conflict.status != http.StatusConflict || conflict.body["error_code"] != "CART_SHOP_CONFLICT" {
+			t.Fatalf("cross-shop repurchase must fail closed: status=%d body=%#v", conflict.status, conflict.body)
+		}
+		replaceHeaders := map[string]string{
+			"Authorization":      "Bearer " + f.customerToken,
+			"X-Location-Context": contextID,
+			"Idempotency-Key":    f.key("repurchase-replace-shop"),
+		}
+		replaced := lbsHTTP(t, router, http.MethodPost, "/api/v1/cart/repurchase", replaceHeaders, map[string]any{
+			"items":             []map[string]any{{"product_id": fmt.Sprint(catalog.productID), "quantity": 1}},
+			"replace_selection": true,
+		})
+		if replaced.status != http.StatusOK {
+			t.Fatalf("replace-selection repurchase failed: status=%d body=%#v", replaced.status, replaced.body)
+		}
+		replacedItems := array(t, object(t, object(t, replaced.body["data"])["cart"])["items"])
+		if len(replacedItems) != 2 {
+			t.Fatalf("replace-selection must preserve unselected other-shop item: %#v", replacedItems)
+		}
+		for _, raw := range replacedItems {
+			item := object(t, raw)
+			if item["shop_id"] == fmt.Sprint(catalog.shopB) && item["selected"] != false {
+				t.Fatalf("other shop remained selected: %#v", item)
+			}
+			if item["shop_id"] == "4201" && item["selected"] != true {
+				t.Fatalf("service shop was not selected: %#v", item)
+			}
+		}
 	})
 }

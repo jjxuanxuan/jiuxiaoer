@@ -178,8 +178,10 @@ func NewRouter(deps Dependencies) *gin.Engine {
 
 	// JWT 只能证明账号身份；service 方法仍需校验 C 端数据归属、
 	// 商户授权门店、骑手配送单归属和 admin 权限点。
-	cartService := cart.NewService(deps.DB, idGen)
-	cart.RegisterRoutes(protected.Group("/cart"), cart.NewHandler(cartService))
+	cartService := cart.NewService(deps.DB, idGen).WithRepurchase(deps.Config.Repurchase, customerLocationService)
+	cartHandler := cart.NewHandler(cartService)
+	cart.RegisterRoutes(protected.Group("/cart"), cartHandler)
+	cart.RegisterFrequentPurchaseRoutes(protected, cartHandler)
 
 	addressService := address.NewService(deps.DB, idGen).WithLocationVerification(deps.Config.CustomerLBS.Mode, customerLocationService)
 	address.RegisterRoutes(protected.Group("/addresses"), address.NewHandler(addressService))
